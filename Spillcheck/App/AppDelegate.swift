@@ -5,11 +5,14 @@ import SwiftUI
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let model = AppModel()
     private lazy var runtime = AppRuntime(model: model)
+    private lazy var onboarding = OnboardingWindowController(model: model)
     private var shutdownStarted = false
     private var window: NSWindow?
     private var statusItem: NSStatusItem?
     private var statusPanel: MenuBarPanel?
     private var lifecycleLogURL: URL?
+    /// The status item image is redrawn only when its attention dot changes.
+    private var statusAttention: Bool?
     private var lifecycleEvents: [[String: String]] = []
 
     static func main() {
@@ -27,14 +30,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         var previewOnly = false
+        // The setup assistant opens on first launch instead of the main window.
+        var setupStep: OnboardingStep? = OnboardingWindowController.completed ? nil : .welcome
         #if DEBUG
         let args = CommandLine.arguments
         if args.contains("--acceptance-vault-owner") {
             Task { await SignedRecoveryVaultOwner.run(arguments: args); NSApplication.shared.terminate(nil) }
             return
         }
+        // Disposable acceptance vaults exercise the main window, never first-run setup.
+        if args.contains("--store-directory") { setupStep = nil }
         // Sample mode never opens the vault or starts collection, so the UI can be reviewed safely.
-        if args.contains("--demo") { model.loadDemo(); previewOnly = true }
+        if args.contains("--demo") { model.loadDemo(); previewOnly = true; setupStep = nil }
+        if let i = args.firstIndex(of: "--demo-setup"), args.indices.contains(i + 1) {
+            // Steps are named like "how-it-works" or "choose-agents".
+            let step = OnboardingStep.allCases.first { $0.title.lowercased().replacingOccurrences(of: " ", with: "-") == args[i + 1] } ?? .welcome
+            model.loadSetupDemo(step: step)
+            previewOnly = true
+            setupStep = step
+        }
+        if args.contains("--demo-quiet") { model.loadQuietDemo(); previewOnly = true; setupStep = nil }
         if let i = args.firstIndex(of: "--lifecycle-log"), args.indices.contains(i + 1) {
             lifecycleLogURL = URL(fileURLWithPath: args[i + 1])
         }
@@ -58,11 +73,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 NSWorkspace.shared.open(url)
             }
         }
+        model.onOpenSetup = { [weak self] step in self?.onboarding.show(at: step) }
+        onboarding.onFinish = { [weak self] in self?.showInventory() }
+        onboarding.statusItemFrame = { [weak self] in self?.visibleStatusItemFrame() }
+        onboarding.highlightStatusItem = { [weak self] highlighted in
+            guard let self, self.statusPanel?.isVisible != true else { return }
+            self.statusItem?.button?.highlight(highlighted)
+        }
         runtime.onShowInventory = { [weak self] in self?.showInventory() }
         if !previewOnly { runtime.start() }
         observeStatusItem()
         record("started")
-        showInventory()
+        if let setupStep { onboarding.show(at: setupStep) } else { showInventory() }
         #if DEBUG
         if previewOnly { applyPreviewArguments(args) }
         #endif
@@ -147,7 +169,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        showInventory()
+        if onboarding.isVisible { model.openSetup() } else { showInventory() }
         return true
     }
 
@@ -202,6 +224,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     @objc private func toggleStatusPanel() {
+        onboarding.dismissCoachMark()
         if let statusPanel, statusPanel.isVisible {
             statusPanel.dismiss()
             return
@@ -228,18 +251,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// can keep the item off-screen, and macOS hides items behind the camera housing; then the panel
     /// opens at the top-right of the screen with the pointer.
     private func statusPanelAnchor() -> (NSRect, NSScreen)? {
-        if let button = statusItem?.button, let window = button.window {
-            let rect = window.convertToScreen(button.convert(button.bounds, to: nil))
-            let center = NSPoint(x: rect.midX, y: rect.midY)
-            if let screen = NSScreen.screens.first(where: { $0.frame.contains(center) }) {
-                let underNotch = screen.auxiliaryTopLeftArea.map { center.x > $0.maxX } == true
-                    && screen.auxiliaryTopRightArea.map { center.x < $0.minX } == true
-                if !underNotch { return (rect, screen) }
-            }
+        if let rect = visibleStatusItemFrame(),
+           let screen = NSScreen.screens.first(where: { $0.frame.contains(NSPoint(x: rect.midX, y: rect.midY)) }) {
+            return (rect, screen)
         }
         let pointer = NSEvent.mouseLocation
         guard let screen = NSScreen.screens.first(where: { $0.frame.contains(pointer) }) ?? NSScreen.main else { return nil }
         return (NSRect(x: screen.visibleFrame.maxX, y: screen.menuBarBottom, width: 0, height: screen.frame.maxY - screen.menuBarBottom), screen)
+    }
+
+    /// The status item's screen frame, unless it's off-screen or hidden behind the camera housing.
+    private func visibleStatusItemFrame() -> NSRect? {
+        guard let button = statusItem?.button, let window = button.window else { return nil }
+        let rect = window.convertToScreen(button.convert(button.bounds, to: nil))
+        let center = NSPoint(x: rect.midX, y: rect.midY)
+        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(center) }) else { return nil }
+        let underNotch = screen.auxiliaryTopLeftArea.map { center.x > $0.maxX } == true
+            && screen.auxiliaryTopRightArea.map { center.x < $0.minX } == true
+        return underNotch ? nil : rect
     }
 
     /// The status item mirrors values awaiting review; observation keeps it current without polling.
@@ -254,8 +283,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func refreshStatusItem() {
         guard let button = statusItem?.button else { return }
         let attention = !model.needsReview.isEmpty || model.notificationIndicatorCount > 0
-        button.image = Self.statusImage(attention: attention)
-        button.toolTip = "\(AppIdentity.name) · \(model.processingText)"
+        if statusAttention != attention {
+            statusAttention = attention
+            button.image = Self.statusImage(attention: attention)
+        }
+        let tip = "\(AppIdentity.name) · \(model.processingText)"
+        if button.toolTip != tip { button.toolTip = tip }
         button.setAccessibilityLabel(attention ? "\(AppIdentity.name), values need review" : AppIdentity.name)
     }
 

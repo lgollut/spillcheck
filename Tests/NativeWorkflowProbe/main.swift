@@ -424,6 +424,44 @@ private struct NativeWorkflowProbe {
             cancelledCommand.cancel()
             try require(await cancelledCommand.value == .cancelled, "source-command-cancellation")
             checks.append("owned-source-command-cancellation")
+
+            // Live polling alternates processing and idle several times a second. The displayed state
+            // settles once instead of following each item, then returns to idle after a quiet period.
+            let activityModel = AppModel()
+            var busyChanges = 0, shownBusy = activityModel.busy, texts = Set<String>()
+            for tick in 0..<16 {
+                activityModel.updatePipeline(PipelineActivity(processing: tick.isMultiple(of: 2), pendingCount: 0))
+                try await Task.sleep(for: .milliseconds(125))
+                if activityModel.busy != shownBusy { busyChanges += 1; shownBusy = activityModel.busy }
+                if tick >= 10 { texts.insert(activityModel.processingText) }
+            }
+            try require(busyChanges == 1 && activityModel.busy && texts == ["Analyzing new content"], "burst-activity-flickers")
+            try await Task.sleep(for: .milliseconds(Int(AppModel.idleDelay * 1000) + 400))
+            try require(!activityModel.busy && activityModel.processingText.hasPrefix("Up to date"), "burst-activity-never-settles")
+            checks.append("burst-activity-settles-without-flicker")
+
+            let blipModel = AppModel()
+            blipModel.updatePipeline(PipelineActivity(processing: true, pendingCount: 0))
+            try await Task.sleep(for: .milliseconds(100))
+            blipModel.updatePipeline(PipelineActivity(processing: false, pendingCount: 0))
+            for _ in 0..<25 {
+                try await Task.sleep(for: .milliseconds(100))
+                try require(!blipModel.busy, "single-short-item-shown-as-busy")
+            }
+            checks.append("single-short-item-stays-idle")
+
+            // A catch-up lasts exactly as long as history work is queued; live work alone doesn't extend it.
+            let catchUpModel = AppModel()
+            catchUpModel.beginCatchUp()
+            try require(catchUpModel.catchingUp && catchUpModel.processingText == "Reading recent history", "catch-up-not-shown")
+            catchUpModel.updatePipeline(PipelineActivity(processing: true, pendingCount: 4))
+            catchUpModel.updateHistoryWork(queued: 1)
+            try await Task.sleep(for: .milliseconds(Int(AppModel.idleDelay * 1000) + 400))
+            try require(catchUpModel.catchingUp, "catch-up-ended-early")
+            catchUpModel.updateHistoryWork(queued: 0)
+            try require(!catchUpModel.catchingUp, "catch-up-held-by-live-work")
+            checks.append("catch-up-follows-queued-history")
+
             let output: [String: Any] = ["passed": true, "checks": checks, "checkCount": checks.count,
                 "systemAuthentication": "not-exercised-synthetic-private-key", "systemNotifications": "injected-backend",
                 "sourceSessionsStarted": 0, "credentialsRead": false]

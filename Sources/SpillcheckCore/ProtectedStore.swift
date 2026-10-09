@@ -224,6 +224,8 @@ public actor ProtectedStore {
         monitoringEnabled && !closed ? StoreProcessingPermit(generation: generation) : nil
     }
     public func snapshot() -> InventorySnapshot { ledger.snapshot }
+    /// Every committed inventory change increments this value. Equal revisions have equal snapshots.
+    public func stateRevision() -> Int64 { revision }
 
     public func pendingLiveAlerts() -> [AlertDecision] {
         guard monitoringEnabled, !closed else { return [] }
@@ -455,7 +457,9 @@ public actor ProtectedStore {
                 let count = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM captures") ?? 0
                 let bytes = try Int.fetchOne(db, sql: "SELECT COALESCE(SUM(byte_count), 0) FROM captures") ?? 0
                 let claimed = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM captures WHERE state = 1") ?? 0
-                return StoreQueueStatistics(count: count, encryptedBytes: bytes, claimedCount: claimed)
+                let historical = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM captures WHERE work_class = 1") ?? 0
+                return StoreQueueStatistics(count: count, encryptedBytes: bytes, claimedCount: claimed,
+                                            historicalCount: historical)
             }
         } catch { throw StorageError.databaseUnavailable }
     }

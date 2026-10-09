@@ -136,7 +136,7 @@ public actor ClaudeHookSetup {
 
     public func beginVerification() throws -> ClaudeSetupChallenge {
         guard try check() == .installedUnverified || state == .connected else { throw ClaudeSetupError.verificationFailed }
-        let prompt = "SPILLCHECK_SETUP_SYNTHETIC_\(UUID().uuidString)"
+        let prompt = SetupVerificationPrompt.make()
         challenge = prompt; state = .installedUnverified
         return ClaudeSetupChallenge(prompt: prompt, profileID: configuration.profileID, configuration: configuration)
     }

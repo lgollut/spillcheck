@@ -9,12 +9,13 @@ struct RouteStatus {
 }
 
 extension AgentRoute {
-    /// Owned registration status; it does not verify every host using this native home.
+    /// Owned registration status, as listed in Settings, Coverage, and guided setup. It does not
+    /// verify every host using this native home.
     var status: RouteStatus {
         switch state {
         case .connected: RouteStatus(text: "Registration verified", color: Palette.secondary, dot: Palette.green, outlined: false)
         case .installedUnverified where waitingForEvent:
-            RouteStatus(text: "Waiting for an event…", color: Palette.amberText, dot: Palette.amber, outlined: false)
+            RouteStatus(text: "Waiting for the test prompt…", color: Palette.amberText, dot: Palette.amber, outlined: false)
         case .installedUnverified: RouteStatus(text: "Installed · not verified", color: Palette.amberText, dot: Palette.amber, outlined: false)
         case .detected: RouteStatus(text: "Found · not connected", color: Palette.secondary, dot: .clear, outlined: true)
         case .unsupported: RouteStatus(text: "Route unavailable", color: Palette.red, dot: Palette.redDot, outlined: false)
@@ -32,7 +33,7 @@ extension AgentRoute {
                         color: limitations.isEmpty ? Palette.secondary : Palette.amberText,
                         dot: limitations.isEmpty ? Palette.green : Palette.amber, outlined: false)
         case .installedUnverified:
-            RouteStatus(text: waitingForEvent ? "Waiting for a first event" : "Installed · not verified yet",
+            RouteStatus(text: waitingForEvent ? "Waiting for the test prompt" : "Installed · not verified yet",
                         color: Palette.amberText, dot: Palette.amber, outlined: false)
         case .unsupported: RouteStatus(text: "Stopped · route unavailable", color: Palette.red, dot: Palette.redDot, outlined: false)
         case .unavailable: RouteStatus(text: "Stopped · needs repair", color: Palette.red, dot: Palette.redDot, outlined: false)
@@ -78,9 +79,19 @@ struct CoverageView: View {
         .accessibilityIdentifier("coverage.view")
     }
 
+    /// With an empty inventory this is the main window's first screen, so the headline says what was
+    /// found as well as how much was read. Activity appears inline, so the layout never shifts.
     private var hero: some View {
         let conversations = model.activity?.conversationCount ?? 0
         let messages = model.activity?.messageCount ?? 0
+        let nothingFound = model.monitoringProven && !model.hasEntries
+        let reading = model.monitoringProven && model.monitoringEnabled && model.catchingUp
+        let headline = switch (nothingFound, conversations) {
+        case (true, 0): model.catchingUp ? "Reading recent history" : "No conversations analyzed yet"
+        // While history is still being read, "nothing found" is only true so far.
+        case (true, _): "Nothing found\(reading ? " so far" : "") in \(plural(conversations, "conversation"))"
+        default: plural(conversations, "conversation")
+        }
         return VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 CoverageGlyph(word: model.coverageWord)
@@ -88,14 +99,20 @@ struct CoverageView: View {
             }
             .font(.system(size: 12.5, weight: .medium))
             .foregroundStyle(model.coverageWord == "No recent gaps" ? Palette.secondary : Palette.amberText)
-            Text(plural(conversations, "conversation"))
-                .font(.system(size: 34, weight: .semibold)).tracking(-0.6).monospacedDigit()
+            Text(headline)
+                .font(.system(size: nothingFound ? 30 : 34, weight: .semibold)).tracking(-0.6).monospacedDigit()
+                .accessibilityAddTraits(.isHeader)
             Text(model.monitoringProven ? "\(plural(messages, "message")) analyzed · \(rangeText)" : "Analysis starts once an agent is verified")
-                .font(.system(size: 13)).foregroundStyle(Palette.secondary).monospacedDigit()
-            if model.processing {
-                ProgressView().progressViewStyle(.linear).frame(maxWidth: 320).tint(Palette.green).padding(.top, 8)
+                .monospacedDigit()
+                .font(.system(size: 13)).foregroundStyle(Palette.secondary)
+            // Live analysis is reported in the header; only a catch-up changes what this summary means.
+            if reading {
+                ReadingHistoryBanner()
+                    .padding(.top, 10)
+                    .transition(.opacity.combined(with: .offset(y: -4)))
             }
         }
+        .animation(.easeOut(duration: 0.25), value: reading)
     }
 
     private var totals: some View {
@@ -220,6 +237,24 @@ struct CoverageView: View {
                 .font(.system(size: 12)).foregroundStyle(Palette.tertiary).lineSpacing(2)
                 .padding(.horizontal, 2)
         }
+    }
+}
+
+/// A catch-up in progress, with motion, so the numbers above read as still growing.
+private struct ReadingHistoryBanner: View {
+    var body: some View {
+        HStack(spacing: 10) {
+            RingSpinner()
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Reading the last 7 days").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Brand.greenText)
+                Text("Counts and results update as earlier conversations are analyzed.")
+                    .font(.system(size: 12)).foregroundStyle(Palette.secondary)
+            }
+        }
+        .padding(.leading, 12).padding(.trailing, 16).padding(.vertical, 9)
+        .background(Brand.calloutFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Brand.calloutRing, lineWidth: 1))
+        .accessibilityElement(children: .combine)
     }
 }
 

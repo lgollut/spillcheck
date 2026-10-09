@@ -109,7 +109,7 @@ actor AgentSetupController {
             profiles[provider] = draft
             states[provider] = supported(draft) ? .detected : .unsupported
             messages[provider] = supported(draft)
-                ? "Executable found. Monitoring setup has not been installed or verified."
+                ? "Found on this Mac. Not connected yet."
                 : "This collection route has not been established."
         }
     }
@@ -154,8 +154,8 @@ actor AgentSetupController {
         states[draft.provider] = saved.connectionProof == nil ? .installedUnverified : .connected
         prompts.removeValue(forKey: draft.provider)
         messages[draft.provider] = saved.connectionProof == nil
-            ? "Owned hooks installed. Verify a synthetic prompt before reporting connected."
-            : "Owned registration repaired. Its encrypted connection proof still applies; content coverage is assessed separately."
+            ? "Hooks added. A short test session confirms that events arrive."
+            : "Hooks repaired. The earlier test session still applies; coverage is shown separately."
     }
 
     func verify(_ provider: AgentProvider) async throws {
@@ -166,10 +166,10 @@ actor AgentSetupController {
         }
         if provider == .codex, let codex {
             prompts[provider] = try await codex.beginVerification().prompt
-            messages[provider] = "Start Codex with this profile. Open /hooks, review the Spillcheck helper in UserPromptSubmit, trust it, then send the synthetic prompt below."
+            messages[provider] = "Waiting for the test prompt from a new Codex session."
         } else if provider == .claudeCode, let claude {
             prompts[provider] = try await claude.beginVerification().prompt
-            messages[provider] = "Start Claude Code with this profile and send the synthetic prompt below. Review the owned hooks if Claude requests it."
+            messages[provider] = "Waiting for the test prompt from a new Claude Code session."
         } else { throw CodexSetupError.verificationFailed }
         states[provider] = .installedUnverified
     }
@@ -199,7 +199,7 @@ actor AgentSetupController {
         try await persist()
         states[provider] = .detected
         prompts.removeValue(forKey: provider)
-        messages[provider] = "Spillcheck's owned hooks removed. Retained inventory remains available."
+        messages[provider] = "\(AppIdentity.name)’s hooks removed. The inventory keeps what was already found."
     }
 
     /// Called only after the receiver's encrypted enqueue succeeds.
@@ -223,7 +223,7 @@ actor AgentSetupController {
             catch { profiles[provider] = profile; throw error }
             prompts.removeValue(forKey: provider)
             states[provider] = .connected
-            messages[provider] = "Synthetic prompt received and stored encrypted. The owned registration is verified; each host's activity and coverage are shown separately."
+            messages[provider] = "Test prompt received. The hooks are verified; each host’s activity and coverage are shown separately."
         } catch { /* Other events cannot satisfy the exact one-use verification challenge. */ }
     }
 
@@ -278,7 +278,7 @@ actor AgentSetupController {
                 }
                 if raw == "needsRepair" {
                     states[provider] = .unavailable
-                    messages[provider] = "Owned hook configuration changed or is missing. Repair it, then verify again."
+                    messages[provider] = "\(AppIdentity.name)’s hooks changed or are missing. Repair them, then run the test session again."
                     prompts.removeValue(forKey: provider)
                     if var invalidated = profiles[provider], invalidated.connectionProof != nil {
                         invalidated.connectionProof = nil
@@ -368,16 +368,16 @@ private enum ProviderVersionProbe {
         if process.isRunning {
             process.terminate()
             Thread.sleep(forTimeInterval: 0.1)
-            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            process.forceStop()
         }
-        process.waitUntilExit()
         pipe.fileHandleForReading.readabilityHandler = nil
         if let remaining = try? pipe.fileHandleForReading.readToEnd() { output.append(remaining) }
         try? pipe.fileHandleForReading.close()
         let text = output.text().trimmingCharacters(in: .whitespacesAndNewlines)
         let pattern = provider == .codex ? #"^codex-cli ([0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?)$"#
             : #"^([0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?) \(Claude Code\)$"#
-        guard process.terminationStatus == 0,
+        // Reading the status of a process that hasn't exited raises.
+        guard !process.isRunning, process.terminationStatus == 0,
               text.range(of: pattern, options: .regularExpression) != nil,
               let range = text.range(of: #"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?"#, options: .regularExpression) else { return nil }
         return String(text[range])

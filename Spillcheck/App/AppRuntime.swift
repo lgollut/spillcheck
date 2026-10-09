@@ -117,6 +117,9 @@ final class AppRuntime {
     private var monitoringRequested = true
     private var inventoryMutationActive = false
     private var actions: [UUID: Task<Void, Never>] = [:]
+    /// The inventory revision and day last published, so an unchanged store isn't republished every second.
+    private var publishedRevision: Int64?
+    private var publishedDay: Date?
     var onShowInventory: (() -> Void)?
     #if DEBUG
     private var acceptanceReportURL: URL?
@@ -141,6 +144,7 @@ final class AppRuntime {
     private var eventMonitor: Any?
     private var workspaceObservers: [NSObjectProtocol] = []
     private var lockObserver: NSObjectProtocol?
+    private var activationObserver: NSObjectProtocol?
 
     init(model: AppModel) {
         self.model = model
@@ -149,6 +153,11 @@ final class AppRuntime {
 
     func start() {
         installViewingLifecycle()
+        // Permissions change in System Settings; coming back to the app shows the current state.
+        activationObserver = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification,
+                                                                    object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshPreferences() }
+        }
         #if DEBUG
         let args = CommandLine.arguments
         if let index = args.firstIndex(of: "--acceptance-report"), args.indices.contains(index + 1),
@@ -268,6 +277,7 @@ final class AppRuntime {
             monitoringRequested = false
             updateNotificationGate()
             model.storageReady = false
+            model.storageFailed = true
             model.storageMessage = Self.storageFailureMessage(error)
             model.pauseAfterBarrier()
             #if DEBUG
@@ -303,7 +313,7 @@ final class AppRuntime {
             try await ownedSetup.verify(.claudeCode)
         }
         #endif
-        model.loadSnapshot(await store.snapshot())
+        await publishSnapshot(from: store)
         await refreshSetup(updateProfiles: true)
         notifications.navigationIsCurrent = { target in await store.notificationTargetExists(target) }
         notifications.onNavigate = { [weak self] target in
@@ -392,6 +402,18 @@ final class AppRuntime {
         model.onInstallAgent = { [weak self] provider, draft in
             self?.performAction { runtime in await runtime.editSetup(provider: provider, action: .install(draft)) }
         }
+        model.onConnectAgents = { [weak self] drafts in
+            // Setup edits are exclusive, so several agents connect one after another.
+            self?.performAction { runtime in
+                for draft in drafts { await runtime.editSetup(provider: draft.provider, action: .install(draft)) }
+            }
+        }
+        model.onOpenSetupTerminal = { [weak self] provider in
+            guard let self, let command = self.model.setupCommand(for: provider) else { return }
+            if !SetupTerminal.open(command) {
+                self.model.showToast("Terminal couldn’t be opened. Copy the command and run it in any terminal.")
+            }
+        }
         model.onRepairAgent = { [weak self] provider in
             self?.performAction { runtime in
                 guard let draft = runtime.model.agentProfiles[provider] else { return }
@@ -414,7 +436,15 @@ final class AppRuntime {
                 runtime.publishLoginPreference()
             }
         }
+        model.onRefreshPreferences = { [weak self] in self?.refreshPreferences() }
         notifications.onPermissionChange = { [weak self] in self?.publishNotificationPermission() }
+    }
+
+    /// Reads the notification permission and login item again, which only System Settings changes.
+    private func refreshPreferences() {
+        guard !terminating, !model.isDemo else { return }
+        publishLoginPreference()
+        Task { [weak self] in await self?.notifications.refreshPermission() }
     }
 
     private func performAction(_ operation: @escaping @MainActor (AppRuntime) async -> Void) {
@@ -609,7 +639,14 @@ final class AppRuntime {
     private enum SetupAction { case install(AgentProfileDraft), verify, remove }
 
     private func editSetup(provider: AgentProvider, action: SetupAction) async {
-        guard let setup, !model.agentSetupBusy.contains(provider), !model.monitoringTransition else { return }
+        guard let setup, !model.agentSetupBusy.contains(provider) else { return }
+        // Edits run one at a time. A request made during another edit, or during a pause or resume,
+        // waits its turn instead of being dropped, which would leave its agent waiting forever.
+        while model.monitoringTransition {
+            guard !terminating, !Task.isCancelled else { return }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        guard !model.agentSetupBusy.contains(provider) else { return }
         model.agentSetupBusy.insert(provider)
         model.monitoringTransition = true
         defer {
@@ -622,9 +659,14 @@ final class AppRuntime {
                 guard draft.provider == provider else { return }
                 try await setup.install(draft)
                 await restartCollection()
+                // Adding hooks and checking delivery are one step for the user: start the check now,
+                // unless a repair kept an earlier test session that still applies to these hooks.
+                if model.monitoringEnabled, await setup.snapshot().states[provider] != .connected {
+                    try await setup.verify(provider)
+                }
             case .verify:
                 guard model.monitoringEnabled else {
-                    model.agentSetupMessages[provider] = "Resume monitoring before verifying a synthetic prompt."
+                    model.agentSetupMessages[provider] = "Resume monitoring before running the test session."
                     return
                 }
                 try await setup.verify(provider)
@@ -670,9 +712,10 @@ final class AppRuntime {
                 }
             }
         }
-        model.agentSetupStates = snapshot.states
-        model.agentSetupMessages = snapshot.messages
-        model.verificationPrompts = snapshot.verificationPrompts
+        // Unchanged values are not reassigned, so views reading them aren't invalidated every second.
+        if model.agentSetupStates != snapshot.states { model.agentSetupStates = snapshot.states }
+        if model.agentSetupMessages != snapshot.messages { model.agentSetupMessages = snapshot.messages }
+        if model.verificationPrompts != snapshot.verificationPrompts { model.verificationPrompts = snapshot.verificationPrompts }
         for provider in changed where model.monitoringEnabled {
             await enqueueHistory(provider: provider, reassessing: true)
         }
@@ -703,6 +746,7 @@ final class AppRuntime {
     private func publishLoginPreference() {
         loginItem.refresh()
         model.launchAtLogin = loginItem.state == .enabled || loginItem.state == .requiresApproval
+        model.loginAvailable = loginItem.state != .unavailable
         model.loginBusy = loginItem.isChanging
         model.loginMessage = loginItem.errorMessage ?? loginItem.state.message
     }
@@ -787,8 +831,9 @@ final class AppRuntime {
             var gaps = Array(Set(recentGaps.filter { $0.recovery == nil } + omissions.map(\.gap)))
             model.collectionLimitations = gaps
             let progress = try await store.historicalProgress()
-            model.historyProgress = progress
+            if model.historyProgress != progress { model.historyProgress = progress }
             model.updateQueue(count: statistics.count)
+            model.updateHistoryWork(queued: statistics.historicalCount)
             let latestAudits = Dictionary(grouping: progress, by: { "\($0.provider.rawValue)\u{0}\($0.profileID)" })
                 .compactMap { $0.value.max { $0.progress.audit.end < $1.progress.audit.end } }
             let unreadHistory = latestAudits.contains { $0.progress.hasUnreadContent }
@@ -802,7 +847,7 @@ final class AppRuntime {
             model.updateCoverage(gaps.isEmpty && !unreadHistory
                 ? (collectionObserved ? .complete : .notConfigured)
                 : .partial(gaps.isEmpty ? [.init(reason: .budgetExhausted)] : gaps))
-            model.loadSnapshot(await store.snapshot())
+            await publishSnapshot(from: store)
             await deliverNotifications()
             #if DEBUG
             await writeAcceptanceReport(statistics: statistics, gaps: gaps)
@@ -810,6 +855,16 @@ final class AppRuntime {
         } catch {
             model.storageMessage = Self.storageFailureMessage(error)
         }
+    }
+
+    /// Republishes the inventory after a committed change, or when the day changes the 7-day window.
+    private func publishSnapshot(from store: ProtectedStore) async {
+        let revision = await store.stateRevision()
+        let day = Calendar.current.startOfDay(for: .now)
+        guard revision != publishedRevision || day != publishedDay else { return }
+        model.loadSnapshot(await store.snapshot())
+        publishedRevision = revision
+        publishedDay = day
     }
 
     #if DEBUG
@@ -1286,6 +1341,8 @@ final class AppRuntime {
                     try? await store.recordCoverageGap(reason: .sourceUnavailable)
                 }
             }
+            // After the work is queued, so a refresh in between can't end the catch-up early.
+            if historyProducers.contains(where: { provider == nil || $0.provider == provider }) { model.beginCatchUp() }
         } catch {
             try? await store.recordCoverageGap(reason: .sourceUnavailable)
         }
@@ -1339,6 +1396,8 @@ final class AppRuntime {
         workspaceObservers.removeAll()
         if let lockObserver { DistributedNotificationCenter.default().removeObserver(lockObserver) }
         lockObserver = nil
+        if let activationObserver { NotificationCenter.default.removeObserver(activationObserver) }
+        activationObserver = nil
     }
 
     static let recentGapWindow: TimeInterval = 24 * 60 * 60
@@ -1355,5 +1414,30 @@ final class AppRuntime {
             }
         }
         return "Protected storage could not be opened. Monitoring is paused."
+    }
+}
+
+/// Opens Terminal on a short script holding the setup command, so starting the test session takes one
+/// click. The script holds no credential, is readable only by this user, and is replaced on each use.
+@MainActor
+private enum SetupTerminal {
+    static func open(_ command: SetupCheckCommand) -> Bool {
+        guard let terminal = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Terminal") else { return false }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(AppIdentity.name, isDirectory: true)
+        let script = directory.appendingPathComponent("setup-check-\(command.provider.rawValue).command")
+        let body = """
+            #!/bin/zsh
+            # \(AppIdentity.name) setup check: starts a new \(command.provider.displayName) session that sends one test prompt.
+            \(command.line)
+
+            """
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+                                                    attributes: [.posixPermissions: 0o700])
+            try Data(body.utf8).write(to: script, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
+        } catch { return false }
+        NSWorkspace.shared.open([script], withApplicationAt: terminal, configuration: NSWorkspace.OpenConfiguration())
+        return true
     }
 }

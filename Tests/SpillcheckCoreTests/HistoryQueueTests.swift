@@ -335,6 +335,7 @@ struct HistoryQueueTests {
             _ = try await store.enqueue(historyQueuePacket(page: page).body, id: id,
                 capturedAt: now.addingTimeInterval(-10), permit: permit, at: now)
         }
+        #expect(try await store.queueStatistics().historicalCount == 1)
         for _ in 0..<4 {
             let capture = try #require(try await store.nextPending(at: now, permit: permit))
             #expect(liveIDs.remove(capture.id) != nil)
@@ -345,6 +346,8 @@ struct HistoryQueueTests {
         #expect(historical.id == historyID)
         #expect(try await store.openCapturedWork(historical).historicalAudit == audit)
         try await store.completeCapture(historical, permit: permit, at: now)
+        // Live work still queued doesn't count as reading history.
+        #expect(try await store.queueStatistics().historicalCount == 0)
         let nextLive = try #require(try await store.nextPending(at: now, permit: permit))
         #expect(liveIDs.remove(nextLive.id) != nil)
         try await store.completeCapture(nextLive, permit: permit, at: now)

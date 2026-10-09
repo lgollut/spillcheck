@@ -144,8 +144,8 @@ struct MenuBarView: View {
                 if let first = values.first { model.selectEntry(first.id) } else { model.route = .inventory }
                 openInventory()
             } else {
-                model.route = .settings(.agents)
-                openInventory()
+                close()
+                model.openSetup()
             }
         } label: {
             HStack(spacing: 10) {

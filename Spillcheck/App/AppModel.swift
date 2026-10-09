@@ -50,6 +50,12 @@ struct AgentProfileDraft: Codable, Equatable, Sendable {
         authorizedHosts.isSubset(of: Self.supportedHosts)
             && (interface == .desktopCode ? authorizedHosts.isEmpty : authorizedHosts.contains(interface))
     }
+    /// Says why this profile's sessions aren't collected, and what to choose instead.
+    var unsupportedMessage: String {
+        interface == .desktopCode
+            ? "\(AppIdentity.name) doesn’t collect from the \(provider.displayName) desktop app yet."
+            : "This collection route has not been established, so its sessions aren’t collected."
+    }
 
     private enum CodingKeys: String, CodingKey {
         case provider, profileID, registrationID, executablePath, homePath, interface
@@ -123,6 +129,25 @@ enum AppNotificationState {
 
 enum MainRoute: Equatable {
     case inventory, coverage, settings(SettingsPage)
+}
+
+/// The setup assistant: what Spillcheck does, which agents to connect, a test session per agent,
+/// alert preferences, then a summary.
+enum OnboardingStep: Int, CaseIterable, Comparable {
+    case welcome, howItWorks, chooseAgents, connect, preferences, ready
+
+    var title: String {
+        switch self {
+        case .welcome: "Welcome"
+        case .howItWorks: "How it works"
+        case .chooseAgents: "Choose agents"
+        case .connect: "Connect"
+        case .preferences: "Preferences"
+        case .ready: "Ready"
+        }
+    }
+
+    static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
 }
 
 enum SettingsPage: String, CaseIterable {
@@ -241,6 +266,42 @@ struct AgentRoute: Identifiable {
     var monogram: String { provider == .codex ? "CX" : "CC" }
     var collecting: Bool { state == .connected && hostRoutes.contains(where: \.collecting) }
     var shownInCoverage: Bool { state != .notDetected && state != .notChecked }
+    /// Found on an eligible route with a complete profile, so hooks can be added now.
+    var connectable: Bool { state == .detected && profile?.isComplete == true }
+    /// Hooks are added, whether or not delivery has been confirmed.
+    var hooksAdded: Bool { state == .installedUnverified || state == .connected }
+}
+
+/// One terminal line that starts a fresh session of the selected agent with the setup prompt, so the
+/// user doesn't have to open /hooks or paste the prompt into a session. The executable is the exact
+/// one whose version was checked; a non-default profile is selected through the agent's own variable.
+struct SetupCheckCommand {
+    let provider: AgentProvider
+    let profile: AgentProfileDraft
+    let prompt: String
+
+    var line: String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let defaultProfile = home + (provider == .codex ? "/.codex" : "/.claude")
+        var words: [String] = []
+        if URL(fileURLWithPath: profile.homePath).standardizedFileURL.path != defaultProfile {
+            words.append((provider == .codex ? "CODEX_HOME=" : "CLAUDE_CONFIG_DIR=") + Self.word(profile.homePath, home: home))
+        }
+        words.append(Self.word(profile.executablePath, home: home))
+        words.append(Self.quote(prompt))
+        return words.joined(separator: " ")
+    }
+
+    /// A path under the home folder reads as ~/…; anything with shell syntax is quoted instead.
+    private static func word(_ path: String, home: String) -> String {
+        let short = path.hasPrefix(home + "/") ? "~" + path.dropFirst(home.count) : path
+        let plain = short.allSatisfy { $0.isLetter || $0.isNumber || "~/._-+".contains($0) }
+        return plain ? short : quote(path)
+    }
+
+    private static func quote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
+    }
 }
 
 @MainActor @Observable
@@ -251,6 +312,8 @@ final class AppModel {
     @ObservationIgnored var onMonitoringChanged: (() -> Void)?
     @ObservationIgnored var onMonitoringRequested: ((Bool) -> Void)?
     var storageReady = false
+    /// Protected storage couldn't open; `storageMessage` says why.
+    var storageFailed = false
     var storageMessage: String? = "Opening protected storage…"
     var monitoringTransition = false
     private var queueProcessing = false
@@ -330,6 +393,8 @@ final class AppModel {
     var historicalSummaries: [HistoricalAuditSummary] = []
     var isDemo = false
     var windowVisible = false
+    /// Agents the user unticked in the setup assistant. Newly detected agents start ticked.
+    var setupDeselected: Set<AgentProvider> = []
     var agentProfiles: [AgentProvider: AgentProfileDraft] = [:]
     var agentSetupStates: [AgentProvider: AgentSetupState] = [:]
     var agentSetupMessages: [AgentProvider: String] = [:]
@@ -341,19 +406,29 @@ final class AppModel {
     var notificationBusy = false
     var notificationIndicatorCount = 0
     var launchAtLogin = false
+    /// Launch at login needs an installed app; a development build elsewhere can't register.
+    var loginAvailable = true
     var loginBusy = false
     var loginMessage: String?
     @ObservationIgnored var onDetectAgents: (() -> Void)?
     @ObservationIgnored var onInstallAgent: ((AgentProvider, AgentProfileDraft) -> Void)?
+    /// Adds hooks to several profiles one after another, starting each delivery check.
+    @ObservationIgnored var onConnectAgents: (([AgentProfileDraft]) -> Void)?
+    @ObservationIgnored var onOpenSetupTerminal: ((AgentProvider) -> Void)?
     @ObservationIgnored var onVerifyAgent: ((AgentProvider) -> Void)?
     @ObservationIgnored var onRepairAgent: ((AgentProvider) -> Void)?
     @ObservationIgnored var onRemoveAgent: ((AgentProvider) -> Void)?
     @ObservationIgnored var onRequestNotificationPermission: (() -> Void)?
     @ObservationIgnored var onLaunchAtLoginRequested: ((Bool) -> Void)?
     @ObservationIgnored var onOpenNotificationSettings: (() -> Void)?
+    @ObservationIgnored var onOpenSetup: ((OnboardingStep) -> Void)?
+    /// Rereads permissions that only System Settings changes.
+    @ObservationIgnored var onRefreshPreferences: (() -> Void)?
     @ObservationIgnored var onQuit: (() -> Void)?
     var monitoringEnabled: Bool { monitoring.runState == .running && monitoring.mode == .enabled }
     var stopped: Bool { monitoring.runState == .stopped }
+    /// The pipeline's instantaneous state. It changes many times a second while a session is active,
+    /// so displays use `busy` and `catchingUp` instead.
     var processing: Bool {
         if case .processing = monitoring.queueActivity { true } else { false }
     }
@@ -495,6 +570,40 @@ final class AppModel {
     /// A remembered connection proof is separate from recent collection and analyzed coverage.
     var monitoringProven: Bool { routes.contains(where: \.collecting) }
 
+    /// Opens the setup assistant at `step`, or where the user still has something to do: confirming
+    /// hooks that are already added, otherwise choosing agents.
+    func openSetup(at step: OnboardingStep? = nil) {
+        onOpenSetup?(step ?? (routes.contains { $0.state == .installedUnverified } ? .connect : .chooseAgents))
+    }
+
+    /// Leaves the setup assistant for the main window, which shows coverage until something is found.
+    func finishSetup() {
+        route = .inventory
+        if selectedEntryID == nil { selectedEntryID = navigableEntries.first?.id }
+    }
+
+    /// Agents ticked for connection in the setup assistant.
+    var setupSelection: [AgentRoute] {
+        routes.filter { $0.connectable && !setupDeselected.contains($0.provider) }
+    }
+
+    /// Adds hooks to the ticked agents one after another, each followed by its delivery check.
+    /// Returns the agents being connected.
+    @discardableResult
+    func connectSelectedAgents() -> Set<AgentProvider> {
+        let drafts = setupSelection.compactMap(\.profile)
+        guard !drafts.isEmpty else { return [] }
+        if isDemo { DemoInventory.simulateConnection(self, providers: drafts.map(\.provider)) }
+        else { onConnectAgents?(drafts) }
+        return Set(drafts.map(\.provider))
+    }
+
+    func setupCommand(for provider: AgentProvider) -> SetupCheckCommand? {
+        guard let profile = agentProfiles[provider], let prompt = verificationPrompts[provider],
+              !profile.executablePath.isEmpty else { return nil }
+        return SetupCheckCommand(provider: provider, profile: profile, prompt: prompt)
+    }
+
     var coverageWord: String {
         switch monitoring.coverage {
         case .notConfigured: "Not proven"
@@ -572,20 +681,61 @@ final class AppModel {
     var processingText: String {
         if stopped { return "Monitoring stopped" }
         if !monitoringEnabled { return "Not checking while paused" }
-        switch monitoring.queueActivity {
-        case .processing: return "Analyzing new content"
-        case .waiting(let count): return "\(plural(Int(count), "item")) waiting"
-        case .idle:
-            return lastCheckedAt.map { "Up to date · last checked \($0.formatted(date: .omitted, time: .shortened))" } ?? "Up to date"
-        }
+        if catchingUp { return "Reading recent history" }
+        if busy { return "Analyzing new content" }
+        return lastCheckedAt.map { "Up to date · last checked \($0.formatted(date: .omitted, time: .shortened))" } ?? "Up to date"
     }
 
     var processingShort: String {
         if !monitoringEnabled { return "Not checking" }
-        switch monitoring.queueActivity {
-        case .processing: return "Analyzing"
-        case .waiting(let count): return "\(count) waiting"
-        case .idle: return "Up to date"
+        if catchingUp { return "Catching up" }
+        return busy ? "Analyzing" : "Up to date"
+    }
+
+    // MARK: Settled activity
+
+    /// Shown activity changes only after the pipeline has worked for `busyDelay`, and returns to idle
+    /// only after `idleDelay` without work. A burst of short items reads as one steady state.
+    private(set) var busy = false
+    /// While recent-history work is queued. Live activity alone never counts as catching up.
+    private(set) var catchingUp = false
+    @ObservationIgnored private var burstStart: Date?
+    @ObservationIgnored private var lastActiveAt: Date?
+    @ObservationIgnored private var settleTask: Task<Void, Never>?
+    static let busyDelay: TimeInterval = 1
+    static let idleDelay: TimeInterval = 2
+
+    func beginCatchUp() {
+        if !catchingUp { catchingUp = true }
+        settleActivity(active: true)
+    }
+
+    /// The store's count of queued recent-history work, which ends a catch-up when it reaches zero.
+    func updateHistoryWork(queued: Int) {
+        if catchingUp != (queued > 0) { catchingUp = queued > 0 }
+    }
+
+    private func settleActivity(active: Bool, now: Date = Date()) {
+        if let last = lastActiveAt, now.timeIntervalSince(last) >= Self.idleDelay { burstStart = nil }
+        if active {
+            burstStart = burstStart ?? now
+            lastActiveAt = now
+        }
+        let recent = lastActiveAt.map { now.timeIntervalSince($0) < Self.idleDelay } ?? false
+        // A single short item never counts: work must still be observed busyDelay after the burst began.
+        let lasting = burstStart.flatMap { start in lastActiveAt.map { $0.timeIntervalSince(start) >= Self.busyDelay } } ?? false
+        let nextBusy = recent && (busy || lasting)
+        if busy != nextBusy { busy = nextBusy }
+        settleTask?.cancel()
+        guard recent, let lastActiveAt else { return }
+        // Re-evaluate when the burst is long enough to show, or when it has been quiet long enough.
+        let showAt = busy ? nil : burstStart.map { $0.addingTimeInterval(Self.busyDelay) }
+        let quietAt = lastActiveAt.addingTimeInterval(Self.idleDelay)
+        let next = [showAt, quietAt].compactMap { $0 }.filter { $0 > now }.min() ?? quietAt
+        settleTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(max(0.05, next.timeIntervalSince(Date()))))
+            guard !Task.isCancelled, let self else { return }
+            self.settleActivity(active: self.queueActive)
         }
     }
 
@@ -619,6 +769,29 @@ final class AppModel {
         actionMessage = "Sample mode. Revealing and changing values are disabled."
     }
 
+    /// Sample setup-assistant state matching a first launch: Codex found, Claude Code at an untested
+    /// version. Nothing is installed and no session is started.
+    func loadSetupDemo(step: OnboardingStep) {
+        isDemo = true
+        storageReady = true
+        storageMessage = nil
+        presentation = try? InventoryPresentation(snapshot: InventorySnapshot())
+        DemoInventory.configureSetup(self, step: step)
+    }
+
+    /// Sample connected monitoring that has analyzed content and found nothing.
+    func loadQuietDemo() {
+        isDemo = true
+        storageMessage = nil
+        if let snapshot = try? DemoInventory.quietSnapshot() {
+            presentation = try? InventoryPresentation(snapshot: snapshot)
+            activity = AnalyzedActivity(snapshot: snapshot, window: AnalyzedActivity.recentWindow(endingAt: .now))
+        }
+        DemoInventory.configureSetup(self, step: .ready)
+        updateCoverage(.partial([CoverageGap(reason: .queueExpired)]))
+        route = .inventory
+    }
+
     func toggleMonitoring() {
         guard !stopped, !monitoringTransition else { return }
         if let onMonitoringRequested {
@@ -632,11 +805,19 @@ final class AppModel {
     func pauseAfterBarrier() { monitoring.pause(); onMonitoringChanged?() }
     func resumeAfterBarrier() { monitoring.resume(); onMonitoringChanged?() }
     func updateQueue(count: Int) {
-        monitoring.updateQueueActivity(queueProcessing ? .processing(pendingCount: UInt(count), activeCount: 1)
-            : count == 0 ? .idle : .waiting(itemCount: UInt(count)))
-        if !queueProcessing && count == 0 { lastCheckedAt = .now }
-        onMonitoringChanged?()
+        let activity: QueueActivity = queueProcessing ? .processing(pendingCount: UInt(count), activeCount: 1)
+            : count == 0 ? .idle : .waiting(itemCount: UInt(count))
+        // Assigning an unchanged state would still invalidate every view that reads monitoring.
+        if monitoring.queueActivity != activity { monitoring.updateQueueActivity(activity) }
+        queueActive = queueProcessing || count > 0
+        if !queueActive {
+            // The display shows minutes, so record the check once per minute.
+            let minute = Calendar.current.dateInterval(of: .minute, for: .now)?.start ?? .now
+            if lastCheckedAt != minute { lastCheckedAt = minute }
+        }
+        settleActivity(active: queueActive)
     }
+    @ObservationIgnored private var queueActive = false
     func updatePipeline(_ activity: PipelineActivity) {
         queueProcessing = activity.processing
         updateQueue(count: activity.pendingCount)
@@ -683,21 +864,33 @@ final class AppModel {
 private enum DemoInventory {
     static func presentation() throws -> InventoryPresentation { try InventoryPresentation(snapshot: snapshot()) }
 
+    private static func record(_ provider: AgentProvider, _ session: String, _ item: String, _ type: ContentType,
+                               _ interface: AgentInterface, at time: Date) throws -> SourceRecord {
+        let bytes = Data("sample \(item)".utf8)
+        let identity = try SourceIdentity(session: SessionIdentity(provider: provider, profileID: "sample", sessionID: session), itemID: item)
+        let origin = try SourceOrigin(adapterID: "sample", adapterVersion: "1", agentVersion: "sample",
+            interface: interface, provenance: .live, canonicalization: .exclusiveAuthority)
+        let metadata = try SourceRecordMetadata(identity: identity, contentType: type, contentTime: time,
+            observedAt: time, protectedMetadata: ProtectedPayloadReference(), origin: origin)
+        return try SourceRecord(metadata: metadata, revision: ContentRevision(keyedDigest: Data(SHA256Like.digest(item))),
+            segments: [SourceSegment(id: "body", utf8: bytes)])
+    }
+
+    /// Analyzed Codex content without detections, for the empty-inventory overview.
+    static func quietSnapshot() throws -> InventorySnapshot {
+        var ledger = InventoryLedger()
+        let now = Date()
+        for (index, type) in [ContentType.userPrompt, .toolOutput, .finalResponse].enumerated() {
+            _ = try ledger.ingest(SourceAnalysis(source: record(.codex, "q1", "q1-\(index)", type, .standaloneCLI,
+                at: now.addingTimeInterval(-Double(600 - index * 60))), detectorVersion: "sample", detections: []))
+        }
+        return ledger.snapshot
+    }
+
     static func snapshot() throws -> InventorySnapshot {
         var ledger = InventoryLedger()
         let now = Date()
         let day: TimeInterval = 86_400
-        func record(_ provider: AgentProvider, _ session: String, _ item: String, _ type: ContentType,
-                    _ interface: AgentInterface, at time: Date) throws -> SourceRecord {
-            let bytes = Data("sample \(item)".utf8)
-            let identity = try SourceIdentity(session: SessionIdentity(provider: provider, profileID: "sample", sessionID: session), itemID: item)
-            let origin = try SourceOrigin(adapterID: "sample", adapterVersion: "1", agentVersion: "sample",
-                interface: interface, provenance: .live, canonicalization: .exclusiveAuthority)
-            let metadata = try SourceRecordMetadata(identity: identity, contentType: type, contentTime: time,
-                observedAt: time, protectedMetadata: ProtectedPayloadReference(), origin: origin)
-            return try SourceRecord(metadata: metadata, revision: ContentRevision(keyedDigest: Data(SHA256Like.digest(item))),
-                segments: [SourceSegment(id: "body", utf8: bytes)])
-        }
         @discardableResult
         func add(_ value: UInt8, rule: String, _ category: SecretCategory, _ signal: SignalStrength,
                  _ provider: AgentProvider, _ session: String, _ item: String, _ type: ContentType = .toolOutput,
@@ -754,6 +947,47 @@ private enum DemoInventory {
         _ = try ledger.removeContent(for: oldAWS)
         try add(5, rule: "aws-access-token", .apiKey, .strong, .codex, "s12", "s12again", .toolOutput, .t3, ago: day + 3600)
         return ledger.snapshot
+    }
+
+    @MainActor static func configureSetup(_ model: AppModel, step: OnboardingStep) {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let codex = AgentProfileDraft(provider: .codex, profileID: "sample", executablePath: home + "/.local/bin/codex",
+                                      homePath: home + "/.codex", version: CodexAdapter.validatedAgentVersion,
+                                      installed: step >= .connect)
+        let claude = AgentProfileDraft(provider: .claudeCode, profileID: "sample", executablePath: home + "/.local/bin/claude",
+                                       homePath: home + "/.claude", interface: .desktopCode, version: "2.1.295")
+        model.agentProfiles = [.codex: codex, .claudeCode: claude]
+        let codexState: AgentSetupState = switch step {
+        case .welcome, .howItWorks, .chooseAgents: .detected
+        case .connect: .installedUnverified
+        case .preferences, .ready: .connected
+        }
+        model.agentSetupStates = [.codex: codexState, .claudeCode: .unsupported]
+        model.agentSetupMessages = [.claudeCode: claude.unsupportedMessage]
+        model.verificationPrompts = step == .connect ? [.codex: SetupVerificationPrompt.make()] : [:]
+        model.notificationState = .notRequested
+        model.updateCoverage(.complete)
+    }
+
+    /// Plays a connection in sample mode: hooks are added, then the test prompt "arrives" a few
+    /// seconds later. Nothing is written to any agent profile.
+    @MainActor static func simulateConnection(_ model: AppModel, providers: [AgentProvider]) {
+        Task { @MainActor [weak model] in
+            for provider in providers {
+                guard let model else { return }
+                model.agentSetupBusy.insert(provider)
+                try? await Task.sleep(for: .seconds(1.4))
+                model.agentProfiles[provider]?.installed = true
+                model.agentSetupStates[provider] = .installedUnverified
+                model.verificationPrompts[provider] = SetupVerificationPrompt.make()
+                model.agentSetupBusy.remove(provider)
+            }
+            try? await Task.sleep(for: .seconds(4))
+            for provider in providers {
+                model?.verificationPrompts.removeValue(forKey: provider)
+                model?.agentSetupStates[provider] = .connected
+            }
+        }
     }
 
     @MainActor static func configure(_ model: AppModel) {

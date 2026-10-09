@@ -14,6 +14,15 @@ private func codexConfiguration(version: String = "0.161.0") throws -> CodexHook
 }
 @Suite("Codex owned hook setup")
 struct CodexSetupTests {
+    @Test func verificationPromptIsOneUseBoundedAndSafeAsAShellArgument() {
+        let first = SetupVerificationPrompt.make(), second = SetupVerificationPrompt.make()
+        #expect(first != second)
+        #expect(first.contains(SetupVerificationPrompt.marker))
+        #expect(first.contains("Do not read files, run commands, or use tools."))
+        // The app shows this prompt inside a single-quoted command, and the hook must receive it unchanged.
+        #expect(!first.contains(where: { "'\"`$\\\n".contains($0) }))
+    }
+
     @Test func installRepairAndRemovePreserveUnrelatedHooksAndSettingsExactly() throws {
         let config = try codexConfiguration()
         let root: [String: Any] = ["unrelated": ["retained": 42],

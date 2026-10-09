@@ -29,53 +29,78 @@ extension Color {
         self.init(.sRGB, red: Double((hex >> 16) & 0xff) / 255, green: Double((hex >> 8) & 0xff) / 255,
                   blue: Double(hex & 0xff) / 255, opacity: opacity)
     }
+
+    /// Follows the appearance it's drawn in. Only light mode is designed; dark values are derived
+    /// from it to keep the same contrast, on neutrals tinted like the light ones.
+    init(light: Color, dark: Color) {
+        self.init(nsColor: NSColor(name: nil) { appearance in
+            NSColor(appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : light)
+        })
+    }
+
+    init(hex: UInt32, dark: UInt32) {
+        self.init(light: Color(hex: hex), dark: Color(hex: dark))
+    }
+
+    /// The same hue and chroma at another lightness in dark mode, for tinted fills and text.
+    init(oklch l: Double, _ c: Double, _ h: Double, dark: Double) {
+        self.init(light: Color(oklch: l, c, h), dark: Color(oklch: dark, c, h))
+    }
 }
 
 enum Palette {
-    static let ink = Color(hex: 0x1c1c1e)
-    static let ink2 = Color(hex: 0x3d3d42)
-    static let secondary = Color(hex: 0x5f5f65)
-    static let tertiary = Color(hex: 0x6e6e73)
-    static let quaternary = Color(hex: 0x8e8e93)
-    static let faint = Color(hex: 0xc7c7cc)
-    static let ring = Color(hex: 0xaeaeb2)
-    static let sidebar = Color(hex: 0xf6f6f4)
-    static let separator = Color(hex: 0xe4e4e1)
-    static let hairline = Color(hex: 0xefefed)
-    static let well = Color(hex: 0xf3f3f1)
-    static let quiet = Color(hex: 0xf4f4f2)
-    static let chip = Color(hex: 0xececea)
-    static let link = Color(hex: 0x2f5fb3)
-    static let accent = Color(oklch: 0.5, 0.13, 255)
-    static let accentHover = Color(oklch: 0.46, 0.13, 255)
-    static let focus = Color(oklch: 0.6, 0.13, 255)
-    static let selection = Color(oklch: 0.93, 0.028, 255)
-    static let selectedRow = Color(oklch: 0.95, 0.02, 255)
+    static let ink = Color(hex: 0x1c1c1e, dark: 0xe9e9ec)
+    static let ink2 = Color(hex: 0x3d3d42, dark: 0xc7c7cc)
+    static let secondary = Color(hex: 0x5f5f65, dark: 0xaeaeb2)
+    static let tertiary = Color(hex: 0x6e6e73, dark: 0x98989d)
+    static let quaternary = Color(hex: 0x8e8e93, dark: 0x7c7c80)
+    static let faint = Color(hex: 0xc7c7cc, dark: 0x48484a)
+    static let ring = Color(hex: 0xaeaeb2, dark: 0x636366)
+    /// The content pane. Cards on it are `surface`, a step lighter in dark mode.
+    static let background = Color(hex: 0xffffff, dark: 0x151816)
+    static let surface = Color(hex: 0xffffff, dark: 0x1d201e)
+    static let sidebar = Color(hex: 0xf4f6f5, dark: 0x191d1b)
+    static let separator = Color(hex: 0xe1e6e3, dark: 0x2e312f)
+    static let hairline = Color(hex: 0xeceeed, dark: 0x242725)
+    static let well = Color(hex: 0xf1f4f2, dark: 0x1f2321)
+    static let quiet = Color(hex: 0xf2f5f3, dark: 0x1e2120)
+    static let chip = Color(hex: 0xe9edeb, dark: 0x292c2a)
+    /// Black in light mode, white in dark; give it an opacity for hover fills, wells, and rings.
+    static let shade = Color(light: .black, dark: .white)
+    /// Dark mode drops shadows; edges come from rings instead.
+    static let shadow = Color(light: .black, dark: .clear)
+    static let link = Color(oklch: 0.47, 0.06, 152, dark: 0.76)
+    static let accent = Color(hex: 0x222624, dark: 0xe1e6e3)
+    static let accentHover = Color(hex: 0x363b38, dark: 0xcdd3cf)
+    static let onAccent = Color(hex: 0xffffff, dark: 0x151816)
+    static let focus = Color(oklch: 0.62, 0.07, 150, dark: 0.66)
+    static let selection = Color(oklch: 0.95, 0.018, 150, dark: 0.32)
+    static let selectedRow = Color(oklch: 0.965, 0.014, 150, dark: 0.29)
     static let amber = Color(oklch: 0.74, 0.14, 70)
-    static let amberText = Color(oklch: 0.48, 0.1, 62)
-    static let amberSoft = Color(oklch: 0.95, 0.04, 80)
-    static let amberSoftText = Color(oklch: 0.42, 0.09, 62)
-    static let green = Color(oklch: 0.62, 0.14, 150)
-    static let switchOn = Color(oklch: 0.64, 0.13, 155)
-    static let red = Color(oklch: 0.5, 0.16, 25)
-    static let redDot = Color(oklch: 0.55, 0.17, 25)
-    static let readCell = Color(oklch: 0.55, 0.03, 255)
-    static let highlight = Color(oklch: 0.92, 0.07, 85)
+    static let amberText = Color(light: Color(oklch: 0.48, 0.1, 62), dark: Color(oklch: 0.8, 0.11, 72))
+    static let amberSoft = Color(light: Color(oklch: 0.95, 0.04, 80), dark: Color(oklch: 0.33, 0.05, 72))
+    static let amberSoftText = Color(light: Color(oklch: 0.42, 0.09, 62), dark: Color(oklch: 0.85, 0.09, 78))
+    static let green = Color(oklch: 0.66, 0.07, 150, dark: 0.68)
+    static let switchOn = Color(oklch: 0.66, 0.07, 150, dark: 0.6)
+    static let red = Color(light: Color(oklch: 0.5, 0.16, 25), dark: Color(oklch: 0.7, 0.15, 25))
+    /// Destructive buttons keep white text, so their fill stays dark enough for it.
+    static let destructive = Color(oklch: 0.5, 0.16, 25, dark: 0.58)
+    static let redDot = Color(oklch: 0.55, 0.17, 25, dark: 0.66)
+    static let readCell = Color(oklch: 0.56, 0.03, 150, dark: 0.6)
+    static let highlight = Color(oklch: 0.92, 0.07, 85, dark: 0.42)
     static let mono = Font.system(size: 11, design: .monospaced)
 }
 
-/// Inventory labels pick one of seven hues so masked values of one type stay distinguishable.
+/// Inventory tiles are neutral; acknowledged values recede.
 struct TileColors {
     let background: Color
     let foreground: Color
 
-    static let hues: [Double] = [250, 160, 60, 20, 300, 200, 110]
+    static let neutral = TileColors(background: Color(hex: 0xffffff, dark: 0x252927), foreground: Palette.ink2)
     static let muted = TileColors(background: Palette.chip, foreground: Palette.tertiary)
 
     static func forEntry(_ entry: InventoryEntry) -> TileColors {
-        if entry.acknowledgement != nil { return muted }
-        let hue = hues[(entry.label?.index ?? 0) % hues.count]
-        return TileColors(background: Color(oklch: 0.92, 0.045, hue), foreground: Color(oklch: 0.4, 0.09, hue))
+        entry.acknowledgement != nil ? muted : neutral
     }
 }
 
@@ -91,6 +116,7 @@ struct ValueTile: View {
             .foregroundStyle(colors.foreground)
             .frame(width: size, height: size)
             .background(colors.background, in: RoundedRectangle(cornerRadius: size / 4, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: size / 4, style: .continuous).strokeBorder(Palette.shade.opacity(0.06), lineWidth: 1))
             .accessibilityHidden(true)
     }
 }
@@ -117,7 +143,7 @@ struct SignalBars: View {
         HStack(alignment: .bottom, spacing: 2) {
             ForEach(Array(heights.enumerated()), id: \.offset) { index, height in
                 RoundedRectangle(cornerRadius: 1)
-                    .fill(index < (strong ? 3 : 1) ? Palette.ink2 : Color(hex: 0xd6d6d3))
+                    .fill(index < (strong ? 3 : 1) ? Palette.ink2 : Color(hex: 0xd3d9d6, dark: 0x4a4e4c))
                     .frame(width: 3, height: height)
             }
         }
@@ -125,10 +151,47 @@ struct SignalBars: View {
     }
 }
 
+/// Focus rings follow the last input, like the web's `:focus-visible`. With Keyboard navigation on,
+/// macOS rings a sheet's first control even when a click opened it; a click hides rings until a key
+/// moves focus again.
+@MainActor @Observable
+final class InputModality {
+    static let shared = InputModality()
+    private(set) var keyboard = false
+    @ObservationIgnored private var monitor: Any?
+
+    /// Tab and the arrow keys.
+    private static let focusKeys: Set<UInt16> = [48, 123, 124, 125, 126]
+
+    private init() {
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown]) { event in
+            let keyboard = event.type == .keyDown
+            if keyboard && (!Self.focusKeys.contains(event.keyCode) || event.modifierFlags.contains(.command)) { return event }
+            let enteredKeyboard = MainActor.assumeIsolated {
+                let modality = InputModality.shared
+                guard modality.keyboard != keyboard else { return false }
+                modality.keyboard = keyboard
+                return keyboard
+            }
+            guard enteredKeyboard else { return event }
+            // Rings are drawn as focus moves, so the key waits until SwiftUI has enabled them.
+            nonisolated(unsafe) let held = event
+            DispatchQueue.main.async { NSApp.postEvent(held, atStart: true) }
+            return nil
+        }
+    }
+}
+
+private struct FocusVisible: ViewModifier {
+    func body(content: Content) -> some View {
+        content.focusEffectDisabled(!InputModality.shared.keyboard)
+    }
+}
+
 /// The design shows hover feedback on most controls; macOS buttons need it added explicitly.
 struct HoverFill: ViewModifier {
     var normal: Color = .clear
-    var hover: Color = Color.black.opacity(0.05)
+    var hover: Color = Palette.shade.opacity(0.05)
     var radius: CGFloat = 7
     @State private var hovering = false
 
@@ -140,13 +203,18 @@ struct HoverFill: ViewModifier {
 }
 
 extension View {
-    func hoverFill(_ normal: Color = .clear, hover: Color = Color.black.opacity(0.05), radius: CGFloat = 7) -> some View {
+    /// Shows focus rings only after keyboard use; apply at each window, sheet, and popover root.
+    func focusVisible() -> some View {
+        modifier(FocusVisible())
+    }
+
+    func hoverFill(_ normal: Color = .clear, hover: Color = Palette.shade.opacity(0.05), radius: CGFloat = 7) -> some View {
         modifier(HoverFill(normal: normal, hover: hover, radius: radius))
     }
 
     func card(radius: CGFloat = 12, ring: Double = 0.08) -> some View {
-        background(Color.white, in: RoundedRectangle(cornerRadius: radius, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous).strokeBorder(Color.black.opacity(ring), lineWidth: 1))
+        background(Palette.surface, in: RoundedRectangle(cornerRadius: radius, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous).strokeBorder(Palette.shade.opacity(ring), lineWidth: 1))
     }
 }
 
@@ -162,18 +230,19 @@ struct PressScale: ViewModifier {
 }
 
 struct FilledButtonStyle: ButtonStyle {
-    var color: Color = Palette.accent
+    var destructive = false
     var height: CGFloat = 34
     @Environment(\.isEnabled) private var enabled
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: height > 30 ? 13 : 12.5, weight: .medium))
-            .foregroundStyle(.white)
+            .foregroundStyle(destructive ? .white : Palette.onAccent)
             .padding(.horizontal, height > 30 ? 16 : 12)
             .frame(height: height)
-            .background(color.opacity(enabled ? 1 : 0.45), in: RoundedRectangle(cornerRadius: height > 30 ? 8 : 6, style: .continuous))
-            .shadow(color: .black.opacity(0.14), radius: 1, y: 1)
+            .background((destructive ? Palette.destructive : Palette.accent).opacity(enabled ? 1 : 0.45),
+                        in: RoundedRectangle(cornerRadius: height > 30 ? 8 : 6, style: .continuous))
+            .shadow(color: Palette.shadow.opacity(0.14), radius: 1, y: 1)
             .contentShape(Rectangle())
             .modifier(PressScale(pressed: configuration.isPressed))
     }
@@ -189,10 +258,10 @@ struct OutlineButtonStyle: ButtonStyle {
             .foregroundStyle(Palette.ink.opacity(enabled ? 1 : 0.4))
             .padding(.horizontal, height > 30 ? 16 : 11)
             .frame(height: height)
-            .background(configuration.isPressed ? Color(hex: 0xf4f4f2) : .white,
+            .background(configuration.isPressed ? Color(hex: 0xf2f5f3, dark: 0x2e312f) : Palette.surface,
                         in: RoundedRectangle(cornerRadius: height > 30 ? 8 : 6, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: height > 30 ? 8 : 6, style: .continuous)
-                .strokeBorder(Color.black.opacity(0.14), lineWidth: 1))
+                .strokeBorder(Color(hex: 0xced4d1, dark: 0x3a3e3c), lineWidth: 1))
             .contentShape(Rectangle())
             .modifier(PressScale(pressed: configuration.isPressed))
     }
@@ -211,7 +280,7 @@ struct QuietButtonStyle: ButtonStyle {
             .padding(.horizontal, horizontalPadding)
             .frame(height: height)
             .contentShape(Rectangle())
-            .hoverFill(configuration.isPressed ? Color.black.opacity(0.08) : .clear, hover: Color.black.opacity(0.06))
+            .hoverFill(configuration.isPressed ? Palette.shade.opacity(0.08) : .clear, hover: Palette.shade.opacity(0.06))
     }
 }
 
@@ -239,8 +308,9 @@ struct ToastView: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 9)
             .frame(maxWidth: 560)
-            .background(Color(hex: 0x2c2c2e), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .shadow(color: .black.opacity(0.2), radius: 10, y: 6)
+            .background(Color(hex: 0x2c2c2e, dark: 0x3a3e3c), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Palette.shade.opacity(0.08), lineWidth: 1))
+            .shadow(color: Palette.shadow.opacity(0.2), radius: 10, y: 6)
             .accessibilityAddTraits(.updatesFrequently)
     }
 }

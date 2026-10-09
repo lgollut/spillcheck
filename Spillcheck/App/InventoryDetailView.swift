@@ -74,8 +74,8 @@ struct InventoryDetailView: View {
                 Button { moreOpen.toggle() } label: {
                     Image(systemName: "ellipsis").font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.ink2)
                         .frame(width: 30, height: 28)
-                        .background(Color.white, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(Color(hex: 0xdcdcd8)))
+                        .background(Palette.surface, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(Color(hex: 0xd8dedb, dark: 0x3a3e3c)))
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -96,7 +96,7 @@ struct InventoryDetailView: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(.horizontal, 10).padding(.vertical, 8)
                                 .contentShape(Rectangle())
-                                .hoverFill(hover: Color(hex: 0xf4f4f2), radius: 6)
+                                .hoverFill(hover: Color(light: Color(hex: 0xf2f5f3), dark: .white.opacity(0.08)), radius: 6)
                             }
                             .buttonStyle(.plain)
                             .accessibilityIdentifier(action.identifier)
@@ -104,7 +104,7 @@ struct InventoryDetailView: View {
                     }
                     .padding(5)
                     .frame(width: 290)
-                    .environment(\.colorScheme, .light)
+                    .focusVisible()
                 }
                 .padding(.top, -2)
             }
@@ -142,7 +142,7 @@ struct InventoryDetailView: View {
                 .font(.system(size: 12.5)).foregroundStyle(Palette.tertiary)
                 .padding(.horizontal, 16).padding(.vertical, 14)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color(hex: 0xd6d6d2), style: StrokeStyle(lineWidth: 1.5, dash: [4, 3])))
+                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color(hex: 0xd3d9d6, dark: 0x404341), style: StrokeStyle(lineWidth: 1.5, dash: [4, 3])))
         } else {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 12) {
@@ -151,10 +151,10 @@ struct InventoryDetailView: View {
                 }
                 .padding(.leading, 18).padding(.trailing, 14)
                 .frame(minHeight: 64)
-                .background(quiet ? Palette.quiet : Color(oklch: 0.975, 0.02, 80), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .background(quiet ? Palette.quiet : Color(light: Color(oklch: 0.975, 0.02, 80), dark: Color(hex: 0x1d201e)), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(quiet ? Color.black.opacity(0.05) : Color(oklch: 0.9, 0.045, 80), lineWidth: 1))
-                .shadow(color: quiet ? .clear : Color(oklch: 0.6, 0.1, 70, opacity: 0.25), radius: 10, y: 6)
+                    .strokeBorder(quiet ? Palette.shade.opacity(0.05) : Color(light: Color(oklch: 0.9, 0.045, 80), dark: Color(oklch: 0.5, 0.08, 72)), lineWidth: 1))
+                .shadow(color: quiet ? .clear : Color(light: Color(oklch: 0.6, 0.1, 70, opacity: 0.25), dark: .clear), radius: 10, y: 6)
                 if summary.unlocated {
                     Text("The detector couldn’t locate the exact range, so there’s no value to reveal. Only the source reference is kept.")
                         .font(.system(size: 12)).foregroundStyle(Palette.tertiary).padding(.horizontal, 2)
@@ -257,7 +257,7 @@ struct InventoryDetailView: View {
                         .font(.system(size: 12)).foregroundStyle(Palette.secondary).lineSpacing(2)
                 }
                 .padding(.horizontal, 16).padding(.vertical, 14)
-                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color(hex: 0xd4d4d0), style: StrokeStyle(lineWidth: 1.5, dash: [4, 3])))
+                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color(hex: 0xd1d7d4, dark: 0x404341), style: StrokeStyle(lineWidth: 1.5, dash: [4, 3])))
             } else {
                 ForEach(conversationGroups, id: \.conversation.id) { group in
                     ConversationCard(model: model, summary: summary, conversation: group.conversation,
@@ -316,7 +316,7 @@ private struct ConversationCard: View {
             }
             .padding(.horizontal, 14)
             .frame(height: 36)
-            .background(Color(hex: 0xfafaf9))
+            .background(Color(hex: 0xf9fbfa, dark: 0x1f2321))
             .overlay(alignment: .bottom) { Rectangle().fill(Palette.hairline).frame(height: 1) }
             ForEach(Array(occurrences.enumerated()), id: \.element.id) { index, occurrence in
                 OccurrenceRow(model: model, summary: summary, occurrence: occurrence,
@@ -337,12 +337,12 @@ struct SourceStyle {
 
     init(_ type: ContentType?) {
         switch type {
-        case .toolOutput: (glyph, label, background, foreground) = (">_", "Tool output", Color(oklch: 0.94, 0.02, 255), Color(oklch: 0.4, 0.07, 255))
-        case .toolError: (glyph, label, background, foreground) = ("!", "Tool error", Color(oklch: 0.94, 0.035, 25), Color(oklch: 0.45, 0.13, 25))
-        case .userPrompt: (glyph, label, background, foreground) = ("“", "User message", Color(oklch: 0.94, 0.03, 155), Color(oklch: 0.4, 0.08, 155))
+        case .toolOutput: (glyph, label, background, foreground) = (">_", "Tool output", Color(oklch: 0.94, 0.02, 255, dark: 0.32), Color(oklch: 0.4, 0.07, 255, dark: 0.8))
+        case .toolError: (glyph, label, background, foreground) = ("!", "Tool error", Color(oklch: 0.94, 0.035, 25, dark: 0.32), Color(oklch: 0.45, 0.13, 25, dark: 0.8))
+        case .userPrompt: (glyph, label, background, foreground) = ("“", "User message", Color(oklch: 0.94, 0.022, 150, dark: 0.32), Color(oklch: 0.4, 0.05, 152, dark: 0.8))
         case .intermediateResponse, .finalResponse:
-            (glyph, label, background, foreground) = ("✦", "Model response", Color(oklch: 0.94, 0.03, 300), Color(oklch: 0.42, 0.09, 300))
-        case nil: (glyph, label, background, foreground) = ("•", "Appearance", Color(hex: 0xf0f0ee), Palette.ink2)
+            (glyph, label, background, foreground) = ("✦", "Model response", Color(oklch: 0.94, 0.03, 300, dark: 0.32), Color(oklch: 0.42, 0.09, 300, dark: 0.8))
+        case nil: (glyph, label, background, foreground) = ("•", "Appearance", Color(hex: 0xeef1ef, dark: 0x292c2a), Palette.ink2)
         }
     }
 }
@@ -379,15 +379,15 @@ private struct OccurrenceRow: View {
         }
         .background(alignment: .topLeading) {
             if hasRail {
-                Rectangle().fill(Color(hex: 0xe2e2df)).frame(width: 1)
+                Rectangle().fill(Color(hex: 0xdfe4e1, dark: 0x3a3e3c)).frame(width: 1)
                     .padding(.top, isFirst ? 26 : 0)
                     .frame(maxHeight: isLast ? 26 : .infinity, alignment: .top)
                     .padding(.leading, 27)
             }
         }
-        .background(open ? Color(hex: 0xfbfbfa) : .white)
+        .background(open ? Color(hex: 0xfafbfa, dark: 0x1f2321) : Palette.surface)
         .overlay(alignment: .bottom) {
-            if !isLast { Rectangle().fill(Color(hex: 0xf0f0ee)).frame(height: 1).padding(.leading, 54) }
+            if !isLast { Rectangle().fill(Color(hex: 0xeef1ef, dark: 0x242725)).frame(height: 1).padding(.leading, 54) }
         }
     }
 
@@ -398,7 +398,7 @@ private struct OccurrenceRow: View {
                 .foregroundStyle(style.foreground)
                 .frame(width: 28, height: 28)
                 .background(style.background, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .background(open ? Color(hex: 0xfbfbfa) : .white, in: RoundedRectangle(cornerRadius: 10).inset(by: -3))
+                .background(open ? Color(hex: 0xfafbfa, dark: 0x1f2321) : Palette.surface, in: RoundedRectangle(cornerRadius: 10).inset(by: -3))
                 .accessibilityHidden(true)
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(style.label).font(.system(size: 13, weight: .medium))
@@ -417,10 +417,10 @@ private struct OccurrenceRow: View {
             } else if let review = occurrence.review, review != .unreviewed {
                 Text(review == .confirmedSecret ? "Secret" : "Not a secret")
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(review == .confirmedSecret ? .white : Palette.ink2)
+                    .foregroundStyle(review == .confirmedSecret ? Palette.onAccent : Palette.ink2)
                     .padding(.horizontal, 7).frame(height: 18)
-                    .background(review == .confirmedSecret ? Color(hex: 0x2c2c2e) : .white, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous).strokeBorder(review == .confirmedSecret ? .clear : Color(hex: 0xd0d0cc)))
+                    .background(review == .confirmedSecret ? Color(hex: 0x2c2c2e, dark: 0xe1e6e3) : Palette.surface, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous).strokeBorder(review == .confirmedSecret ? .clear : Color(hex: 0xced4d1, dark: 0x3a3e3c)))
             }
             Image(systemName: "chevron.down")
                 .font(.system(size: 9, weight: .bold))
@@ -431,7 +431,7 @@ private struct OccurrenceRow: View {
         .padding(.leading, 14).padding(.trailing, 10)
         .frame(minHeight: 52)
         .contentShape(Rectangle())
-        .hoverFill(.clear, hover: Color.black.opacity(0.02), radius: 0)
+        .hoverFill(.clear, hover: Palette.shade.opacity(0.02), radius: 0)
     }
 }
 
@@ -648,7 +648,7 @@ private struct ReviewToggle: View {
                 option("Not a secret", .falsePositive)
             }
             .padding(2)
-            .background(Color.black.opacity(0.05), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .background(Palette.shade.opacity(0.05), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
             if review == .unreviewed {
                 Text("Unreviewed").font(.system(size: 11.5)).foregroundStyle(Palette.amberText)
             }
@@ -663,11 +663,11 @@ private struct ReviewToggle: View {
         return Button { onChange(selected ? .unreviewed : value) } label: {
             Text(title)
                 .font(.system(size: 11.5, weight: .medium))
-                .foregroundStyle(selected ? (value == .confirmedSecret ? .white : Palette.ink) : Palette.tertiary)
+                .foregroundStyle(selected ? (value == .confirmedSecret ? Palette.onAccent : Palette.ink) : Palette.tertiary)
                 .padding(.horizontal, 9).frame(height: 22)
-                .background(selected ? (value == .confirmedSecret ? Color(hex: 0x2c2c2e) : .white) : .clear,
+                .background(selected ? (value == .confirmedSecret ? Color(hex: 0x2c2c2e, dark: 0xe1e6e3) : Color(hex: 0xffffff, dark: 0x3a3e3c)) : .clear,
                             in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-                .shadow(color: selected && value == .falsePositive ? .black.opacity(0.1) : .clear, radius: 1, y: 1)
+                .shadow(color: selected && value == .falsePositive ? Palette.shadow.opacity(0.1) : .clear, radius: 1, y: 1)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -731,7 +731,7 @@ private struct WhatToDoFooter: View {
                     }
                     .buttonStyle(OutlineButtonStyle())
                     .disabled(disabled || summary.reviewable.isEmpty)
-                    Button("Mark as handled…") { sheet = .acknowledge }
+                    Button("Mark as handled") { sheet = .acknowledge }
                         .buttonStyle(FilledButtonStyle())
                         .disabled(disabled)
                         .help("Confirm you rotated or revoked it")
@@ -742,9 +742,9 @@ private struct WhatToDoFooter: View {
         }
         .padding(.horizontal, 32)
         .padding(.top, 14).padding(.bottom, 16)
-        .background(copy.quiet ? Color(hex: 0xf8f8f6) : .white)
-        .overlay(alignment: .top) { Rectangle().fill(Color(hex: 0xe6e6e3)).frame(height: 1) }
-        .shadow(color: .black.opacity(0.035), radius: 8, y: -6)
+        .background(copy.quiet ? Color(hex: 0xf6f8f7, dark: 0x171a19) : Palette.background)
+        .overlay(alignment: .top) { Rectangle().fill(Color(hex: 0xe3e8e5, dark: 0x2e312f)).frame(height: 1) }
+        .shadow(color: Palette.shadow.opacity(0.035), radius: 8, y: -6)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("What to do")
     }
@@ -838,7 +838,7 @@ private struct ValueActionSheet: View {
                         .keyboardShortcut(.cancelAction)
                 }
                 Button(confirmTitle, action: confirm)
-                    .buttonStyle(FilledButtonStyle(color: kind == .remove || kind == .forget ? Palette.red : Palette.accent, height: 26))
+                    .buttonStyle(FilledButtonStyle(destructive: kind == .remove || kind == .forget, height: 26))
                     // The resume sheet only informs, so Escape closes it too.
                     .keyboardShortcut(resumeOccurrence == nil ? .defaultAction : .cancelAction)
             }
@@ -846,8 +846,8 @@ private struct ValueActionSheet: View {
         }
         .padding(.horizontal, 22).padding(.top, 20).padding(.bottom, 18)
         .frame(width: 440)
-        .background(Color.white)
-        .environment(\.colorScheme, .light)
+        .background(Palette.surface)
+        .focusVisible()
     }
 
     private var confirmTitle: String {
@@ -884,8 +884,8 @@ private struct ValueActionSheet: View {
         return Button { acknowledgement = value } label: {
             HStack(alignment: .top, spacing: 9) {
                 Circle()
-                    .strokeBorder(selected ? Palette.accent : Color(hex: 0xb8b8bc), lineWidth: selected ? 4.5 : 1.5)
-                    .background(Circle().fill(.white))
+                    .strokeBorder(selected ? Palette.accent : Color(hex: 0xb8b8bc, dark: 0x636366), lineWidth: selected ? 4.5 : 1.5)
+                    .background(Circle().fill(Palette.surface))
                     .frame(width: 14, height: 14)
                     .padding(.top, 1)
                 VStack(alignment: .leading, spacing: 2) {
@@ -896,9 +896,9 @@ private struct ValueActionSheet: View {
             }
             .padding(.horizontal, 11).padding(.vertical, 10)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background(selected ? Color(oklch: 0.97, 0.012, 255) : .white, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .background(selected ? Color(oklch: 0.975, 0.01, 150, dark: 0.27) : Palette.surface, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .strokeBorder(selected ? Color(oklch: 0.75, 0.07, 255) : Color(hex: 0xe3e3e0)))
+                .strokeBorder(selected ? Color(oklch: 0.78, 0.04, 150, dark: 0.45) : Color(hex: 0xe0e5e2, dark: 0x2e312f)))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -907,9 +907,9 @@ private struct ValueActionSheet: View {
 
     private func markIcon(_ mark: Mark) -> some View {
         let (symbol, background, foreground): (String, Color, Color) = switch mark {
-        case .removed: ("xmark", Color(oklch: 0.94, 0.035, 25), Palette.red)
-        case .kept: ("checkmark", Color(oklch: 0.94, 0.035, 155), Color(oklch: 0.42, 0.1, 155))
-        case .caution: ("exclamationmark", Color(oklch: 0.94, 0.05, 80), Palette.amberText)
+        case .removed: ("xmark", Color(oklch: 0.94, 0.035, 25, dark: 0.32), Palette.red)
+        case .kept: ("checkmark", Color(oklch: 0.94, 0.022, 150, dark: 0.32), Color(oklch: 0.42, 0.06, 152, dark: 0.8))
+        case .caution: ("exclamationmark", Color(oklch: 0.94, 0.05, 80, dark: 0.33), Palette.amberText)
         case .info: ("arrow.right", Palette.chip, Palette.ink2)
         }
         return Image(systemName: symbol)
@@ -934,7 +934,7 @@ private struct ValueActionSheet: View {
             .font(.system(size: 12.5, design: .monospaced))
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 11).padding(.vertical, 9)
-            .background(Color(hex: 0xf5f5f3), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .background(Color(hex: 0xf5f5f3, dark: 0x262a28), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
             if !revealed {
                 HStack(spacing: 10) {
                     Text(model.viewingBusy ? "Waiting for Touch ID…" : "The conversation ID is protected.")

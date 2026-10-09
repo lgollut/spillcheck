@@ -76,6 +76,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         default: break
         }
         if let query = value("--demo-search") { model.searchText = query }
+        switch value("--demo-appearance") {
+        case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
+        case "light": NSApp.appearance = NSAppearance(named: .aqua)
+        default: break
+        }
         switch value("--demo-sheet") {
         case "acknowledge": model.detailSheet = .acknowledge
         case "remove": model.detailSheet = .remove
@@ -153,8 +158,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             toolbar.showsBaselineSeparator = false
             newWindow.toolbar = toolbar
             newWindow.toolbarStyle = .unified
-            // The design is light-only for now; dark mode is still undecided.
-            newWindow.appearance = NSAppearance(named: .aqua)
             newWindow.isReleasedWhenClosed = false
             newWindow.delegate = self
             newWindow.contentMinSize = NSSize(width: 900, height: 560)

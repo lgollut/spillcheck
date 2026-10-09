@@ -90,7 +90,7 @@ struct CoverageView: View {
             Text(model.monitoringProven ? "\(plural(messages, "message")) analyzed · \(rangeText)" : "Analysis starts once an agent is verified")
                 .font(.system(size: 13)).foregroundStyle(Palette.secondary).monospacedDigit()
             if model.processing {
-                ProgressView().progressViewStyle(.linear).frame(maxWidth: 320).tint(Palette.accent).padding(.top, 8)
+                ProgressView().progressViewStyle(.linear).frame(maxWidth: 320).tint(Palette.green).padding(.top, 8)
             }
         }
     }
@@ -231,8 +231,8 @@ struct DayCell: View {
     var body: some View {
         switch kind {
         case .read: Rectangle().fill(Palette.readCell)
-        case .nothingSeen: Rectangle().strokeBorder(Color(hex: 0xbdbdb8), lineWidth: 1).background(Color.white)
-        case .notSetUp: Rectangle().fill(Color(hex: 0xe6e6e3))
+        case .nothingSeen: Rectangle().strokeBorder(Color(hex: 0xbbc2be, dark: 0x585c5a), lineWidth: 1).background(Palette.background)
+        case .notSetUp: Rectangle().fill(Color(hex: 0xe3e8e5, dark: 0x2e312f))
         }
     }
 }

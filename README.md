@@ -29,6 +29,9 @@ The app includes encrypted ingestion and inventory, a bundled local scanner,
 Codex and Claude collection, bounded catch-up, authenticated viewing, review,
 obsolete-value recognition, masked alerts, and owned hook setup/removal.
 
+See [Contributing](CONTRIBUTING.md) for PR checks and required changesets, and the
+[release guide](docs/RELEASING.md) for versioning and changelog publication.
+
 ## Use the development app
 
 After building, open the signed development app from the repository root:

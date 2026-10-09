@@ -1,0 +1,4 @@
+# actionlint 1.7.12 predates GitHub's hosted Xcode 27 Apple Silicon runner label.
+self-hosted-runner:
+  labels:
+    - xcode-27

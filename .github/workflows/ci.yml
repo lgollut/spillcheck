@@ -1,0 +1,187 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# A newer PR revision can replace its previous run. Every main commit must keep
+# its own run because a release merge can still need its tag after main advances.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('main-{0}', github.sha) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  XCODE_DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
+
+jobs:
+  metadata:
+    name: Changeset and release metadata
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      CHANGESETS_APP_CLIENT_ID: ${{ vars.CHANGESETS_APP_CLIENT_ID }}
+      CHANGESETS_APP_SLUG: ${{ vars.CHANGESETS_APP_SLUG }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Install release tooling
+        run: npm ci --ignore-scripts
+      # Fail before merge rather than in the post-merge release jobs. The changeset
+      # check and release scripts validate the slug format where they use it.
+      - name: Check public GitHub App configuration
+        run: |
+          for name in CHANGESETS_APP_CLIENT_ID CHANGESETS_APP_SLUG; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::Set the $name repository Actions variable."
+              exit 1
+            fi
+          done
+      - name: Validate changesets and generated release PRs
+        run: npm run changeset:check
+      - name: Validate app version metadata
+        run: npm run release:check
+      - name: Test release tooling
+        run: npm run test:release
+
+  core-tests:
+    name: Core tests
+    runs-on: xcode-27
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Select Xcode
+        run: |
+          sudo xcode-select --switch "$XCODE_DEVELOPER_DIR"
+          xcodebuild -version
+          swift --version
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .build/dependencies/scanner
+          key: scanner-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Dependencies/Scanner/dependencies.json') }}
+      - name: Install and verify pinned scanner
+        run: make scanner-dependencies
+      - name: Run Swift tests
+        run: |
+          export SPILLCHECK_TEST_PYTHON
+          SPILLCHECK_TEST_PYTHON="$(python3 -c 'import sys; print(sys.executable)')"
+          # Blocking process/socket probes have short deadlines. Isolate test
+          # cases from each other's load while retaining concurrency within them.
+          python3 scripts/prepare-scanner.py
+          swift test --no-parallel
+      - name: Record optional test scope
+        run: |
+          echo 'Signed app, live provider, GUI, and distribution acceptance checks remain separate from this provider-free CI run.' >> "$GITHUB_STEP_SUMMARY"
+
+  tooling-tests:
+    name: Tooling tests
+    runs-on: xcode-27
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Select Xcode
+        run: |
+          sudo xcode-select --switch "$XCODE_DEVELOPER_DIR"
+          xcodebuild -version
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Test scanner bundling, release policy, and vault-owner evidence
+        run: |
+          python3 Tests/Tooling/check-scanner-bundling.py
+          python3 Tests/Tooling/check-release-policy.py
+          python3 Tests/ProtectionSignedProbe/test_vault_owner_evidence.py
+      - name: Test the compiled hook helper
+        run: |
+          swift build --product spillcheck-hook
+          export SPILLCHECK_HOOK_TEST_EXECUTABLE
+          SPILLCHECK_HOOK_TEST_EXECUTABLE="$(swift build --show-bin-path)/spillcheck-hook"
+          python3 Tests/HookHelper/test_delivery.py
+
+  app-build:
+    name: App compilation
+    runs-on: xcode-27
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Select Xcode
+        run: |
+          sudo xcode-select --switch "$XCODE_DEVELOPER_DIR"
+          xcodebuild -version
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Install XcodeGen
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+        run: brew install xcodegen
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .build/dependencies/scanner
+          key: scanner-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Dependencies/Scanner/dependencies.json') }}
+      - name: Install and verify pinned scanner
+        run: make scanner-dependencies
+      - name: Generate the app project
+        run: xcodegen generate --spec project.yml
+      - name: Compile the unsigned Debug app
+        run: scripts/build-app.sh --configuration Debug --derived-data .build/ci-app CODE_SIGNING_ALLOWED=NO
+
+  # The main ruleset and scripts/github-release.mjs require this exact job name.
+  required-checks:
+    name: Required checks
+    if: always()
+    needs: [metadata, core-tests, tooling-tests, app-build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every validation job to succeed
+        env:
+          METADATA_RESULT: ${{ needs.metadata.result }}
+          CORE_RESULT: ${{ needs.core-tests.result }}
+          TOOLING_RESULT: ${{ needs.tooling-tests.result }}
+          APP_RESULT: ${{ needs.app-build.result }}
+        run: |
+          for result in "$METADATA_RESULT" "$CORE_RESULT" "$TOOLING_RESULT" "$APP_RESULT"; do
+            if [[ "$result" != success ]]; then
+              echo '::error::All changeset, metadata, test, and app compilation jobs must succeed.'
+              exit 1
+            fi
+          done
+
+  release-automation:
+    name: Release automation
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [required-checks]
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    uses: ./.github/workflows/release-pr.yml
+    with:
+      tested-sha: ${{ github.sha }}
+    secrets:
+      CHANGESETS_APP_PRIVATE_KEY: ${{ secrets.CHANGESETS_APP_PRIVATE_KEY }}

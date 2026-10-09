@@ -41,7 +41,8 @@ struct ClaudeSetupTests {
         for input in ["{broken", "[]", "{\"hooks\":false}", "{\"hooks\":{\"Stop\":\"wrong\"}}"] {
             #expect(throws:ClaudeSetupError.malformedSettings) { try config.editing(Data(input.utf8),action:.install) }
         }
-        #expect(throws:ClaudeSetupError.unsupportedVersion) { try configuration(version:"2.1.294").editing(nil,action:.install) }
+        #expect(try configuration(version:"2.1.295").editing(nil,action:.install) == config.editing(nil,action:.install))
+        #expect(throws:ClaudeSetupError.unsupportedVersion) { try configuration(version:"").editing(nil,action:.install) }
     }
 
     @Test func atomicFileInstallNeedsOneUseDurableSyntheticVerificationThenDetectsTampering() async throws {

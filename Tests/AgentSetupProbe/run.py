@@ -34,6 +34,7 @@ command = ["xcrun", "swiftc", "-parse-as-library", "-swift-version", "6", "-targ
            str(root / "Spillcheck/App/CoverageView.swift"),
            str(root / "Spillcheck/App/SettingsView.swift"),
            str(root / "Spillcheck/App/AgentSetupController.swift"),
+           str(root / "Spillcheck/App/CollectionConfiguration.swift"),
            str(root / "Tests/AgentSetupProbe/main.swift"),
            str(library), "-lsqlite3", "-framework", "Security", "-framework", "LocalAuthentication",
            "-o", str(output)]

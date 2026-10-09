@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "passed": false,
+  "unmetGate": "first-signed-worker",
+  "failureCategory": "RuntimeError",
+  "startingProducerVersion": "2.1.293",
+  "upgradedProducerVersion": "2.1.295",
+  "checks": {
+    "originalFreshCreatorCleanupPassed": true,
+    "ownedRegistrationRemoved": true,
+    "temporaryAuthenticationRemoved": true,
+    "ownedProcessGroupsStopped": true
+  },
+  "providerRuns": [],
+  "nativeSourceEvidence": {},
+  "result": {
+    "newVaultCleanupPassed": true
+  },
+  "ownerLifetimeSmokeOnly": false,
+  "signedCLIUpgradeAndRestartEstablished": false,
+  "genuineGUIOrT3ConcurrencyEstablished": false,
+  "requiredFormatFailureRestorationEstablished": false,
+  "reviewAndObsoleteStateRecoveryEstablished": false,
+  "actualHealthNotificationDeliveryEstablished": false,
+  "cleanupPending": true,
+  "diagnosticArtifactsRetained": true,
+  "ownedProtectionCleanupPending": false,
+  "measuredDate": "2026-10-09",
+  "controlledFailureExplanation": "Private DEBUG installer omitted the observed version required by the production draft eligibility guard; no provider run occurred."
+}

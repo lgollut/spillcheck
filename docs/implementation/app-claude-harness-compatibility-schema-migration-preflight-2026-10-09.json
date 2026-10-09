@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "recordedOn": "2026-10-09",
+  "passed": false,
+  "observationKind": "signed-schema-migration-preflight",
+  "configuredStartingProducerVersion": "2.1.293",
+  "configuredUpgradedProducerVersion": "2.1.295",
+  "configuredMigration": "encrypted-profile-schema-2-to-3",
+  "unmetGate": "existing-app-admission",
+  "unmetCheck": "existingSpillcheckProcessPreventsOwnedRun",
+  "existingSpillcheckProcessCount": 1,
+  "existingProcessBelongsToAcceptanceRun": false,
+  "existingProcessStoppedOrChanged": false,
+  "freshCreatorLaunched": false,
+  "signedCollectorLaunched": false,
+  "providerRuns": [],
+  "appBuildStarted": false,
+  "signedBundleChanged": false,
+  "protectionCreationAttempted": false,
+  "ownedProtectionCleanupPending": false,
+  "diagnosticArtifactsRetained": true,
+  "signedAppSchema2To3MigrationEstablished": false,
+  "publicationNotes": [
+    "The runner's fixed build mode was reviewed independently, and three constructed boundary checks passed. No genuine migration acceptance was exercised.",
+    "The admission guard found one already-running Spillcheck instance from a different checkout, with no disposable acceptance or store flags. The runner did not inspect its data or stop it.",
+    "The failed private report is preserved unchanged. Its generic missing-owner cleanup fields do not establish created or remaining protection keys; the run stopped before launching a creator.",
+    "The runner now reports the controlled admission check and distinguishes no creator launch from pending protection cleanup. Failed diagnostic artifacts remain retained.",
+    "The genuine schema migration gate remains open until the existing app is closed or a separate approved acceptance environment is available. The earlier passing signed Claude CLI upgrade and process-restart evidence remains unchanged.",
+    "No process IDs, executable or store paths, Keychain account IDs, private digests, tokens, authentication, or source content are published."
+  ]
+}

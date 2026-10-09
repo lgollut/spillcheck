@@ -1,0 +1,248 @@
+{
+  "actualProducerVersion": "0.161.0",
+  "actualReaderVersion": "0.161.0",
+  "cleanup": {
+    "disposableRootRemoved": true,
+    "ownedProcessGroupsStopped": true,
+    "temporaryAuthenticationRemoved": true
+  },
+  "createdThreadCount": 1,
+  "evidenceScope": {
+    "capturedBeforeFinalMalformedIDGuard": true,
+    "capturedBeforeOperationHealthContractExtension": true,
+    "collection": "post-producer-catch-up",
+    "collector": "production-CodexAppServerHistoryClient-and-CodexAdapter",
+    "configurationRoot": "<RUN_001>/home",
+    "executable": "<HOME>/.local/bin/codex",
+    "execution": "genuine-disposable-local-provider",
+    "genuineGuiSession": false,
+    "genuineT3Session": false,
+    "interface": "standalone-cli",
+    "nativeIdentifiersRedacted": true,
+    "nativeIdentity": "provider-issued-native-thread-and-item-identifiers",
+    "provider": "codex",
+    "runtime": "SwiftPM-acceptance-executable",
+    "signedAppAcceptance": false,
+    "sourceContentExcluded": true
+  },
+  "existingConfigurationModified": false,
+  "expectedProducerVersion": "0.161.0",
+  "expectedReaderVersion": "0.161.0",
+  "hookTrustBypassed": false,
+  "interface": "standalone-cli",
+  "passed": true,
+  "pipeline": {
+    "actualReaderVersion": "0.161.0",
+    "ciphertextMarkerInspectionPassed": true,
+    "durableDeliveries": 6,
+    "finalCatchUpNewOccurrences": 0,
+    "finished": true,
+    "gapReasons": [],
+    "hostVersion": null,
+    "interface": "standalone-cli",
+    "nativeLocationsUnique": true,
+    "observedProducerVersions": [
+      "0.161.0"
+    ],
+    "occurrenceCount": 14,
+    "occurrencesByContentType": {
+      "finalResponse": 2,
+      "intermediateResponse": 1,
+      "toolError": 2,
+      "toolOutput": 2,
+      "userPrompt": 7
+    },
+    "queueCount": 0,
+    "replayStable": true,
+    "sessionCount": 2,
+    "setupState": "selected-source",
+    "sourceLatency": {
+      "committedSourceRevisionCount": 8,
+      "firstCanonicalReadStartedAt": "2026-10-09T11:02:31.629Z",
+      "historical": {
+        "canonicalReadStartToCommitObservation": {
+          "count": 8,
+          "excludedNegativeOrNonfiniteCount": 0,
+          "max": 1408.6719751358032,
+          "p50": 1408.6719751358032,
+          "p95": 1408.6719751358032
+        },
+        "committedSourceRevisionCount": 8,
+        "providerTimestampToCanonicalReadStart": {
+          "count": 8,
+          "excludedNegativeOrNonfiniteCount": 0,
+          "max": 30823.65596294403,
+          "p50": 20198.65596294403,
+          "p95": 30823.65596294403
+        },
+        "queueCaptureToCommitObservation": {
+          "count": 8,
+          "excludedNegativeOrNonfiniteCount": 0,
+          "max": 1870.6539869308472,
+          "p50": 1661.607027053833,
+          "p95": 1870.6539869308472
+        }
+      },
+      "lastCommitObservedAt": "2026-10-09T11:02:33.498Z",
+      "limits": [
+        "Samples are unique public canonical source revisions carrying the disposable synthetic value, with an exact full detector receipt and a retained occurrence for that source and content time.",
+        "Read start is measured immediately before awaiting CodexAdapter.normalize. Product metadata.observedAt remains the queue capturedAt timestamp and is not used as read start.",
+        "Provider contentTime is completedAtMs when available, otherwise startedAtMs or a turn timestamp. It does not measure first-byte publication or when public history made that item available.",
+        "A public read may include an item published after its start. Each latency leg excludes and counts negative or nonfinite wall-clock deltas; clock adjustments can affect positive durations too.",
+        "Queue capture belongs to the enclosing public poll, not the source's first available byte.",
+        "Commit observation follows completion of the enclosing pipeline capture. It upper-bounds the source's exact durable commit and includes remaining batch and checkpoint work.",
+        "Live or historical classification comes from the retained occurrence after the production pipeline applies its start boundary. Final catch-up and replay are excluded from timing.",
+        "This measures standalone CLI exact-ID public-history polling, not hook delivery, T3 latency, hosted tools, or long-running output fragment publication."
+      ],
+      "live": {
+        "canonicalReadStartToCommitObservation": {
+          "count": 0,
+          "excludedNegativeOrNonfiniteCount": 0,
+          "max": null,
+          "p50": null,
+          "p95": null
+        },
+        "committedSourceRevisionCount": 0,
+        "providerTimestampToCanonicalReadStart": {
+          "count": 0,
+          "excludedNegativeOrNonfiniteCount": 0,
+          "max": null,
+          "p50": null,
+          "p95": null
+        },
+        "queueCaptureToCommitObservation": {
+          "count": 0,
+          "excludedNegativeOrNonfiniteCount": 0,
+          "max": null,
+          "p50": null,
+          "p95": null
+        }
+      },
+      "observedSourceRevisionCount": 8,
+      "percentileMethod": "nearest-rank",
+      "schemaVersion": 1,
+      "units": "milliseconds",
+      "unmeasuredSourceRevisionCount": 0
+    },
+    "syntheticAlertCount": 0,
+    "syntheticValuePresent": true,
+    "typedCommitted": {
+      "CHILD_FINAL": 1,
+      "FINAL": 1,
+      "INTERMEDIATE": 1,
+      "MCP_ERROR": 1,
+      "MCP_OK": 1,
+      "PROMPT": 1,
+      "SHELL_ERROR": 1,
+      "SHELL_OK": 1
+    },
+    "typedCommittedBeforeCatchUp": {
+      "CHILD_FINAL": 1,
+      "FINAL": 1,
+      "INTERMEDIATE": 1,
+      "MCP_ERROR": 1,
+      "MCP_OK": 1,
+      "PROMPT": 1,
+      "SHELL_ERROR": 1,
+      "SHELL_OK": 1
+    },
+    "typedObserved": {
+      "CHILD_FINAL": 1,
+      "FINAL": 1,
+      "INTERMEDIATE": 1,
+      "MCP_ERROR": 1,
+      "MCP_OK": 1,
+      "PROMPT": 1,
+      "SHELL_ERROR": 1,
+      "SHELL_OK": 1
+    },
+    "valueCount": 1
+  },
+  "pipelineDiagnosticBytes": 0,
+  "pipelineExitCode": 0,
+  "producerExitCode": 0,
+  "producerMilliseconds": 23458.6,
+  "publicRead": {
+    "byteAccounting": "JSON-RPC wire bytes including cold initialize; version CLI control output excluded",
+    "forkDenied": true,
+    "interface": "standalone-cli",
+    "networkDenied": true,
+    "passive": true,
+    "readerVersion": "0.161.0",
+    "resumeCalls": 0,
+    "schemaVersion": 2,
+    "startCalls": 0,
+    "threads": [
+      {
+        "cliVersion": "0.161.0",
+        "contentTypeCounts": {
+          "finalResponse": 1,
+          "intermediateResponse": 1,
+          "toolError": 2,
+          "toolOutput": 2,
+          "userPrompt": 1
+        },
+        "cursorProbeAscendingIDs": [],
+        "cursorProbeBackwardsCursorPresent": false,
+        "cursorProbeDescendingIDs": [],
+        "cursorProbeFromNextIDs": [],
+        "datedItems": 10,
+        "datedTurns": 1,
+        "itemBytes": 5787,
+        "itemTypes": {
+          "agentMessage": 2,
+          "collabAgentToolCall": 1,
+          "commandExecution": 2,
+          "mcpToolCall": 2,
+          "subAgentActivity": 2,
+          "userMessage": 1
+        },
+        "mappedGapReasons": [],
+        "markerCounts": {
+          "CHILD_FINAL": 1,
+          "CHILD_PROMPT": 1,
+          "FINAL": 2,
+          "INTERMEDIATE": 2,
+          "MCP_ERROR": 1,
+          "MCP_OK": 1,
+          "PROMPT": 1,
+          "SHELL_ERROR": 4,
+          "SHELL_OK": 4
+        },
+        "metadataBytes": 2501,
+        "metadataMatches": true,
+        "nativeItemIDs": [
+          "<NATIVE_ITEM_001>",
+          "<NATIVE_ITEM_002>",
+          "<NATIVE_ITEM_003>",
+          "<NATIVE_ITEM_004>",
+          "<NATIVE_ITEM_005>",
+          "<NATIVE_ITEM_006>",
+          "<NATIVE_ITEM_007>",
+          "<NATIVE_ITEM_008>",
+          "<NATIVE_ITEM_009>",
+          "<NATIVE_ITEM_010>"
+        ],
+        "status": "read-complete",
+        "threadID": "<NATIVE_SESSION_001>",
+        "turnBytes": 4795,
+        "turnCount": 1,
+        "typedMarkerCounts": {
+          "CHILD_FINAL": 0,
+          "FINAL": 1,
+          "INTERMEDIATE": 1,
+          "MCP_ERROR": 1,
+          "MCP_OK": 1,
+          "PROMPT": 1,
+          "SHELL_ERROR": 1,
+          "SHELL_OK": 1
+        },
+        "undatedItems": 0
+      }
+    ]
+  },
+  "publicReadExitCode": 0,
+  "schemaVersion": 1,
+  "status": "public-read-complete",
+  "threadID": "<NATIVE_SESSION_001>"
+}

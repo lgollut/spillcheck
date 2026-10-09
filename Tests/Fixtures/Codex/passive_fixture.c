@@ -3,13 +3,19 @@
 #include <string.h>
 #include <errno.h>
 #include <unistd.h>
+#include <signal.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 
 /* Controlled test server: records only its PID; no source/event payload is persisted. */
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--version") == 0) {
-        puts("codex-cli 0.161.0"); return 0;
+        char versionmode[32] = "normal";
+        FILE *versionfile = fopen("mode", "r");
+        if (versionfile) { fscanf(versionfile, "%31s", versionmode); fclose(versionfile); }
+        puts(strcmp(versionmode, "invalid-version") == 0 ? "another-program 4.0.0" :
+             strcmp(versionmode, "new-version") == 0 ? "codex-cli 4.0.0" : "codex-cli 0.161.0");
+        return 0;
     }
     FILE *pidfile = fopen("server.pid", "w");
     if (pidfile) { fprintf(pidfile, "%d\n", getpid()); fclose(pidfile); }
@@ -38,10 +44,19 @@ int main(int argc, char **argv) {
         if (strcmp(mode, "remote") == 0) {
             printf("{\"id\":%d,\"error\":{\"code\":-32001,\"message\":\"ignored synthetic diagnostic\"}}\n", serial); fflush(stdout); continue;
         }
+        if (strcmp(mode, "missing-method") == 0 || strcmp(mode, "rejected-parameters") == 0) {
+            printf("{\"id\":%d,\"error\":{\"code\":%d,\"message\":\"ignored controlled diagnostic\"}}\n", serial,
+                strcmp(mode, "missing-method") == 0 ? -32601 : -32602);
+            fflush(stdout); continue;
+        }
         if (strcmp(mode, "flood") == 0) {
             printf("{\"id\":%d,\"result\":{\"padding\":\"", serial);
             for (int i = 0; i < 16384; i++) putchar('x');
             puts("\"}}"); fflush(stdout); continue;
+        }
+        if (!strstr(line, "\"thread/read\"")) {
+            printf("{\"id\":%d,\"result\":{\"data\":[],\"nextCursor\":null,\"backwardsCursor\":null,\"extraEnvelope\":true}}\n", serial);
+            fflush(stdout); continue;
         }
         int fd = socket(AF_INET, SOCK_STREAM, 0);
         struct sockaddr_in address = { .sin_family = AF_INET, .sin_port = htons(9), .sin_addr.s_addr = htonl(0x7f000001) };
@@ -55,6 +70,11 @@ int main(int argc, char **argv) {
         printf("{\"id\":%d,\"result\":{\"thread\":{\"id\":\"synthetic\",\"cliVersion\":\"0.161.0\",\"networkDenied\":%s,\"forkDenied\":%s,\"environmentSanitized\":%s}}}\n",
             serial, networkDenied ? "true" : "false", forkDenied ? "true" : "false", sanitized ? "true" : "false");
         fflush(stdout);
+        if (strcmp(mode, "closed-streams") == 0) {
+            signal(SIGTERM, SIG_IGN);
+            close(STDIN_FILENO); close(STDOUT_FILENO); close(STDERR_FILENO);
+            for (;;) pause();
+        }
     }
     free(line); return 0;
 }

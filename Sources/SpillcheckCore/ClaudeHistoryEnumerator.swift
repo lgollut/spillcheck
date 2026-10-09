@@ -18,9 +18,34 @@ struct ClaudeHistoryRequest: Codable, Sendable {
     var pending: [String]
     var deferred: [String]
     var partial: Bool
+
+    func validate() throws {
+        guard kind == Self.kind, version == 1, directories.count <= 4096,
+              pending.count <= 4096, deferred.count <= 4096,
+              audit.end.timeIntervalSince1970.isFinite,
+              audit.start == audit.end.addingTimeInterval(-HistoricalAuditContext.lookback) else {
+            throw ClaudeCollectionError.invalidConfiguration
+        }
+    }
 }
 
+private struct ClaudeHistoryEnvelope: Decodable { let kind: String? }
+
 extension ClaudeAdapter: HistoricalCaptureProducer {
+    /// Only disposable acceptance receivers admit externally delivered historical cursors.
+    /// Ordinary hooks have no audit. The production queue still requires the same frozen audit
+    /// on admission and completion, including every continuation.
+    @_spi(Testing) public static func historicalAuditForTesting(in packet: CapturePacket) throws -> HistoricalAuditContext? {
+        guard packet.metadata.agent == .claudeCode else { return nil }
+        do {
+            let envelope = try JSONDecoder().decode(ClaudeHistoryEnvelope.self, from: packet.eventJSON)
+            guard envelope.kind == ClaudeHistoryRequest.kind else { return nil }
+            let request = try JSONDecoder().decode(ClaudeHistoryRequest.self, from: packet.eventJSON)
+            try request.validate()
+            return request.audit
+        } catch { throw ClaudeCollectionError.invalidConfiguration }
+    }
+
     public func initialHistoricalCapture(audit: HistoricalAuditContext) async throws -> CapturePacket {
         try historyPacket(.init(kind: ClaudeHistoryRequest.kind, version: 1, audit: audit,
             directories: allowedTranscriptRoots.map { .init(path: $0.path, depth: 0) },
@@ -34,15 +59,13 @@ extension ClaudeAdapter: HistoricalCaptureProducer {
 
     func normalizeHistory(_ original: ClaudeHistoryRequest, interface: AgentInterface,
                           cryptography: BackgroundCryptography) async throws -> CollectionBatch {
-        guard original.version == 1, original.directories.count <= 4096,
-              original.pending.count <= 4096, original.deferred.count <= 4096,
-              original.audit.start == original.audit.end.addingTimeInterval(-HistoricalAuditContext.lookback),
-              original.audit.end.timeIntervalSince1970.isFinite else {
+        do { try original.validate() } catch {
             return .init(sources: [], coverageGaps: [.init(reason: .malformedSource)])
         }
         var request = original
         let clock = ContinuousClock(), started = ContinuousClock.now
         var sources: [CollectedSource] = [], checkpoints: [SourceCheckpoint] = [], gaps: [CoverageGap] = []
+        var recoveredReferences: [CoverageRecoveryReference] = []
         var bytes = 0, processed = 0, inspected = 0
         var oldest: Date?, newest: Date?
         var seen = Set<String>(), next: [String] = []
@@ -88,6 +111,7 @@ extension ClaudeAdapter: HistoricalCaptureProducer {
                     maximumBytes: quantum, cryptography: cryptography)
                 bytes += read.bytesRead; sources += read.batch.sources; checkpoints += read.batch.checkpoints
                 gaps += read.batch.coverageGaps
+                recoveredReferences += read.batch.recoveredReferences
                 if let time = read.oldestContentTime { oldest = oldest.map { min($0, time) } ?? time }
                 if let time = read.newestContentTime { newest = newest.map { max($0, time) } ?? time }
                 if read.canContinueHistory { next.append(path) }
@@ -108,7 +132,7 @@ extension ClaudeAdapter: HistoricalCaptureProducer {
         return .init(sources: sources, coverageGaps: Array(Set(gaps)), checkpoints: checkpoints,
             continuation: continuing ? try historyPacket(request, interface: interface) : nil,
             historicalProgress: .init(audit: request.audit, bytesRead: bytes, oldestContentTime: oldest,
-                newestContentTime: newest, hasUnreadContent: unread))
+                newestContentTime: newest, hasUnreadContent: unread), recoveredReferences: recoveredReferences)
     }
 }
 

@@ -1,0 +1,33 @@
+{
+  "actualNativeProducerVersion": "0.160.1",
+  "actualReaderVersion": "0.161.0",
+  "childFixtureMarkerRecordKinds": {},
+  "collectionFallbackImplemented": false,
+  "date": "2026-10-09",
+  "ephemeralReaderWorkspaceRemoved": true,
+  "liveCoverageEstablished": false,
+  "nativeChildSessionMetadataMatched": true,
+  "nativeChildUserPromptMarkerAvailable": false,
+  "nativeFileBytes": 111759,
+  "nativeParentChildRelationshipVerified": true,
+  "noOriginalSourceArchive": true,
+  "noUnrelatedHistoryEnumeration": true,
+  "ownedDiagnosticGroupStopped": true,
+  "passed": true,
+  "phase0Passed": false,
+  "productionGUICollectionEnabled": false,
+  "readerShutdownCompletedWithinDeadline": true,
+  "recordKinds": {
+    "event_msg": 14,
+    "other": 6,
+    "response_item": 7,
+    "response_item/message/assistant": 3,
+    "response_item/message/other": 3,
+    "response_item/message/user": 1,
+    "session_meta": 1,
+    "turn_context": 2
+  },
+  "schemaVersion": 1,
+  "scope": "exact-public-verified-native-child-original-JSONL-only-after-producer",
+  "status": "exact-native-child-source-diagnostic-completed-child-fixture-prompt-unestablished"
+}

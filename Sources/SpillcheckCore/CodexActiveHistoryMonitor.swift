@@ -9,8 +9,8 @@ public struct CodexActiveSource: Sendable, Equatable {
     public init(threadID: String, interface: AgentInterface,
                 authority: CodexCollectionAuthority, transcriptURL: URL? = nil) throws {
         guard !threadID.isEmpty, threadID.utf8.count <= 4096, !threadID.utf8.contains(0),
-              interface != .desktopCode, authority != .t3VersionedTranscript || interface == .t3,
-              authority != .t3VersionedTranscript || (transcriptURL?.isFileURL == true
+              interface != .desktopCode, authority != .nativeRolloutTranscript || interface == .t3,
+              authority != .nativeRolloutTranscript || (transcriptURL?.isFileURL == true
                 && transcriptURL?.path.hasPrefix("/") == true && transcriptURL?.pathExtension == "jsonl") else {
             throw CodexCollectionError.invalidConfiguration
         }
@@ -66,7 +66,9 @@ public actor CodexActiveHistoryMonitor {
     /// source is replaced; its thread is still read by any later hook capture.
     public func addSource(_ source: CodexActiveSource, at date: Date = Date()) throws {
         if let previous = sources.first(where: { $0.threadID == source.threadID }) {
-            guard previous == source else { throw CodexCollectionError.authorityConflict }
+            guard previous.authority == source.authority, previous.transcriptURL == source.transcriptURL else {
+                throw CodexCollectionError.authorityConflict
+            }
         } else {
             if sources.count >= 256, let stalest = sources.indices.min(by: {
                 (lastActivity[sources[$0].threadID] ?? .distantPast) < (lastActivity[sources[$1].threadID] ?? .distantPast)
@@ -98,7 +100,7 @@ public actor CodexActiveHistoryMonitor {
             selected += 1
             var event: [String: String] = ["hook_event_name": "SpillcheckHistoryPoll", "session_id": source.threadID]
             var signature: Signature?
-            if source.authority == .t3VersionedTranscript, let url = source.transcriptURL {
+            if source.authority == .nativeRolloutTranscript, let url = source.transcriptURL {
                 var info = stat()
                 guard lstat(url.path, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_uid == getuid() else {
                     await onGap(.init(reason: .sourceUnavailable)); continue

@@ -1,0 +1,197 @@
+{
+  "schemaVersion": 3,
+  "agentVersion": "2.1.295",
+  "executablePath": "<HOME>/.local/share/claude/versions/2.1.295",
+  "versionAfterRun": "2.1.295",
+  "executableVersionStable": true,
+  "expectedVersion": "2.1.295",
+  "interface": "standaloneCLI",
+  "startedAt": "2026-10-09T10:54:13.974553+00:00",
+  "providerRuns": [
+    {
+      "exitCode": 0,
+      "outputBytes": 20358,
+      "diagnosticBytes": 0,
+      "processGroupCleanup": {
+        "grace_ms": 200,
+        "term_permission_denied": false,
+        "kill_permission_denied": false
+      }
+    },
+    {
+      "exitCode": 0,
+      "outputBytes": 81257,
+      "diagnosticBytes": 0,
+      "processGroupCleanup": {
+        "grace_ms": 200,
+        "term_permission_denied": false,
+        "kill_permission_denied": false
+      }
+    },
+    {
+      "exitCode": 0,
+      "outputBytes": 13089,
+      "diagnosticBytes": 0,
+      "processGroupCleanup": {
+        "grace_ms": 200,
+        "term_permission_denied": false,
+        "kill_permission_denied": false
+      }
+    }
+  ],
+  "driverExitCode": 0,
+  "driverDiagnosticBytes": 0,
+  "result": {
+    "alertCount": 2,
+    "ciphertextMarkerInspectionPassed": true,
+    "durableDeliveries": 42,
+    "finalCatchUpNewOccurrences": 0,
+    "finished": true,
+    "firstObservedAt": {
+      "CHILD_FINAL": "2026-10-09T10:54:34.029Z",
+      "CHILD_PROMPT": "2026-10-09T10:54:32.770Z",
+      "FINAL": "2026-10-09T10:54:36.240Z",
+      "INTERMEDIATE": "2026-10-09T10:54:23.667Z",
+      "MCP_ERROR": "2026-10-09T10:54:30.450Z",
+      "MCP_OK": "2026-10-09T10:54:28.387Z",
+      "PROMPT": "2026-10-09T10:54:19.511Z",
+      "SHELL_ERROR": "2026-10-09T10:54:26.968Z",
+      "SHELL_OK": "2026-10-09T10:54:26.968Z"
+    },
+    "gapReasons": [
+      "unsupportedContent"
+    ],
+    "lastPending": 0,
+    "observedExecutableVersion": "2.1.295",
+    "occurrenceCount": 20,
+    "occurrencesByContentType": {
+      "finalResponse": 4,
+      "intermediateResponse": 1,
+      "toolError": 2,
+      "toolOutput": 3,
+      "userPrompt": 10
+    },
+    "otherCandidates": [],
+    "producerVersions": [
+      "2.1.295"
+    ],
+    "queueCount": 0,
+    "replayStable": true,
+    "sessionCount": 2,
+    "setupState": "connected",
+    "sourceLatency": {
+      "committedSourceRevisionCount": 12,
+      "historical": {
+        "canonicalObservationToCommitObservation": {
+          "count": 0,
+          "excludedNegativeOrNonfiniteCount": 0,
+          "max": null,
+          "p50": null,
+          "p95": null
+        },
+        "committedSourceRevisionCount": 0,
+        "providerTimestampToCanonicalObservation": {
+          "count": 0,
+          "excludedNegativeOrNonfiniteCount": 0,
+          "max": null,
+          "p50": null,
+          "p95": null
+        },
+        "queueCaptureToCommitObservation": {
+          "count": 0,
+          "excludedNegativeOrNonfiniteCount": 0,
+          "max": null,
+          "p50": null,
+          "p95": null
+        }
+      },
+      "limits": [
+        "Samples are unique canonical source revisions carrying the disposable synthetic value and a retained detection, with an exact full detector receipt.",
+        "Provider contentTime is its transcript timestamp, not a measurement of physical first output byte or agent publication; provider buffering and clock differences cannot be separated.",
+        "Canonical observedAt is the adapter read-start timestamp, set before asynchronous transcript reads; a later append can produce a negative provider delta without clock skew.",
+        "Each latency leg excludes and counts negative or nonfinite wall-clock deltas independently; clock adjustments can also affect positive durations.",
+        "Queue capture time belongs to the enclosing durable hook or poll and can precede publication of a source row; it is not the source's first available byte.",
+        "Commit observation is taken after the enclosing capture's pipeline activity completes, so it upper-bounds per-source durable commit and includes remaining batch/checkpoint work.",
+        "Final catch-up and replay are excluded. An empty historical population is unmeasured. Standalone CLI results do not measure T3 latency."
+      ],
+      "live": {
+        "canonicalObservationToCommitObservation": {
+          "count": 12,
+          "excludedNegativeOrNonfiniteCount": 0,
+          "max": 357.71703720092773,
+          "p50": 193.99404525756836,
+          "p95": 357.71703720092773
+        },
+        "committedSourceRevisionCount": 12,
+        "providerTimestampToCanonicalObservation": {
+          "count": 12,
+          "excludedNegativeOrNonfiniteCount": 0,
+          "max": 2454.266905784607,
+          "p50": 186.36202812194824,
+          "p95": 2454.266905784607
+        },
+        "queueCaptureToCommitObservation": {
+          "count": 12,
+          "excludedNegativeOrNonfiniteCount": 0,
+          "max": 631.1819553375244,
+          "p50": 450.1689672470093,
+          "p95": 631.1819553375244
+        }
+      },
+      "observedSourceRevisionCount": 12,
+      "percentileMethod": "nearest-rank",
+      "schemaVersion": 1,
+      "units": "milliseconds",
+      "unmeasuredSourceRevisionCount": 0
+    },
+    "syntheticAlertCount": 2,
+    "syntheticValuePresent": true,
+    "typedCommitted": {
+      "CHILD_FINAL": 1,
+      "CHILD_PROMPT": 1,
+      "FINAL": 2,
+      "INTERMEDIATE": 1,
+      "MCP_ERROR": 1,
+      "MCP_OK": 1,
+      "PROMPT": 1,
+      "SHELL_ERROR": 1,
+      "SHELL_OK": 1
+    },
+    "typedObserved": {
+      "CHILD_FINAL": 1,
+      "CHILD_PROMPT": 1,
+      "FINAL": 2,
+      "INTERMEDIATE": 1,
+      "MCP_ERROR": 1,
+      "MCP_OK": 1,
+      "PROMPT": 1,
+      "SHELL_ERROR": 1,
+      "SHELL_OK": 1
+    },
+    "valueCount": 1
+  },
+  "t3LatencyMeasured": false,
+  "historicalLatencyMeasured": false,
+  "passed": true,
+  "latencyMeasurementPassed": true,
+  "liveCanonicalObservationP95WithinProposed120SecondTarget": true,
+  "finishedAt": "2026-10-09T10:54:42.438488+00:00",
+  "cleanup": {
+    "disposableRootRemoved": true,
+    "temporaryAuthenticationRemoved": true,
+    "ownedProcessGroupsStopped": true,
+    "driverProcessGroupCleanup": {
+      "grace_ms": 200,
+      "term_permission_denied": false,
+      "kill_permission_denied": false
+    },
+    "existingHookSettingsModified": false,
+    "existingHistoriesModified": false
+  },
+  "publicationNotes": [
+    "Redacted copy of the genuine disposable standalone Claude CLI run on 2026-10-09. Raw provider content and native identities are not published.",
+    "The measured 20 occurrences differ from the 12 unique source revisions used for latency sampling.",
+    "unsupportedContent remained visible. Passing required typed markers does not establish coverage of skipped native envelope records.",
+    "This run used SwiftPM acceptance executables. It does not establish signed-app, current T3, GUI, restart, upgrade, or six-host concurrency acceptance."
+  ]
+}

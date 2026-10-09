@@ -1,0 +1,320 @@
+{
+  "schemaVersion": 1,
+  "passed": true,
+  "sourceIsOwnedSynthetic": true,
+  "interface": "standaloneCLI",
+  "agentVersion": "2.1.295",
+  "versionAfterRun": "2.1.295",
+  "expectedVersion": "2.1.295",
+  "executableVersionStable": true,
+  "providerRuns": [
+    {
+      "exitCode": 0,
+      "outputBytes": 21788,
+      "diagnosticBytes": 0,
+      "processGroupCleanup": {
+        "grace_ms": 200,
+        "term_permission_denied": false,
+        "kill_permission_denied": false
+      }
+    },
+    {
+      "exitCode": 0,
+      "outputBytes": 88029,
+      "diagnosticBytes": 0,
+      "processGroupCleanup": {
+        "grace_ms": 200,
+        "term_permission_denied": false,
+        "kill_permission_denied": false
+      }
+    },
+    {
+      "exitCode": 0,
+      "outputBytes": 13088,
+      "diagnosticBytes": 0,
+      "processGroupCleanup": {
+        "grace_ms": 200,
+        "term_permission_denied": false,
+        "kill_permission_denied": false
+      }
+    }
+  ],
+  "nativeSourceEvidence": {
+    "producerVersions": [
+      "2.1.293",
+      "2.1.295"
+    ],
+    "typedMarkers": [
+      "CHILD_FINAL",
+      "CHILD_PROMPT",
+      "FINAL",
+      "INTERMEDIATE",
+      "MCP_ERROR",
+      "MCP_OK",
+      "PROMPT",
+      "SHELL_ERROR",
+      "SHELL_OK"
+    ],
+    "childTypedMarkers": [
+      "CHILD_FINAL",
+      "CHILD_PROMPT"
+    ],
+    "completeJSONLFraming": true,
+    "requiredNativeFieldsValid": true,
+    "nativeTranscriptCount": 6,
+    "nativeSessionCount": 4,
+    "contentRowCount": 40,
+    "bytesRead": 556451,
+    "exactParentAndOwnChildFilesOnly": true,
+    "contentTypesByProducer": {
+      "2.1.293": [
+        "finalResponse",
+        "intermediateResponse",
+        "toolError",
+        "toolOutput",
+        "userPrompt"
+      ],
+      "2.1.295": [
+        "finalResponse",
+        "intermediateResponse",
+        "toolError",
+        "toolOutput",
+        "userPrompt"
+      ]
+    },
+    "typedMarkersByProducer": {
+      "2.1.293": [
+        "CHILD_FINAL",
+        "CHILD_PROMPT",
+        "FINAL",
+        "INTERMEDIATE",
+        "MCP_ERROR",
+        "MCP_OK",
+        "PROMPT",
+        "SHELL_ERROR",
+        "SHELL_OK"
+      ],
+      "2.1.295": [
+        "CHILD_FINAL",
+        "CHILD_PROMPT",
+        "FINAL",
+        "INTERMEDIATE",
+        "MCP_ERROR",
+        "MCP_OK",
+        "PROMPT",
+        "SHELL_ERROR",
+        "SHELL_OK"
+      ]
+    },
+    "unknownEnvelopeRecordCount": 139,
+    "unknownContentBlockCount": 2,
+    "nativeEvidenceLimitReasons": [],
+    "maximumChildFilesPerParent": 32,
+    "maximumFileBytes": 2097152,
+    "maximumTotalBytes": 16777216,
+    "historicalOriginalIdentitiesAndBytesStable": true
+  },
+  "ownedProductionHookConfigurationUsed": true,
+  "signedNativeChildCommitEstablished": true,
+  "signedSetupConnectionVerificationEstablished": false,
+  "coreChallengeVerificationMeasuredSeparately": true,
+  "profileDiscoveryDisabled": true,
+  "scannerIsSignedBundleChild": true,
+  "syntheticReplayAcrossRoutes": true,
+  "replayRuns": [
+    {
+      "interface": "standalone-cli",
+      "exitCode": 0,
+      "stdoutBytes": 3,
+      "diagnosticBytes": 0
+    },
+    {
+      "interface": "standalone-cli",
+      "exitCode": 0,
+      "stdoutBytes": 3,
+      "diagnosticBytes": 0
+    },
+    {
+      "interface": "standalone-cli",
+      "exitCode": 0,
+      "stdoutBytes": 3,
+      "diagnosticBytes": 0
+    },
+    {
+      "interface": "standalone-cli",
+      "exitCode": 0,
+      "stdoutBytes": 3,
+      "diagnosticBytes": 0
+    },
+    {
+      "interface": "standalone-cli",
+      "exitCode": 0,
+      "stdoutBytes": 3,
+      "diagnosticBytes": 0
+    },
+    {
+      "interface": "standalone-cli",
+      "exitCode": 0,
+      "stdoutBytes": 3,
+      "diagnosticBytes": 0
+    },
+    {
+      "interface": "t3",
+      "exitCode": 0,
+      "stdoutBytes": 3,
+      "diagnosticBytes": 0
+    },
+    {
+      "interface": "t3",
+      "exitCode": 0,
+      "stdoutBytes": 3,
+      "diagnosticBytes": 0
+    },
+    {
+      "interface": "t3",
+      "exitCode": 0,
+      "stdoutBytes": 3,
+      "diagnosticBytes": 0
+    },
+    {
+      "interface": "t3",
+      "exitCode": 0,
+      "stdoutBytes": 3,
+      "diagnosticBytes": 0
+    },
+    {
+      "interface": "t3",
+      "exitCode": 0,
+      "stdoutBytes": 3,
+      "diagnosticBytes": 0
+    },
+    {
+      "interface": "t3",
+      "exitCode": 0,
+      "stdoutBytes": 3,
+      "diagnosticBytes": 0
+    }
+  ],
+  "replayStable": true,
+  "restartRecoveryEstablished": false,
+  "signedAppExitCode": 0,
+  "timedOut": false,
+  "stdoutBytes": 0,
+  "diagnosticBytes": 0,
+  "ownedHookRemovalPassed": true,
+  "providerAuthenticationRemoved": true,
+  "processGroupCleanup": {
+    "grace_ms": 200,
+    "term_permission_denied": false,
+    "kill_permission_denied": false
+  },
+  "ciphertextMarkerInspectionPassed": true,
+  "result": {
+    "acceptancePhase": "shutdown-complete",
+    "alertCount": 2,
+    "alertsByDeliveryState": {
+      "permissionDenied": 2
+    },
+    "collectionConfigured": true,
+    "gapReasons": [],
+    "historicalProgressMeasurementAvailable": true,
+    "launchAtLogin": false,
+    "monitoringEnabled": true,
+    "newVaultCleanupPassed": true,
+    "notificationState": "Off",
+    "observedAgentVersions": [
+      "2.1.293",
+      "2.1.295"
+    ],
+    "occurrenceCount": 38,
+    "occurrencesByContentType": {
+      "finalResponse": 7,
+      "intermediateResponse": 2,
+      "toolError": 4,
+      "toolOutput": 6,
+      "userPrompt": 19
+    },
+    "queueCount": 0,
+    "revealedExcerptCount": 0,
+    "revealedSourceMetadataCount": 0,
+    "revealedValueCount": 0,
+    "schemaVersion": 1,
+    "settledHistoricalAuditCount": 1,
+    "storageReady": true,
+    "syntheticNativeChildContentTypes": [
+      "finalResponse",
+      "userPrompt"
+    ],
+    "syntheticNativeChildOccurrenceCount": 6,
+    "syntheticOccurrenceCount": 38,
+    "syntheticOccurrencesByContentType": {
+      "finalResponse": 7,
+      "intermediateResponse": 2,
+      "toolError": 4,
+      "toolOutput": 6,
+      "userPrompt": 19
+    },
+    "syntheticOccurrencesByProducerVersionAndContentType": {
+      "2.1.293": {
+        "finalResponse": 3,
+        "intermediateResponse": 1,
+        "toolError": 2,
+        "toolOutput": 3,
+        "userPrompt": 9
+      },
+      "2.1.295": {
+        "finalResponse": 4,
+        "intermediateResponse": 1,
+        "toolError": 2,
+        "toolOutput": 3,
+        "userPrompt": 10
+      }
+    },
+    "syntheticSessionCount": 3,
+    "syntheticValuePresent": true,
+    "unreadHistoricalProgressCount": 0,
+    "valueCount": 1,
+    "viewingAuthorized": false,
+    "windowVisible": true,
+    "workflowEvents": {
+      "mask-userMask": 2
+    }
+  },
+  "passScope": "Genuine signed-app commitment of all five content types per producer and native child prompt/final, with all nine typed markers independently verified per producer in original native sources, settled frozen history, canonical replay, encryption and owned cleanup. Saved setup proof, restart, upgrade and concurrent GUI acceptance remain separate gates.",
+  "historicalProducerVersion": "2.1.293",
+  "historicalProducerVersionAfterRun": "2.1.293",
+  "historicalExecutableVersionStable": true,
+  "historicalProducerWasInvokedAsCLI": true,
+  "historicalProducerRuns": [
+    {
+      "exitCode": 0,
+      "outputBytes": 68492,
+      "diagnosticBytes": 0,
+      "processGroupCleanup": {
+        "grace_ms": 200,
+        "term_permission_denied": false,
+        "kill_permission_denied": false
+      }
+    }
+  ],
+  "historicalCaptureDelivery": {
+    "exitCode": 0,
+    "route": "productionSevenDayHistory"
+  },
+  "signedMixedOriginalHistoryEstablished": true,
+  "signedMixedPerProducerCommitEstablished": true,
+  "signedMixedPerProducerCommitMeasurementAvailable": true,
+  "guiHostCollectionEstablished": false,
+  "cleanupPending": false,
+  "recordedOn": "2026-10-09",
+  "publicationNotes": [
+    "Genuine historical2.1.293 and live2.1.295 producers were invoked as CLI; this report does not establish GUI collection.",
+    "Strict rerun after history admission fix: the original frozen audit is bound to the encrypted capture and persisted completion is required, with no unread progress. Production completeCapture validation remains unchanged.",
+    "Both original producers supplied all five required content types and all nine typed markers. The signed production store independently measured positive committed counts for every content type of each producer:38occurrences across three canonical sessions, including six native-child occurrences.",
+    "One historical audit settled, queue is empty and persisted gaps are absent. Five recognized non-message metadata envelopes are ignored only when top-level message/content are absent; future unknown content remains a gap.",
+    "Exact original older source identities/bytes remained stable; exact-parent/own-child CLI/T3 replay, encrypted marker inspection, owned registration/authentication/new-key cleanup and producer process-group cleanup passed.",
+    "Earlier mixed reports remain retained; their source commitment and empty queue did not prove frozen-audit settlement.",
+    "Saved signed setup proof, actual OS notifications, restart, upgrade, GUI-specific collection and six-host concurrency remain open. Notifications were Off and both alert decisions were permissionDenied.",
+    "A separate read-only review confirmed the published no-gap result. The runner now requires an empty gapReasons list; this completed run already satisfies that stronger condition. Signed subtype marker-by-marker commitment is not separately measured."
+  ]
+}

@@ -28,7 +28,9 @@ private struct CodexLiveThreadReport: Codable {
 }
 private struct CodexLiveReadReport: Encodable {
     let schemaVersion = 2
-    let readerVersion = "0.161.0"
+    let readerVersion: String?
+    let interface: AgentInterface
+    let hostVersion: String?
     let byteAccounting = "JSON-RPC wire bytes including cold initialize; version CLI control output excluded"
     let passive = true
     let resumeCalls = 0
@@ -55,6 +57,8 @@ struct CodexPublicLiveTests {
         let client = CodexAppServerHistoryClient(configuration: try .init(
             executableURL: URL(fileURLWithPath: executable),
             codexHomeURL: URL(fileURLWithPath: home), workingDirectoryURL: work))
+        let interface = AgentInterface(rawValue: env["SPILLCHECK_CODEX_PROBE_INTERFACE"] ?? "standalone-cli") ?? .standaloneCLI
+        let hostVersion = env["SPILLCHECK_CODEX_PROBE_HOST_VERSION"]
         var results: [CodexLiveThreadReport] = []
         let markers = ["PROMPT", "INTERMEDIATE", "FINAL", "SHELL_OK", "SHELL_ERROR", "MCP_OK", "MCP_ERROR", "CHILD_PROMPT", "CHILD_FINAL"]
         for id in ids {
@@ -92,8 +96,9 @@ struct CodexPublicLiveTests {
                 result.turnCount = turns.data.count
                 result.datedTurns = turns.data.filter { $0["startedAt"].number != nil }.count
                 let crypto = try BackgroundCryptography.ephemeralForTesting()
-                let isT3 = thread.thread["cliVersion"].string == CodexAdapter.validatedT3ProducerVersion
-                let adapter = try codexTestAdapter(interface: isT3 ? .t3 : .standaloneCLI)
+                let adapter = try codexTestAdapter(interface: interface,
+                    version: await client.observedReaderVersion ?? CollectionCompatibility.unknownProducerVersion,
+                    t3Version: hostVersion)
                 let mapped = try await adapter.importPublicItems(.init(data: recordedItems), thread: thread.thread,
                     observedAt: Date(), cryptography: crypto)
                 result.contentTypeCounts = Dictionary(grouping: mapped.sources, by: { $0.record.metadata.contentType.rawValue }).mapValues(\.count)
@@ -153,7 +158,8 @@ struct CodexPublicLiveTests {
             results.append(result)
         }
         await client.close()
-        let report = CodexLiveReadReport(threads: results)
+        let report = CodexLiveReadReport(readerVersion: await client.observedReaderVersion,
+            interface: interface, hostVersion: hostVersion, threads: results)
         let data = try JSONEncoder().encode(report)
         try data.write(to: URL(fileURLWithPath: reportPath), options: .atomic)
         #expect(results.allSatisfy { $0.metadataMatches })

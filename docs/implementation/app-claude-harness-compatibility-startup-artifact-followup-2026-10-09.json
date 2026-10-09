@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "recordedOn": "2026-10-09",
+  "observationKind": "bounded-read-only-startup-artifact-followup",
+  "historicalFailedAttempts": 2,
+  "historicalQueueKeyErrorCode": -25308,
+  "historicalProviderRuns": 0,
+  "originalReportsUnchanged": true,
+  "firstAttempt": {
+    "exactOwnedRootAvailable": false,
+    "artifactInspectionPerformed": false,
+    "unmetGate": "Original exact owned root and its cleanup authority are unavailable in the retained context. Artifact state remains unverified. No other roots were searched."
+  },
+  "retryAttempt": {
+    "exactOwnedRootAvailable": true,
+    "ownedRealDirectoryVerified": true,
+    "metadataTraversalBound": 32,
+    "directEntryCount": 7,
+    "metadataTraversalBoundRespected": true,
+    "privateDiagnosticReportPresent": true,
+    "privateAppReportPresent": true,
+    "explicitStoreDirectoryPresent": false,
+    "databasePresent": false,
+    "databaseSidecarsPresent": false,
+    "durableManifestInspection": "No protected store or database exists at the exact configured location. No persisted manifest was established."
+  },
+  "freshPrepareCodePathInference": {
+    "basis": "ProtectionBootstrap.prepare fresh-manifest branch and BackgroundKeychainItem.create, with AppRuntime opening the store only after prepare returns.",
+    "queueAddFailurePrecedesCreatedQueueFlag": true,
+    "queueAddFailurePrecedesIdentityAndInventoryCreation": true,
+    "queueAddFailurePrecedesSuccessfulServicesAndStoreOpen": true,
+    "inferenceIsKeychainAbsenceVerification": false
+  },
+  "keychainQueried": false,
+  "keychainMutated": false,
+  "remainingKeychainItemsEstablished": false,
+  "keychainItemAbsenceEstablished": false,
+  "privateDiagnosticArtifactsRemoved": false,
+  "rootCauseEstablished": false,
+  "publicationNotes": [
+    "The historical cleanupPending field means failed acceptance diagnostics were retained. It does not by itself establish a retained encrypted vault, durable manifest, or remaining Keychain item.",
+    "The retry's retained artifacts are private diagnostics. Its exact configured protected-store directory and database are absent.",
+    "The first attempt's exact owned root is unavailable. Its artifact and ownership gate remains unresolved; broad filesystem or Keychain searches were not performed.",
+    "The reported fresh queue-add failure occurs before the queue creation success flag, subsequent key creation, and durable store initialization. This code-path inference does not verify actual Keychain item absence.",
+    "Later signed starts passed without a demonstrated historical root cause. Unlocking, launch context, and entitlement changes are not established remedies for the earlier failures.",
+    "No authentication data, source content, paths, native IDs, Keychain account IDs, or private identity digests are published."
+  ]
+}

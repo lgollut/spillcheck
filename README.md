@@ -18,12 +18,26 @@ names, with personal metadata sanitized as described in the
 [evidence notes](docs/implementation/README.md). Legacy synthetic markers remain
 supported for replaying fixtures. See [rename details](docs/RENAME.md).
 
-The local development MVP is implemented. Milestones 1–5 passed. Milestone 6
+The earlier CLI/T3 development scope is implemented. Milestones 1–5 passed. Milestone 6
 records passing local acceptance, measurements, signed restart/cooperative
 offline checks and release tooling; its full release gate remains open.
 Distribution, macOS 14 execution, and hardware without Touch ID remain deferred
 checks. [Acceptance evidence](docs/implementation/milestone-6.md)
 distinguishes tested behavior from remaining checks.
+
+The expanded scope requires local sessions in the official Codex GUI and Claude
+GUI Code tab, alongside both CLIs and T3, all operating concurrently. That work
+is partially implemented in the [compatibility plan](docs/HARNESS_COMPATIBILITY_PLAN.md).
+The [new evidence and remaining gates](docs/implementation/harness-compatibility.md)
+records genuine Claude 2.1.295 and Codex 0.161.0 standalone results, shared
+contract assessment, scoped omissions, connection-proof recovery, and signed
+genuine Claude 2.1.295 ingestion, settled mixed history, native child content,
+signed upgrade/restart and encrypted configuration migration.
+Manual GUI measurements now cover Claude main live content and settled catch-up,
+plus Codex live parent content and four child types. Claude side-chat authority
+and Codex's exact child prompt remain unverified; its corrected fixture stopped
+at unavailable native `send_input`. Full GUI collection and concurrent signed
+acceptance remain unverified.
 
 The app includes encrypted ingestion and inventory, a bundled local scanner,
 Codex and Claude collection, bounded catch-up, authenticated viewing, review,
@@ -44,13 +58,32 @@ Open Settings to detect agents and explicitly select profiles. Finding an
 executable does not establish a verified connection. Setup installs owned hooks
 and requires a synthetic verification event. Launch at login is off by default.
 Enable notifications in macOS to receive masked alerts.
+CLI and T3 share an authorized native home and owned registration. Settings shows
+their observed collection separately; verifying the shared hook does not identify
+the producer host.
 
-The tested standalone versions are Codex 0.161.0 and Claude Code 2.1.293. Claude
-2.1.294 was unvalidated and shown as unsupported in the recorded discovery check.
-Select a supported executable and profile explicitly. The
+New standalone core runs passed Codex producer/reader 0.161.0 and Claude Code
+2.1.295. Earlier signed evidence covers Claude 2.1.293. An unfamiliar version
+alone no longer blocks CLI/T3 setup or collection; actual provider identity,
+required operations, and source format are assessed independently. Runtime
+observations do not establish acceptance for a new environment. Select the
+executable and authorized profile explicitly. The
 [matrix](docs/implementation/supported-matrix.md) records the exact tested T3
-tuples and limitations. Notarized distribution and upgrade acceptance are
-deferred.
+tuples and limitations. Signed genuine 2.1.295 ingestion, native child
+prompt/final, replay, encrypted storage and scoped cleanup pass. Signed mixed
+history now passes all five committed types per producer with a settled frozen
+audit and zero gaps. Current T3 selected-source live collection passes required
+content, replay and encryption checks. Signed CLI upgrade/restart passes saved
+setup proof, exact encrypted pending work and duplicate suppression. A genuine
+signed app rebuild also passes encrypted schema-2→3 migration with the same
+registration, proof and native identities. Schema 2 existed only in an
+intermediate build; the schema-1→3 path existing installs take has synthetic
+coverage only. These signed runs predate the review corrections recorded in the
+[evidence ledger](docs/implementation/harness-compatibility.md#review-corrections),
+including queued Claude prompts and health-incident settlement. Full GUI
+collection, concurrent host operation, failure/restoration and the remaining
+recovery scopes remain open. Earlier intermittent device-key startup
+failures are preserved in the evidence; their cause remains unknown.
 
 ## Build the application
 
@@ -98,6 +131,10 @@ SPILLCHECK_SIGNED_SCANNER_APP="$PWD/.build/app/Build/Products/Debug/Spillcheck.a
 
 The [rename acceptance report](docs/implementation/spillcheck-rename.json)
 records 235 core tests across 31 suites and passing signed-scanner integration.
+The October 9 [compatibility verification](docs/implementation/harness-compatibility-verification-2026-10-09.json)
+passed 283 core tests in 34 suites with the signed scanner and a signed development
+build; after the review corrections, 287 core tests pass. Its genuine-provider results and remaining signed/GUI gates are recorded
+separately; regression tests do not close those gates.
 The tested Spillcheck app reopened the existing vault after moving its
 directory, with the original protection manifest unchanged. Earlier consecutive
 app builds retained valid signatures and unchanged scanner resources.
@@ -145,7 +182,8 @@ python3 Tests/AppAcceptance/run-app-pipeline.py --output .build/implementation/a
 - [Implementation sequence](docs/IMPLEMENTATION_PLAN.md)
 - [Release requirements and recorded deferrals](docs/implementation/release-checks.json)
 
-Local implementation is complete under the recorded deferrals. The app has
+The earlier local implementation passed its recorded development gates; the
+expanded harness compatibility plan remains incomplete. The app has
 passed real authentication, cancellation and window-close masking; its sleep,
 screen-lock and inactivity handlers have no automated test, and its recorded
 sleep/lock events happened while content was already masked. macOS 14 runtime and

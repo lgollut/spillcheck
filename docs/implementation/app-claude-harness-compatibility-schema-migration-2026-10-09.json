@@ -1,0 +1,289 @@
+{
+  "schemaVersion": 1,
+  "passed": true,
+  "startingProducerVersion": "2.1.293",
+  "upgradedProducerVersion": "2.1.295",
+  "checks": {
+    "proofAndRegistrationSurviveUpgrade": true,
+    "genuineRequiredTypesFromBothProducersCommitted": true,
+    "nativeChildPromptAndFinalCommittedForBothProducers": true,
+    "upgradePreservesOriginalInventoryAndReceipts": true,
+    "firstWorkerExitedWithEncryptedPendingWork": true,
+    "oldSignedCreatorRetainedThroughBuild": true,
+    "buildOccurredBetweenWorkerLifetimes": true,
+    "appAndHelperSigningBindingsPreserved": true,
+    "fixedSignedBundleRebuilt": true,
+    "productionSourcesFrozenThroughMigration": true,
+    "encryptedProfileSchema2MigratedTo3": true,
+    "automaticUpgradeAndRestartAuditsSettled": true,
+    "exactPendingCapturesSuccessfullyProcessedAfterRestart": true,
+    "actualCollectorProcessRestart": true,
+    "sameVaultLoadedWithoutCreatingReplacementKeys": true,
+    "savedSetupProofAndRegistrationSurviveRestart": true,
+    "restartPreservesInventoryReceiptsAndAlerts": true,
+    "originalNativeSourcesUnchanged": true,
+    "restartReplayAddsNoOccurrencesReceiptsOrAlerts": true,
+    "persistedCheckpointIdentitiesLoaded": true,
+    "noPersistedCoverageGaps": true,
+    "nativeRequiredContentAndFraming": true,
+    "producerInstallationsUnchanged": true,
+    "encryptedMarkerInspection": true,
+    "originalFreshCreatorCleanupPassed": true,
+    "ownedRegistrationRemoved": true,
+    "temporaryAuthenticationRemoved": true,
+    "ownedProcessGroupsStopped": true
+  },
+  "providerRuns": [
+    {
+      "exitCode": 0,
+      "outputBytes": 20071,
+      "diagnosticBytes": 0,
+      "processGroupCleanup": {
+        "grace_ms": 200,
+        "term_permission_denied": false,
+        "kill_permission_denied": false
+      }
+    },
+    {
+      "exitCode": 0,
+      "outputBytes": 73880,
+      "diagnosticBytes": 0,
+      "processGroupCleanup": {
+        "grace_ms": 200,
+        "term_permission_denied": false,
+        "kill_permission_denied": false
+      }
+    },
+    {
+      "exitCode": 0,
+      "outputBytes": 72194,
+      "diagnosticBytes": 0,
+      "processGroupCleanup": {
+        "grace_ms": 200,
+        "term_permission_denied": false,
+        "kill_permission_denied": false
+      }
+    },
+    {
+      "exitCode": 0,
+      "outputBytes": 13114,
+      "diagnosticBytes": 0,
+      "processGroupCleanup": {
+        "grace_ms": 200,
+        "term_permission_denied": false,
+        "kill_permission_denied": false
+      }
+    }
+  ],
+  "nativeSourceEvidence": {
+    "producerVersions": [
+      "2.1.293",
+      "2.1.295"
+    ],
+    "typedMarkers": [
+      "CHILD_FINAL",
+      "CHILD_PROMPT",
+      "FINAL",
+      "INTERMEDIATE",
+      "MCP_ERROR",
+      "MCP_OK",
+      "PROMPT",
+      "SHELL_ERROR",
+      "SHELL_OK"
+    ],
+    "childTypedMarkers": [
+      "CHILD_FINAL",
+      "CHILD_PROMPT"
+    ],
+    "completeJSONLFraming": true,
+    "requiredNativeFieldsValid": true,
+    "nativeTranscriptCount": 6,
+    "nativeSessionCount": 4,
+    "contentRowCount": 39,
+    "bytesRead": 561557,
+    "exactParentAndOwnChildFilesOnly": true,
+    "contentTypesByProducer": {
+      "2.1.293": [
+        "finalResponse",
+        "intermediateResponse",
+        "toolError",
+        "toolOutput",
+        "userPrompt"
+      ],
+      "2.1.295": [
+        "finalResponse",
+        "intermediateResponse",
+        "toolError",
+        "toolOutput",
+        "userPrompt"
+      ]
+    },
+    "typedMarkersByProducer": {
+      "2.1.293": [
+        "CHILD_FINAL",
+        "CHILD_PROMPT",
+        "FINAL",
+        "INTERMEDIATE",
+        "MCP_ERROR",
+        "MCP_OK",
+        "PROMPT",
+        "SHELL_ERROR",
+        "SHELL_OK"
+      ],
+      "2.1.295": [
+        "CHILD_FINAL",
+        "CHILD_PROMPT",
+        "FINAL",
+        "INTERMEDIATE",
+        "MCP_ERROR",
+        "MCP_OK",
+        "PROMPT",
+        "SHELL_ERROR",
+        "SHELL_OK"
+      ]
+    },
+    "unknownEnvelopeRecordCount": 150,
+    "unknownContentBlockCount": 1,
+    "nativeEvidenceLimitReasons": [],
+    "maximumChildFilesPerParent": 32,
+    "maximumFileBytes": 2097152,
+    "maximumTotalBytes": 16777216
+  },
+  "result": {
+    "acceptancePhase": "shutdown-complete",
+    "alertCount": 3,
+    "alertsByDeliveryState": {
+      "delivered": 3
+    },
+    "collectionConfigured": true,
+    "gapReasons": [],
+    "historicalProgressMeasurementAvailable": true,
+    "launchAtLogin": false,
+    "monitoringEnabled": true,
+    "notificationState": "Allowed",
+    "observedAgentVersions": [
+      "2.1.293",
+      "2.1.295"
+    ],
+    "occurrenceCount": 37,
+    "occurrencesByContentType": {
+      "finalResponse": 6,
+      "intermediateResponse": 2,
+      "toolError": 4,
+      "toolOutput": 6,
+      "userPrompt": 19
+    },
+    "queueCount": 0,
+    "revealedExcerptCount": 0,
+    "revealedSourceMetadataCount": 0,
+    "revealedValueCount": 0,
+    "schemaVersion": 1,
+    "settledHistoricalAuditCount": 3,
+    "storageReady": true,
+    "syntheticNativeChildContentTypes": [
+      "finalResponse",
+      "userPrompt"
+    ],
+    "syntheticNativeChildOccurrenceCount": 3,
+    "syntheticOccurrenceCount": 37,
+    "syntheticOccurrencesByContentType": {
+      "finalResponse": 6,
+      "intermediateResponse": 2,
+      "toolError": 4,
+      "toolOutput": 6,
+      "userPrompt": 19
+    },
+    "syntheticOccurrencesByProducerVersionAndContentType": {
+      "2.1.293": {
+        "finalResponse": 3,
+        "intermediateResponse": 1,
+        "toolError": 2,
+        "toolOutput": 3,
+        "userPrompt": 9
+      },
+      "2.1.295": {
+        "finalResponse": 3,
+        "intermediateResponse": 1,
+        "toolError": 2,
+        "toolOutput": 3,
+        "userPrompt": 10
+      }
+    },
+    "syntheticSessionCount": 3,
+    "syntheticValuePresent": true,
+    "unreadHistoricalProgressCount": 0,
+    "valueCount": 1,
+    "viewingAuthorized": false,
+    "windowVisible": true,
+    "workflowEvents": {
+      "mask-userMask": 2
+    },
+    "newVaultCleanupPassed": true
+  },
+  "committedContentBeforeRestart": {
+    "2.1.293": {
+      "finalResponse": 3,
+      "intermediateResponse": 1,
+      "toolError": 2,
+      "toolOutput": 3,
+      "userPrompt": 9
+    },
+    "2.1.295": {
+      "finalResponse": 2,
+      "intermediateResponse": 1,
+      "toolError": 2,
+      "toolOutput": 3,
+      "userPrompt": 9
+    }
+  },
+  "committedNativeChildContentBeforeRestart": {
+    "2.1.293": {
+      "finalResponse": 1,
+      "userPrompt": 2
+    },
+    "2.1.295": {
+      "finalResponse": 1,
+      "userPrompt": 2
+    }
+  },
+  "ownerLifetimeSmokeOnly": false,
+  "appBuildTransition": {
+    "requested": true,
+    "buildStarted": true,
+    "frozenSourceFileCount": 63,
+    "frozenSwiftSourceFileCount": 58,
+    "oldSignedBundleDigest": "0dff245ec27090b3d1aba20da7b6b3c8d7b8034fee28747d5da21da99deef746",
+    "buildExitCode": 0,
+    "buildElapsedMilliseconds": 14774,
+    "newSignedBundleDigest": "c7703ab2b50d53405970ee69d4d62b5f24bfae5cc348054accb2248c4a6aea5c",
+    "loadedProfileSchemaVersion": 2,
+    "savedProfileSchemaVersion": 3,
+    "profileSchemaMeasurementAvailable": true
+  },
+  "freshCreatorLaunched": true,
+  "signedAppSchema2To3MigrationEstablished": true,
+  "diagnosticArtifactsRetained": false,
+  "ownedProtectionCleanupPending": false,
+  "signedCLIUpgradeAndRestartEstablished": true,
+  "genuineGUIOrT3ConcurrencyEstablished": false,
+  "requiredFormatFailureRestorationEstablished": false,
+  "reviewAndObsoleteStateRecoveryEstablished": false,
+  "actualHealthNotificationDeliveryEstablished": false,
+  "cleanupPending": false,
+  "recordedOn": "2026-10-09",
+  "passedGateCount": 28,
+  "passScope": "Genuine Claude CLI producer upgrade, signed app rebuild, encrypted profile schema 2 to 3, and process restart in one owned fresh vault.",
+  "publicationNotes": [
+    "The original failed preflight remains unchanged. The external app was closed by its operator before this resumed trial; no product fix or forced termination resolved that admission guard.",
+    "The fixed repository Debug build ran only after worker1 exited with encrypted captures pending and before worker2 launched at the same collector and helper paths. Its original fresh creator remained in a verified private copy of the old signed bundle.",
+    "The restarted worker measured actual decrypted loaded schema 2 and read-back persisted schema 3. All six build/migration gates and the original 22 genuine recovery gates passed.",
+    "The frozen 63 inputs include 57 production Swift files plus Package.swift and five build/runner inputs. They remained unchanged through the build and completed trial.",
+    "All five required types and native-child prompt/final occurrences were committed for each actual producer version. Native inspection found all nine typed markers for each producer using only owned parents and their own children.",
+    "Every pre-exit pending capture identity appeared in the restarted worker successful completion callbacks and durable consumed receipts. A historical audit alone could not satisfy this check.",
+    "Checkpoint assertions establish identity loading, not unchanged offsets or parser-state values. Signed review and obsolete-state recovery were not exercised.",
+    "The native evidence reader unfamiliar-envelope and block counts are shape diagnostics. The production parser reported zero coverage gaps; those diagnostic labels alone do not establish required-content loss.",
+    "The app report records notification permission Allowed and three ordinary alerts with delivered state. This trial produced no required-operation or format incident and does not establish scoped health notification delivery or visual inspection.",
+    "Exactly one saved Claude profile was migrated. Other provider/host recovery, actual concurrent GUI/T3 runs, required-format restoration, and signed review/obsolete-state acceptance remain separate gates.",
+    "All original creator key cleanup, exact registration removal, temporary authentication removal, owned process teardown, and private artifact removal passed. No paths, native or Keychain IDs, private identity digests, tokens, authentication, or source content are published."
+  ]
+}

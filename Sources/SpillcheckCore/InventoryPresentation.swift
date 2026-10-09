@@ -4,6 +4,38 @@ public extension AgentProvider {
     var displayName: String { self == .codex ? "Codex" : "Claude Code" }
 }
 
+public extension AgentInterface {
+    var hostLabel: String {
+        switch self {
+        case .standaloneCLI: "CLI"
+        case .t3: "T3"
+        case .desktopCode: "GUI"
+        }
+    }
+}
+
+public extension ContentType {
+    var pluralLabel: String {
+        switch self {
+        case .userPrompt: "User prompts"
+        case .intermediateResponse: "Intermediate responses"
+        case .finalResponse: "Final responses"
+        case .toolOutput: "Tool output"
+        case .toolError: "Tool errors"
+        }
+    }
+}
+
+public extension CollectionOperation {
+    var label: String {
+        switch self {
+        case .hookDelivery: "Hook delivery"
+        case .liveRead: "Live collection"
+        case .historicalRead: "History catch-up"
+        }
+    }
+}
+
 public extension SecretCategory {
     var displayName: String {
         switch self {

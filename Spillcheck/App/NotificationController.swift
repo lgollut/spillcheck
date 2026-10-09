@@ -51,6 +51,7 @@ private final class NativeNotificationSystem: NotificationSystem {
         switch notification.target {
         case .value(let id): content.userInfo = ["leakretTarget": "value", "leakretID": id.uuidString.lowercased()]
         case .historicalAudit(let id): content.userInfo = ["leakretTarget": "audit", "leakretID": id.uuidString.lowercased()]
+        case .collectionHealth(let id): content.userInfo = ["leakretTarget": "health", "leakretID": id.uuidString.lowercased()]
         }
         try await center.add(UNNotificationRequest(identifier: notification.identifier, content: content, trigger: nil))
     }
@@ -187,6 +188,7 @@ final class NotificationController: NSObject, UNUserNotificationCenterDelegate {
         switch kind {
         case "value": return .value(id)
         case "audit": return .historicalAudit(id)
+        case "health": return .collectionHealth(id)
         default: return nil
         }
     }

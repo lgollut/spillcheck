@@ -1,0 +1,220 @@
+{
+  "actualProducerVersion": "0.161.0",
+  "actualReaderVersion": "0.161.0",
+  "cleanup": {
+    "disposableRootRemoved": true,
+    "observerProcessGroup": {
+      "groupKillPermissionDenied": false,
+      "launched": true,
+      "leaderExited": true,
+      "ownedGroupTerminationRequested": true
+    },
+    "ownedProcessGroupsStopped": true,
+    "producerProcessGroup": {
+      "groupKillPermissionDenied": false,
+      "leaderExited": true,
+      "ownedGroupTerminationRequested": true
+    },
+    "readerVersionProbeProcessGroup": {
+      "groupKillPermissionDenied": false,
+      "leaderExited": true,
+      "ownedGroupTerminationRequested": true
+    },
+    "temporaryAuthenticationRemoved": true,
+    "versionProbeProcessGroup": {
+      "groupKillPermissionDenied": false,
+      "leaderExited": true,
+      "ownedGroupTerminationRequested": true
+    }
+  },
+  "collectionPath": "exact-selected-public-native-items",
+  "evidenceScope": {
+    "capturedBeforeFinalMalformedIDGuard": false,
+    "capturedBeforeOperationHealthContractExtension": true,
+    "collection": "active-selected-thread-polling",
+    "collector": "production-CodexAppServerHistoryClient-and-CodexAdapter",
+    "configurationRoot": "<RUN_001>/home",
+    "executable": "<HOME>/.local/bin/codex",
+    "execution": "genuine-disposable-local-provider",
+    "genuineGuiSession": false,
+    "genuineT3Session": false,
+    "interface": "standalone-cli",
+    "nativeIdentifiersRedacted": true,
+    "nativeIdentity": "provider-issued-native-thread-and-item-identifiers",
+    "provider": "codex",
+    "runtime": "SwiftPM-acceptance-executable",
+    "signedAppAcceptance": false,
+    "sourceContentExcluded": true
+  },
+  "existingConfigurationModified": false,
+  "existingHistoriesModified": false,
+  "existingHookSettingsModified": false,
+  "expectedProducerVersion": "0.161.0",
+  "expectedReaderVersion": "0.161.0",
+  "finishedAt": "2026-10-09T11:18:41.357395+00:00",
+  "historicalLatencyMeasured": false,
+  "hookDeliveryLatencyMeasured": false,
+  "hookTrustBypassed": false,
+  "interface": "standalone-cli",
+  "latencyMeasurementPassed": true,
+  "liveCanonicalReadStartP95WithinProposed120SecondTarget": true,
+  "liveLatencyMeasured": true,
+  "nativeChildPromptCoverage": {
+    "limit": "The established Codex fixture requires the native child's own final. Its prompt remains unverified.",
+    "optionalTypedObservedCount": 0,
+    "validated": false
+  },
+  "observerLaunchRequestedAt": "2026-10-09T11:18:10.000886+00:00",
+  "observerReadStartedWhileProducerRunning": true,
+  "observerReady": true,
+  "passed": true,
+  "pipeline": {
+    "actualReaderVersion": "0.161.0",
+    "ciphertextMarkerInspectionPassed": true,
+    "durableDeliveries": 29,
+    "finalCatchUpNewOccurrences": 0,
+    "finished": true,
+    "gapReasons": [],
+    "hostVersion": null,
+    "interface": "standalone-cli",
+    "nativeLocationsUnique": true,
+    "observedProducerVersions": [
+      "0.161.0"
+    ],
+    "occurrenceCount": 14,
+    "occurrencesByContentType": {
+      "finalResponse": 2,
+      "intermediateResponse": 1,
+      "toolError": 2,
+      "toolOutput": 2,
+      "userPrompt": 7
+    },
+    "queueCount": 0,
+    "replayStable": true,
+    "sessionCount": 2,
+    "setupState": "selected-source",
+    "sourceLatency": {
+      "committedSourceRevisionCount": 8,
+      "firstCanonicalReadStartedAt": "2026-10-09T11:18:12.344Z",
+      "historical": {
+        "canonicalReadStartToCommitObservation": {
+          "count": 0,
+          "excludedNegativeOrNonfiniteCount": 0,
+          "max": null,
+          "p50": null,
+          "p95": null
+        },
+        "committedSourceRevisionCount": 0,
+        "providerTimestampToCanonicalReadStart": {
+          "count": 0,
+          "excludedNegativeOrNonfiniteCount": 0,
+          "max": null,
+          "p50": null,
+          "p95": null
+        },
+        "queueCaptureToCommitObservation": {
+          "count": 0,
+          "excludedNegativeOrNonfiniteCount": 0,
+          "max": null,
+          "p50": null,
+          "p95": null
+        }
+      },
+      "lastCommitObservedAt": "2026-10-09T11:18:36.301Z",
+      "limits": [
+        "Samples are unique public canonical source revisions carrying the disposable synthetic value, with an exact full detector receipt and a retained occurrence for that source and content time.",
+        "Read start is measured immediately before awaiting CodexAdapter.normalize. Product metadata.observedAt remains the queue capturedAt timestamp and is not used as read start.",
+        "Provider contentTime is completedAtMs when available, otherwise startedAtMs or a turn timestamp. It does not measure first-byte publication or when public history made that item available.",
+        "A public read may include an item published after its start. Each latency leg excludes and counts negative or nonfinite wall-clock deltas; clock adjustments can affect positive durations too.",
+        "Queue capture belongs to the enclosing public poll, not the source's first available byte.",
+        "Commit observation follows completion of the enclosing pipeline capture. It upper-bounds the source's exact durable commit and includes remaining batch and checkpoint work.",
+        "Live or historical classification comes from the retained occurrence after the production pipeline applies its start boundary. Final catch-up and replay are excluded from timing.",
+        "This measures standalone CLI exact-ID public-history polling, not hook delivery, T3 latency, hosted tools, or long-running output fragment publication."
+      ],
+      "live": {
+        "canonicalReadStartToCommitObservation": {
+          "count": 8,
+          "excludedNegativeOrNonfiniteCount": 0,
+          "max": 495.1380491256714,
+          "p50": 329.010009765625,
+          "p95": 495.1380491256714
+        },
+        "committedSourceRevisionCount": 8,
+        "providerTimestampToCanonicalReadStart": {
+          "count": 8,
+          "excludedNegativeOrNonfiniteCount": 0,
+          "max": 997.439980506897,
+          "p50": 177.45089530944824,
+          "p95": 997.439980506897
+        },
+        "queueCaptureToCommitObservation": {
+          "count": 8,
+          "excludedNegativeOrNonfiniteCount": 0,
+          "max": 748.8269805908203,
+          "p50": 434.8130226135254,
+          "p95": 748.8269805908203
+        }
+      },
+      "observedSourceRevisionCount": 8,
+      "percentileMethod": "nearest-rank",
+      "schemaVersion": 1,
+      "units": "milliseconds",
+      "unmeasuredSourceRevisionCount": 0
+    },
+    "syntheticAlertCount": 2,
+    "syntheticValuePresent": true,
+    "typedCommitted": {
+      "CHILD_FINAL": 1,
+      "FINAL": 1,
+      "INTERMEDIATE": 1,
+      "MCP_ERROR": 1,
+      "MCP_OK": 1,
+      "PROMPT": 1,
+      "SHELL_ERROR": 1,
+      "SHELL_OK": 1
+    },
+    "typedCommittedBeforeCatchUp": {
+      "CHILD_FINAL": 1,
+      "FINAL": 1,
+      "INTERMEDIATE": 1,
+      "MCP_ERROR": 1,
+      "MCP_OK": 1,
+      "PROMPT": 1,
+      "SHELL_ERROR": 1,
+      "SHELL_OK": 1
+    },
+    "typedObserved": {
+      "CHILD_FINAL": 1,
+      "FINAL": 1,
+      "INTERMEDIATE": 1,
+      "MCP_ERROR": 1,
+      "MCP_OK": 1,
+      "PROMPT": 1,
+      "SHELL_ERROR": 1,
+      "SHELL_OK": 1
+    },
+    "valueCount": 1
+  },
+  "pipelineDiagnosticBytes": 0,
+  "pipelineExitCode": 0,
+  "producerExitCode": 0,
+  "producerFinishedAt": "2026-10-09T11:18:36.151807+00:00",
+  "producerMilliseconds": 26632.0,
+  "producerOutputBytes": 3197,
+  "producerStartedAt": "2026-10-09T11:18:09.517631+00:00",
+  "requiredTypedMarkers": [
+    "CHILD_FINAL",
+    "FINAL",
+    "INTERMEDIATE",
+    "MCP_ERROR",
+    "MCP_OK",
+    "PROMPT",
+    "SHELL_ERROR",
+    "SHELL_OK"
+  ],
+  "schemaVersion": 1,
+  "startedAt": "2026-10-09T11:18:09.476070+00:00",
+  "status": "public-observation-complete",
+  "t3LatencyMeasured": false,
+  "threadID": "<NATIVE_SESSION_001>"
+}

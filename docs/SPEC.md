@@ -1,6 +1,6 @@
 # macOS application for auditing secrets in agentic sessions
 
-Status: consolidated product specification following the interview. Confirmed choices are distinguished from technical proposals and capabilities that require prototype validation. Updated: October 7, 2026.
+Status: consolidated product specification following the interview. Confirmed choices are distinguished from technical proposals and capabilities that require prototype validation. Updated: October 9, 2026.
 
 ## Problem and expected outcome
 
@@ -16,7 +16,7 @@ The [glossary](../CONTEXT.md) defines the vocabulary for secrets, sessions, outp
 - The first implementation must support installation and updates beyond the development checkout.
 - The release baseline is macOS 14 or later on Apple Silicon, distributed directly as a signed and notarized app. Advertise Intel support only after validating an Intel build.
 - Codex and Claude are the initial target agents. OpenCode may be considered later.
-- T3 workflows using Codex or Claude Code and their standalone CLI workflows are required first. Add local Desktop Code support as its coverage is validated. Ordinary Claude Chat is outside this initial scope.
+- T3 workflows using Codex or Claude Code, their standalone CLI workflows, and local sessions in the official Codex GUI and Claude GUI Code tab are required. All hosts must work concurrently without choosing one interface per provider. Ordinary Claude Chat, Cowork, cloud execution, and SSH execution remain outside this release's scope.
 - Central inventory of secrets observed in conversations and tool outputs, with a view to rotating or changing those secrets.
 - Tool output hooks are the preferred approach to collection.
 - Asynchronous processing. A delay of a few tens of seconds to a few minutes is acceptable. Analysis does not need to follow every output fragment in real time.
@@ -63,6 +63,12 @@ The main window presents the inventory and its detail views. The menu bar provid
 ## Collection and coverage
 
 The intended coverage includes tool outputs, user messages, and intermediate or final model responses. Adapters must state which interfaces, versions, and content types have actually been validated. Any missing type remains a visible product limitation and an issue to resolve in the prototype.
+
+GUI collection is required for the completed version and remains unverified in
+the current implementation. Opening a CLI conversation in a GUI does not
+establish coverage of sessions created or running inside that GUI. The
+[compatibility plan](HARNESS_COMPATIBILITY_PLAN.md) records the implementation
+and acceptance gates for simultaneous CLI, T3, and GUI collection.
 
 Each event should include the originating agent, session identifier, message or tool call identifier when available, observation time, content type, and a location that allows the context to be found.
 

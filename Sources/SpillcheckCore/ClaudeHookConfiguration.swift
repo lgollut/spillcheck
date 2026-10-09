@@ -35,9 +35,9 @@ public struct ClaudeHookConfiguration: Sendable {
         self.profileID = profileID; self.interface = interface; self.agentVersion = agentVersion
     }
 
-    /// Claude 2.1.293 exec form: explicit executable and argv; no shell interpretation of paths.
+    /// Observed command exec form: explicit executable and argv; no shell interpretation of paths.
     public func editing(_ data: Data?, action: ClaudeHookEdit) throws -> Data {
-        if action == .install, agentVersion != ClaudeAdapter.validatedAgentVersion || interface == .desktopCode {
+        if action == .install, !CollectionCompatibility.isEligible(provider: .claudeCode, interface: interface, version: agentVersion) {
             throw ClaudeSetupError.unsupportedVersion
         }
         var root: [String: Any]
@@ -108,7 +108,7 @@ public actor ClaudeHookSetup {
         guard settingsURL.isFileURL, settingsURL.path.hasPrefix("/") else { throw ClaudeSetupError.invalidConfiguration }
         self.settingsURL = claudeConfiguredURL(settingsURL.deletingLastPathComponent()).appendingPathComponent(settingsURL.lastPathComponent)
         self.configuration = configuration
-        if configuration.agentVersion != ClaudeAdapter.validatedAgentVersion || configuration.interface == .desktopCode {
+        if !CollectionCompatibility.isEligible(provider: .claudeCode, interface: configuration.interface, version: configuration.agentVersion) {
             state = .unsupportedVersion
         }
     }

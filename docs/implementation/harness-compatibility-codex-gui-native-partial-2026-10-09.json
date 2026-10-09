@@ -1,0 +1,164 @@
+{
+  "GUIAutomationUsed": false,
+  "actualNativeProducerVersion": "0.160.1",
+  "actualPassiveReaderVersion": "0.161.0",
+  "date": "2026-10-09",
+  "fixes": {
+    "FoundationOwnsChildReaping": true,
+    "boundedOwnedReaderShutdownMilliseconds": 250,
+    "currentCoreAndProbeSourceHashesRequiredForReuse": true,
+    "focusedCoreProcessTestsPassed": 11,
+    "idempotentCloseReceipt": true,
+    "noWaitpidCompetitionOrUnrelatedProcessSignaling": true,
+    "probeScopeTestsPassed": 3,
+    "stableModuleAndStaticLibrarySnapshotBeforeCompile": true
+  },
+  "hostVersion": {
+    "build": "13232",
+    "bundleIdentifier": "com.openai.codex",
+    "evidence": "officialBundleMetadata",
+    "version": "26.930.61225"
+  },
+  "initialLiveAttempt": {
+    "cause": "Standalone probe compiler module and linked static Core library had incompatible DetectionPipeline layouts; original call expected +0x178 vtable entry which was null. A matching rebuilt snapshot contains that entry and processes the exact original sources successfully.",
+    "childRegisteredAfterCrash": true,
+    "controlledFailure": "EXC_BAD_ACCESS-null-async-DetectionPipeline-vtable-entry",
+    "exitCode": -11,
+    "liveCoverageEstablished": false,
+    "parentAdmissionCompletedBeforeCrash": true,
+    "resultProduced": false
+  },
+  "instrumentedRetryBeforeShutdownFix": {
+    "controlledFailure": "owned-reader-shutdown-exceeded-wrapper-deadline",
+    "ephemeralEncryptedStoreRemoved": true,
+    "ownedObserverGroupStopped": true,
+    "privateDiagnosticsRetainedInIgnoredBuildDirectory": true,
+    "sampledStack": [
+      "CodexAppServerHistoryClient.close",
+      "CodexPassiveProcess.close",
+      "Foundation.Process.waitUntilExit"
+    ]
+  },
+  "nativeChildOriginalSourceDiagnostic": "harness-compatibility-codex-gui-native-child-source-2026-10-09.json",
+  "nativeIdentityEvidence": {
+    "childInitialLiveAdmissionNotCompleted": true,
+    "exactIDsAndSourcePathsPublished": false,
+    "exactNativeParentChildRelationshipVerified": true,
+    "explicitAuthorizedHomeMatchedOwnRuntimeCandidate": true,
+    "originalPublicThreadPathInsideAuthorizedHome": true,
+    "ownedOriginalProjectVerified": true,
+    "parentAndChildDistinct": true,
+    "source": "own-runtime-CODEX_THREAD_ID"
+  },
+  "nextPreparedFixture": {
+    "directory": ".build/harness-compatibility/manual-codex-gui-r3-2026-10-09",
+    "observerLeaseStarted": false,
+    "providerSessionCreated": false,
+    "requiresManualOfficialGUILocalChat": true
+  },
+  "phase0Passed": false,
+  "postFixHistoricalOnlySelectedSourceResult": {
+    "GUIAutomationUsed": false,
+    "ephemeralEncryptedStoreRemoved": true,
+    "exactNativeIdentitiesPublished": false,
+    "existingConfigurationModified": false,
+    "exitCode": 1,
+    "hookTrustBypassed": false,
+    "hostVersionEvidence": "officialBundleMetadata",
+    "ownedObserverGroupStopped": true,
+    "productionGUICollectionEnabled": false,
+    "result": {
+      "actualReaderVersion": "0.161.0",
+      "catchupNewOccurrences": 0,
+      "catchupOnly": true,
+      "catchupScope": "exact-selected-original-sources-only",
+      "catchupWindowDays": 7,
+      "ciphertextMarkerInspectionPassed": true,
+      "exactNativeIdentityAndAuthorizedOriginalStoreVerified": true,
+      "finished": true,
+      "gapReasons": [],
+      "hookDeliveryMeasured": false,
+      "hostVersion": "26.930.61225",
+      "hostVersionEvidence": "officialBundleMetadata",
+      "limitations": [
+        "Format probe uses the existing provider parser in its enabled CLI eligibility context; it does not enable or accept production Desktop normalization.",
+        "The GUI host/version and store authorization are explicit operator evidence; native identity comes only from the created task's own runtime and is checked against its exact original source.",
+        "Live boundary and exact-ID polling do not measure first-byte publication or hook delivery.",
+        "This retry began after the genuine GUI fixture completed; all analyzed sources have historical provenance and no live gate is established.",
+        "Catch-up covers only the two selected disposable original sources in a seven-day time window, not discovery of unrelated history."
+      ],
+      "liveBoundaryBeforeRuntimeRegistration": false,
+      "nativeLocationsUnique": true,
+      "nativeParentChildRelationshipVerified": true,
+      "nativeSessionCount": 2,
+      "normalizedContentObservationsIncludingReplay": {
+        "child": {
+          "finalResponse": 18,
+          "intermediateResponse": 9,
+          "toolError": 9
+        },
+        "parent": {
+          "finalResponse": 18,
+          "intermediateResponse": 36,
+          "toolError": 9,
+          "toolOutput": 27,
+          "userPrompt": 18
+        }
+      },
+      "observedProducerVersions": [
+        "0.160.1"
+      ],
+      "occurrenceCount": 10,
+      "parserEligibilityContext": "standalone-cli-format-probe-only",
+      "passed": false,
+      "productionGUICollectionEnabled": false,
+      "queueCount": 0,
+      "readerFinalShutdownCompletedWithinDeadline": true,
+      "readerRestartShutdownCompletedWithinDeadline": true,
+      "replayStable": true,
+      "selectedNativePublicItemMarkers": {
+        "parent": [
+          "PARENT_FINAL",
+          "PARENT_INTERMEDIATE",
+          "PARENT_PROMPT",
+          "PARENT_TOOL_ERROR",
+          "PARENT_TOOL_OUTPUT"
+        ]
+      },
+      "selectedSourceCatchupPassed": false,
+      "signedAppAcceptance": false,
+      "sourceHost": "official-codex-GUI",
+      "sourceOpeningMeasured": false,
+      "typedCommitted": {
+        "PARENT_FINAL": 1,
+        "PARENT_INTERMEDIATE": 1,
+        "PARENT_PROMPT": 1,
+        "PARENT_TOOL_ERROR": 1,
+        "PARENT_TOOL_OUTPUT": 1
+      },
+      "typedCommittedDuringObservation": {}
+    },
+    "schemaVersion": 1,
+    "sourceHost": "official-codex-GUI",
+    "status": "unmet-GUI-phase0-gate",
+    "stderrBytesRetainedPrivately": 0
+  },
+  "privacy": {
+    "noNativeIdentitiesPublished": true,
+    "noProviderSettingsOrTrustChanges": true,
+    "noSourcePlaintextArchive": true,
+    "noUnrelatedHistoryEnumeration": true
+  },
+  "productionGUICollectionEnabled": false,
+  "providerSessionCreatedInOfficialGUIByOperator": true,
+  "schemaVersion": 1,
+  "signedAppAcceptance": false,
+  "sourceHost": "official-codex-GUI",
+  "status": "genuine-GUI-native-parent-catchup-only-child-and-live-gates-unmet",
+  "unmetGates": [
+    "All five required types in the native child: helper observed collector failure and stopped before requested child markers; the exact public child contains no required child fixture markers",
+    "Bounded genuine live collection: original observer crashed; later retries began after producer completion and have historical provenance only",
+    "A fresh fixture and observer must establish native child prompt coverage rather than inferring it from parent spawn arguments",
+    "Ordinary owned hook delivery where available, production Desktop normalization/setup, signed-app GUI acceptance, six-way concurrency, upgrade recovery, scoped degradation notifications and native source opening"
+  ]
+}

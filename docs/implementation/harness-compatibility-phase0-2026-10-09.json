@@ -1,0 +1,69 @@
+{
+  "claudeGUI": {
+    "completeNativeJSONL": true,
+    "guiMetadataToNativeSessionMappingObserved": true,
+    "hostVersion": "2.31226.0",
+    "liveHookProbe": {
+      "blockedReason": "Sky Computer Use request timed out",
+      "cleanup": {
+        "emptyDisposableSettingsRemoved": false,
+        "originalProviderHistoryRetained": true,
+        "ownedProbeRootRemoved": true,
+        "ownedRegistrationRemoved": true
+      },
+      "committedOccurrences": 0,
+      "durableDeliveries": 0,
+      "ownedProjectRegistrationInstalled": true,
+      "reportScope": "Probe expired before GUI verification prompt could be submitted; no delivery or live-content acceptance measured.",
+      "setupState": "installedUnverified",
+      "verificationPromptSubmitted": false,
+      "windowControlRetries": 2
+    },
+    "nativeChildFinalObservedInOwnTranscript": true,
+    "nativeStore": "<HOME>/.claude/projects/<OWNED_GUI_PROJECT>",
+    "observedNativeProducerVersion": "2.1.293",
+    "ownedProject": "<TMPDIR>/spillcheck-harness-gui",
+    "productionGUICollectionEnabled": false,
+    "remainingGates": [
+      "owned-hook delivery and encrypted commitment",
+      "bounded live observation",
+      "available seven-day catch-up",
+      "side-chat live source contract and native identity",
+      "unavailable side-chat history accounting",
+      "required child content committed through GUI collection"
+    ],
+    "requiredMainContentTypesObserved": [
+      "userPrompt",
+      "intermediateResponse",
+      "finalResponse",
+      "toolOutput",
+      "toolError"
+    ],
+    "sessionCreatedDirectlyInOfficialLocalCodeGUI": true,
+    "successAndErrorToolMarkersNotRepeatedInAssistantText": true
+  },
+  "codexGUI": {
+    "automationResult": "Computer Use is not allowed for this app for safety reasons.",
+    "inventoryBundleID": "com.openai.codex",
+    "inventoryDisplayName": "ChatGPT",
+    "productionGUICollectionEnabled": false,
+    "remainingGates": [
+      "actual GUI host and embedded producer versions",
+      "explicitly authorized original native store",
+      "passive live and historical collection route",
+      "native session and child identity",
+      "all five required content types",
+      "bounded live observation and available seven-day catch-up"
+    ],
+    "sessionCreatedDirectlyInOfficialGUI": false
+  },
+  "limitations": [
+    "Main GUI transcript observation is source evidence, not signed ingestion.",
+    "Opening a CLI conversation in a GUI was not used as acceptance.",
+    "No GUI route enabled while phase 0 is unmet.",
+    "Side chats may lack persisted original history; no additional raw archive was added."
+  ],
+  "measuredDate": "2026-10-09",
+  "phase0Passed": false,
+  "schemaVersion": 1
+}

@@ -14,12 +14,15 @@ import signal
 import subprocess
 import tempfile
 import threading
+import importlib.util
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 TOKEN = "ghp_8nR4vY2qL7sD9mF3xK6cP1aB5hJ0uE4wT9zS"
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--executable", type=pathlib.Path, default=pathlib.Path.home()/".local/bin/codex")
+    parser.add_argument("--expect-version", help="Optional strict baseline for this run")
     parser.add_argument("--report", default=str(ROOT/".build/implementation/codex-interactive-live.json"))
     parser.add_argument("--ready", default=str(ROOT/".build/implementation/codex-interactive-ready.json"))
     parser.add_argument("--duration", type=int, default=900)
@@ -27,7 +30,10 @@ def main():
     os.umask(0o077)
     helper = ROOT/".build/app/Build/Products/Debug/Spillcheck.app/Contents/Helpers/spillcheck-hook"
     binary = ROOT/".build/out/Products/Debug/spillcheck-storage-acceptance"
-    codex = pathlib.Path.home()/".local/bin/codex"
+    codex = args.executable
+    spec = importlib.util.spec_from_file_location("codex_fixture", pathlib.Path(__file__).with_name("run.py"))
+    fixture = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fixture)
     if not all(p.is_file() for p in [helper, binary, codex, ROOT/".build/scanner/betterleaks"]):
         raise SystemExit("Build the signed app, acceptance product and pinned scanner first.")
     with tempfile.TemporaryDirectory(prefix="spillcheck-codex-live-", dir="/tmp") as temporary:
@@ -40,8 +46,10 @@ def main():
         shutil.copyfile(auth, home/"auth.json"); os.chmod(home/"auth.json", 0o600)
         (home/"config.toml").write_text('model = "gpt-6.1-sol"\nmodel_reasoning_effort = "low"\n[features]\nmulti_agent = true\n[analytics]\nenabled = false\n[mcp_servers.spillcheck_synthetic]\ndefault_tools_approval_mode = "approve"\ncommand = "/usr/bin/python3"\nargs = [' +
             json.dumps(str(ROOT/"Tests/Fixtures/Codex/mcp_fixture.py")) + ']\n')
+        version = fixture.observe_version(codex, environment=dict(os.environ, CODEX_HOME=str(home)),
+            directory=work, expected=args.expect_version)
         driver = subprocess.Popen([str(binary), "--codex-live", "--directory", str(root), "--codex-home", str(home),
-            "--executable", str(codex), "--helper", str(helper), "--scanner", str(ROOT/".build/scanner/betterleaks"),
+            "--executable", str(codex), "--reader-version", version, "--helper", str(helper), "--scanner", str(ROOT/".build/scanner/betterleaks"),
             "--rules", str(ROOT/".build/scanner/betterleaks.toml"), "--duration", str(args.duration)],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
         reports = []
@@ -81,10 +89,12 @@ Finish with LEAKRET_M4_FINAL {TOKEN}. Do not read files or browse. Keep response
             final = next((x for x in reversed(reports) if x.get("finished")), None)
             expected = {"PROMPT", "INTERMEDIATE", "FINAL", "SHELL_OK", "SHELL_ERROR", "MCP_OK", "MCP_ERROR"}
             passed = bool(final and driver.returncode == 0 and final["setupState"] == "connected"
+                and final.get("actualReaderVersion") == version and final.get("observedProducerVersions") == [version]
                 and expected <= set(final["typedCommitted"]) and final["syntheticValuePresent"]
                 and final["queueCount"] == 0 and final["replayStable"] and final["ciphertextMarkerInspectionPassed"])
             report = {"schemaVersion": 1, "hookTrustBypassed": False, "existingConfigurationModified": False,
-                "driverExitCode": driver.returncode, "diagnosticBytes": len(errors), "result": final, "passed": passed}
+                "actualProducerVersion": version, "actualReaderVersion": final.get("actualReaderVersion") if final else None,
+                "expectedVersion": args.expect_version, "driverExitCode": driver.returncode, "diagnosticBytes": len(errors), "result": final, "passed": passed}
             path = pathlib.Path(args.report); path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps(report, indent=2)+"\n")
             print(json.dumps({"finished": True, "passed": passed, "report": str(path)}), flush=True)

@@ -28,6 +28,10 @@ private struct StorageAcceptance {
     static func main() async {
         do {
             let arguments = Array(CommandLine.arguments.dropFirst())
+            if arguments.contains("--claude-configure-hook") {
+                try await ClaudeAcceptance.configureHook(arguments)
+                return
+            }
             if arguments.contains("--claude-live") || arguments.contains("--claude-observe") {
                 try await ClaudeAcceptance.run(arguments)
                 return

@@ -36,20 +36,26 @@ public struct CollectionBatch: Sendable {
     /// Cursor-only continuation replaces this capture atomically after all returned sources commit.
     public let continuation: CapturePacket?
     public let historicalProgress: HistoricalReadProgress?
+    /// Only complete successful reparses of the referenced item/record belong here.
+    public let recoveredReferences: [CoverageRecoveryReference]
 
     public init(sources: [CollectedSource], coverageGaps: [CoverageGap] = [], checkpoints: [SourceCheckpoint] = [],
-                continuation: CapturePacket? = nil, historicalProgress: HistoricalReadProgress? = nil) {
+                continuation: CapturePacket? = nil, historicalProgress: HistoricalReadProgress? = nil,
+                recoveredReferences: [CoverageRecoveryReference] = []) {
         self.sources = sources
         self.coverageGaps = coverageGaps
         self.checkpoints = checkpoints
         self.continuation = continuation
         self.historicalProgress = historicalProgress
+        self.recoveredReferences = recoveredReferences
     }
 
     public init(sources: [CollectedSource], coverageGaps: [CoverageGap] = [], checkpoint: SourceCheckpoint?,
-                continuation: CapturePacket? = nil, historicalProgress: HistoricalReadProgress? = nil) {
+                continuation: CapturePacket? = nil, historicalProgress: HistoricalReadProgress? = nil,
+                recoveredReferences: [CoverageRecoveryReference] = []) {
         self.init(sources: sources, coverageGaps: coverageGaps, checkpoints: checkpoint.map { [$0] } ?? [],
-                  continuation: continuation, historicalProgress: historicalProgress)
+                  continuation: continuation, historicalProgress: historicalProgress,
+                  recoveredReferences: recoveredReferences)
     }
 }
 

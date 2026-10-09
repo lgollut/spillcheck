@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "signedAppExitCode": 0,
+  "timedOut": false,
+  "stdoutBytes": 0,
+  "diagnosticBytes": 0,
+  "ciphertextMarkerInspectionPassed": true,
+  "sourceIsSynthetic": true,
+  "scannerIsSignedBundleChild": true,
+  "processElapsedSeconds": 9.118,
+  "appMemory": {
+    "sampleCount": 74,
+    "nominalSamplingDelaySeconds": 0.1,
+    "sampledPeakRSSBytes": 147947520,
+    "lastSampleRSSBytes": 91455488,
+    "scope": "Signed GUI process startup, five-content synthetic ingestion and idle; excludes scanner/helper children, large inventory and authenticated rendering. Actual sample spacing includes ps execution overhead; sampling is not an exact high-water mark."
+  },
+  "protectedStoreBytesAfterQuit": 245760,
+  "result": {
+    "acceptancePhase": "shutdown-complete",
+    "alertCount": 0,
+    "alertsByDeliveryState": {},
+    "collectionConfigured": true,
+    "gapReasons": [],
+    "launchAtLogin": false,
+    "monitoringEnabled": true,
+    "newVaultCleanupPassed": true,
+    "notificationState": "Off",
+    "observedAgentVersions": [
+      "unknown"
+    ],
+    "occurrenceCount": 5,
+    "occurrencesByContentType": {
+      "finalResponse": 1,
+      "intermediateResponse": 1,
+      "toolError": 1,
+      "toolOutput": 1,
+      "userPrompt": 1
+    },
+    "queueCount": 0,
+    "revealedExcerptCount": 0,
+    "revealedSourceMetadataCount": 0,
+    "revealedValueCount": 0,
+    "schemaVersion": 1,
+    "storageReady": true,
+    "syntheticNativeChildContentTypes": [],
+    "syntheticNativeChildOccurrenceCount": 0,
+    "syntheticOccurrenceCount": 5,
+    "syntheticOccurrencesByContentType": {
+      "finalResponse": 1,
+      "intermediateResponse": 1,
+      "toolError": 1,
+      "toolOutput": 1,
+      "userPrompt": 1
+    },
+    "syntheticSessionCount": 1,
+    "syntheticValuePresent": true,
+    "valueCount": 1,
+    "viewingAuthorized": false,
+    "windowVisible": true,
+    "workflowEvents": {
+      "mask-userMask": 2
+    }
+  },
+  "passed": true,
+  "cleanupPending": false,
+  "recordedOn": "2026-10-09",
+  "publicationNotes": [
+    "Controlled retry used the same signed app and existing direct-binary runner without code, signing, security-setting or native UI changes.",
+    "Fresh production queue-key startup, five synthetic content types, empty queue, encryption inspection and scoped new-key cleanup passed. No genuine provider content is inferred from this synthetic run.",
+    "Together with the subsequent signed genuine Claude pass, current startup is available. These passes do not determine the cause of the prior intermittent -25308 failures or guarantee operation while the device is locked."
+  ]
+}

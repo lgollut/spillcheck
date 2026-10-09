@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		08BDF76608D5FACBD234235A /* MenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17CA1A1EF4EFC6A19958BBF /* MenuBarView.swift */; };
 		1A768BC217199FA530DE8C5B /* CoverageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19ED623A19C443D332F0B3F2 /* CoverageView.swift */; };
+		276AC0BE0533CC3AC5D86FC4 /* SignedRecoveryVaultOwner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4160819F63DB83EC741C221F /* SignedRecoveryVaultOwner.swift */; };
 		3B4CC56CE4793773ED847E2E /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72754F890706FE3AC08E917C /* AppModel.swift */; };
 		4259A3EE68845CF3CE9957C3 /* AppRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9053ADDA32DBF8D9584BF727 /* AppRuntime.swift */; };
 		50CD72C61A2951A9F7B56D8B /* ViewingController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C645373F8A1C30BBBA9A13F /* ViewingController.swift */; };
@@ -43,6 +44,7 @@
 		0C645373F8A1C30BBBA9A13F /* ViewingController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewingController.swift; sourceTree = "<group>"; };
 		1175CE1FD04074EAC791BAD8 /* CollectionConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CollectionConfiguration.swift; sourceTree = "<group>"; };
 		19ED623A19C443D332F0B3F2 /* CoverageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoverageView.swift; sourceTree = "<group>"; };
+		4160819F63DB83EC741C221F /* SignedRecoveryVaultOwner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SignedRecoveryVaultOwner.swift; sourceTree = "<group>"; };
 		4443654EA8FD4A679416B077 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		4B8883194A9A1A966BD4733C /* spillcheck */ = {isa = PBXFileReference; lastKnownFileType = folder; name = spillcheck; path = .; sourceTree = SOURCE_ROOT; };
 		72754F890706FE3AC08E917C /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
@@ -110,6 +112,7 @@
 				A17CA1A1EF4EFC6A19958BBF /* MenuBarView.swift */,
 				C83519DE92F4C49EC8CB4A08 /* NotificationController.swift */,
 				79D89CB9AE08F6FD4E4F264D /* SettingsView.swift */,
+				4160819F63DB83EC741C221F /* SignedRecoveryVaultOwner.swift */,
 				E58EEA7BDD7529F15719ECBA /* SourceOpeningController.swift */,
 				AC1789CC5171F1D9793BBF1B /* Theme.swift */,
 				0C645373F8A1C30BBBA9A13F /* ViewingController.swift */,
@@ -310,6 +313,7 @@
 				08BDF76608D5FACBD234235A /* MenuBarView.swift in Sources */,
 				E634A2A7819D7E4E70DB1CC0 /* NotificationController.swift in Sources */,
 				B7ABC4164B31F5D198A9AF92 /* SettingsView.swift in Sources */,
+				276AC0BE0533CC3AC5D86FC4 /* SignedRecoveryVaultOwner.swift in Sources */,
 				ABBD7F8E265DDD0D2825A58E /* SourceOpeningController.swift in Sources */,
 				BD67C7384D09A5B7B3603CC7 /* Theme.swift in Sources */,
 				50CD72C61A2951A9F7B56D8B /* ViewingController.swift in Sources */,

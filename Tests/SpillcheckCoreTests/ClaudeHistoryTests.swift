@@ -14,7 +14,7 @@ private func historyDirectory() throws -> URL {
 }
 private func historyRow(_ id: String, text: String, date: String = "2026-10-07T20:00:00Z", session: String = "old-session") throws -> Data {
     try JSONSerialization.data(withJSONObject: ["type": "user", "uuid": id, "sessionId": session,
-        "timestamp": date, "version": "2.1.293", "message": ["content": text]], options: [.sortedKeys]) + Data([10])
+        "timestamp": date, "version": "2.1.293", "message": ["role": "user", "content": text]], options: [.sortedKeys]) + Data([10])
 }
 private func historyAudit() throws -> HistoricalAuditContext {
     try .init(reason: .resume, endingAt: ISO8601DateFormatter().date(from: "2026-10-08T00:00:00Z")!)
@@ -24,8 +24,123 @@ private func historyAppend(_ data: Data, to url: URL) throws {
     try file.seekToEnd(); try file.write(contentsOf: data)
 }
 
+private struct ClaudeHistoryNoFindingsDetector: SecretDetector {
+    func scan(_ source: SourceRecord) async throws -> DetectorOutput {
+        .init(detectorVersion: "history-fixture", findings: [], unlocated: [])
+    }
+}
+private actor ClaudeHistoryFailureObserver {
+    var failures: [PipelineFailureDiagnostic] = []
+    func record(_ failure: PipelineFailureDiagnostic) { failures.append(failure) }
+}
+
 @Suite("Claude bounded history")
 struct ClaudeHistoryTests {
+    @Test func disposableHistoryAdmissionValidatesFrozenAuditAndLeavesOrdinaryHooksUnbound() async throws {
+        let adapter = try ClaudeAdapter(profileID: "test", agentVersion: "2.1.295", allowedTranscriptRoots: [])
+        let audit = try historyAudit(), packet = try await adapter.initialHistoricalCapture(audit: audit)
+        #expect(try ClaudeAdapter.historicalAuditForTesting(in: packet) == audit)
+        let hook = try CapturePacket(metadata: .init(agent: .claudeCode, profileID: "test"),
+            eventJSON: Data("{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"session\"}".utf8))
+        #expect(try ClaudeAdapter.historicalAuditForTesting(in: hook) == nil)
+        let malformed = try CapturePacket(metadata: packet.metadata,
+            eventJSON: Data("{\"kind\":\"LeakretClaudeHistory\",\"version\":1}".utf8))
+        #expect(throws: ClaudeCollectionError.invalidConfiguration) {
+            try ClaudeAdapter.historicalAuditForTesting(in: malformed)
+        }
+        var json = try JSONSerialization.jsonObject(with: packet.eventJSON) as! [String: Any]
+        json["version"] = 2
+        let future = try CapturePacket(metadata: packet.metadata, eventJSON: JSONSerialization.data(withJSONObject: json))
+        #expect(throws: ClaudeCollectionError.invalidConfiguration) {
+            try ClaudeAdapter.historicalAuditForTesting(in: future)
+        }
+        json["version"] = 1
+        var alteredAudit = json["audit"] as! [String: Any]
+        alteredAudit["start"] = 0
+        json["audit"] = alteredAudit
+        let changedWindow = try CapturePacket(metadata: packet.metadata, eventJSON: JSONSerialization.data(withJSONObject: json))
+        #expect(throws: ClaudeCollectionError.invalidConfiguration) {
+            try ClaudeAdapter.historicalAuditForTesting(in: changedWindow)
+        }
+    }
+
+    @Test func queueBoundHistoricalAuditSettlesProgressAndReportsUnboundCompletionFailure() async throws {
+        for bindAudit in [false, true] {
+            let directory = try historyDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+            let sourceRoot = directory.appendingPathComponent("sources")
+            try FileManager.default.createDirectory(at: sourceRoot, withIntermediateDirectories: false)
+            let now = Date(), contentTime = now.addingTimeInterval(-3600)
+            try historyRow("native-item", text: "required historical prompt", date: ISO8601DateFormatter().string(from: contentTime))
+                .write(to: sourceRoot.appendingPathComponent("native.jsonl"))
+            let crypto = try BackgroundCryptography.ephemeralForTesting()
+            let store = try await ProtectedStore.open(at: directory.appendingPathComponent("store"), cryptography: crypto)
+            let adapter = try ClaudeAdapter(profileID: "test", agentVersion: "2.1.295", allowedTranscriptRoots: [sourceRoot],
+                checkpointLookup: { id in try await store.checkpoint(documentID: id) })
+            let audit = try HistoricalAuditContext(reason: .restart, endingAt: now)
+            let packet = try await adapter.initialHistoricalCapture(audit: audit)
+            let preview = try await adapter.normalize(packet, capturedAt: now, cryptography: crypto)
+            let emittedCheckpoint = try #require(preview.checkpoints.first)
+            let admittedAudit = bindAudit ? try ClaudeAdapter.historicalAuditForTesting(in: packet) : nil
+            let permit = try #require(await store.processingPermit())
+            _ = try await store.enqueue(packet.body, capturedAt: now, permit: permit, at: now, historicalAudit: admittedAudit)
+            let observer = ClaudeHistoryFailureObserver()
+            let pipeline = DetectionPipeline(store: store, cryptography: crypto, normalizer: adapter,
+                detector: ClaudeHistoryNoFindingsDetector(), detectorVersion: "history-fixture", liveSince: now)
+            await pipeline.observeFailuresForTesting { await observer.record($0) }
+            let outcome = try await pipeline.processNext(at: now)
+            let progress = try await store.historicalProgress(), failures = await observer.failures
+            #expect(await store.snapshot().analysisReceipts.count == 1)
+            if bindAudit {
+                #expect(outcome == .processed && failures.isEmpty)
+                #expect(try await store.queueStatistics().count == 0)
+                #expect(progress.count == 1 && progress.first?.progress.audit == audit)
+                #expect(progress.first?.progress.hasUnreadContent == false)
+                // Discovery uses the configured physical root, which can differ from a temporary
+                // directory alias. Completion must persist the exact adapter-emitted checkpoint.
+                let persisted = try #require(await store.checkpoint(documentID: emittedCheckpoint.sourceDocumentID))
+                #expect(persisted.sourceDocumentID == emittedCheckpoint.sourceDocumentID)
+                #expect(persisted.byteOffset == emittedCheckpoint.byteOffset)
+                #expect(persisted.lastContentTime == emittedCheckpoint.lastContentTime)
+                #expect(persisted.gaps == emittedCheckpoint.gaps)
+                let cursor = try JSONDecoder().decode(ClaudeReadCursor.self, from: #require(persisted.adapterState))
+                #expect(cursor.parserContract == ClaudeAdapter.parserContractVersion)
+            } else {
+                #expect(outcome == .retryScheduled && progress.isEmpty)
+                #expect(try await store.queueStatistics().count == 1)
+                #expect(failures.count == 1)
+                #expect(failures.first?.stage == .completeCapture)
+                #expect(failures.first?.code == .storageInvalidPayload)
+                #expect(failures.first?.reason == .captureRejected)
+            }
+            try await store.close()
+        }
+    }
+
+    @Test(arguments: ["missing", "claude-transcript-3"])
+    func parserContractUpdateRevisitsUnchangedSourceWithoutChangingNativeIdentity(oldContract: String) async throws {
+        let directory = try historyDirectory(); defer { try? FileManager.default.removeItem(at:directory) }
+        let file = directory.appendingPathComponent("upgrade.jsonl")
+        try historyRow("native-row",text:"eligible unchanged content").write(to:file)
+        let crypto = try BackgroundCryptography.ephemeralForTesting()
+        let adapter = try ClaudeAdapter(profileID:"test",agentVersion:"2.1.295",allowedTranscriptRoots:[directory])
+        let initial = try await adapter.readIncremental(path:file.path,interface:.standaloneCLI,cryptography:crypto)
+        let checkpoint = try #require(initial.batch.checkpoints.first)
+        var cursor = try JSONSerialization.jsonObject(with:try #require(checkpoint.adapterState)) as! [String:Any]
+        if oldContract == "missing" { cursor.removeValue(forKey:"parserContract") }
+        else { cursor["parserContract"] = oldContract }
+        let old = SourceCheckpoint(capabilityID:checkpoint.capabilityID,sourceDocumentID:checkpoint.sourceDocumentID,
+            revision:checkpoint.revision,byteOffset:checkpoint.byteOffset,lastContentTime:checkpoint.lastContentTime,
+            gaps:checkpoint.gaps,adapterState:try JSONSerialization.data(withJSONObject:cursor))
+        let recovered = try await adapter.readIncremental(path:file.path,interface:.t3,checkpoint:old,cryptography:crypto)
+        #expect(recovered.bytesRead > 0 && recovered.batch.sources.count == 1)
+        #expect(recovered.batch.checkpoints.first?.sourceDocumentID == checkpoint.sourceDocumentID)
+        #expect(recovered.batch.sources.first?.record.metadata.identity == initial.batch.sources.first?.record.metadata.identity)
+        #expect(recovered.batch.sources.first?.record.revision == initial.batch.sources.first?.record.revision)
+        let current = try #require(recovered.batch.checkpoints.first)
+        let caughtUp = try await adapter.readIncremental(path:file.path,interface:.standaloneCLI,checkpoint:current,cryptography:crypto)
+        #expect(caughtUp.bytesRead == 0 && caughtUp.batch.sources.isEmpty)
+    }
+
     @Test func benchmarkColdWarmAnd78ByteAppendOnDisposableLargeHistory() async throws {
         let directory = try historyDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
         let file = directory.appendingPathComponent("benchmark.jsonl")

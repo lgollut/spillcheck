@@ -32,6 +32,8 @@ struct ClaudeFileSignature: Codable, Equatable, Sendable {
 /// This versioned state is sealed inside SourceCheckpoint. It contains no source text.
 struct ClaudeReadCursor: Codable, Sendable {
     var version = 1
+    /// Missing on legacy cursors. Completion shortcuts cannot carry omissions past a parser update.
+    var parserContract: String? = ClaudeAdapter.parserContractVersion
     var signature: ClaudeFileSignature
     var forwardOffset: UInt64
     var reverseEnd: UInt64
@@ -90,6 +92,11 @@ extension ClaudeAdapter {
             || saved.anchorStart > saved.forwardOffset || UInt64(saved.anchorLength) > saved.forwardOffset - saved.anchorStart
             || saved.toolIDs.count > 2048 || saved.promptIDs.count > 2048 {
             cursor = nil; gaps.append(.init(reason: .sourceChanged, capabilityID: documentID))
+        }
+        if let saved = cursor, saved.parserContract != Self.parserContractVersion {
+            // Preserve the checkpoint identity and analyzed receipts. Restart only bounded source
+            // selection, which lets eligible skipped records be interpreted under this contract.
+            cursor = nil
         }
         let historical: Bool
         if case .historical = provenance { historical = true } else { historical = false }
@@ -290,7 +297,8 @@ extension ClaudeAdapter {
         let committed = SourceCheckpoint(capabilityID: documentID, sourceDocumentID: checkpointID,
             revision: revision, byteOffset: state.forwardOffset, lastContentTime: state.lastContentTime,
             gaps: gaps, adapterState: encoded)
-        imported = .init(sources: imported.sources, coverageGaps: gaps, checkpoint: committed)
+        imported = .init(sources: imported.sources, coverageGaps: gaps, checkpoint: committed,
+            recoveredReferences: imported.recoveredReferences)
         return ClaudeIncrementalRead(batch: imported, bytesRead: bytesRead, hasForwardContent: forward,
             hasUnreadContent: unread, canContinueHistory: forward || (state.reverseEnd > 0 && !state.stoppedAtCutoff),
             oldestContentTime: imported.sources.map(\.record.metadata.contentTime).min(),

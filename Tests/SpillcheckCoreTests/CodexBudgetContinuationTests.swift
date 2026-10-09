@@ -119,9 +119,9 @@ struct CodexBudgetContinuationTests {
         #expect(calls.allSatisfy { $0.method == "thread" && $0.maximumBytes == 64 })
     }
 
-    @Test func unsupportedThreadClearsPriorReplayStateAndPromotesItsSelectedChild() async throws {
+    @Test func unfamiliarProducerCollectsAndPromotesItsSelectedChildWithoutChangingNativeIdentity() async throws {
         let history = CodexTestHistory(), crypto = try BackgroundCryptography.ephemeralForTesting()
-        await history.configure("changed", thread: try codexThread("changed", producer: "unsupported"), pages: [])
+        await history.configure("changed", thread: try codexThread("changed", producer: "future"), pages: [.init(data: [try codexItem("changed-final")])])
         await history.configure("child", thread: try codexThread("child"), pages: [])
         await history.configureDescending("child", page: .init(data: [try codexItem("own-final")]))
         let adapter = try codexTestAdapter(history: history)
@@ -134,8 +134,9 @@ struct CodexBudgetContinuationTests {
         request.consecutiveBudgetFailures = 2
         request.pageLimit = 1
         let rejected = try await adapter.normalize(adapter.packet(request), capturedAt: Date(), cryptography: crypto)
-        #expect(rejected.sources.isEmpty && rejected.checkpoints.isEmpty)
-        #expect(rejected.coverageGaps.contains { $0.reason == .unsupportedVersion })
+        #expect(rejected.sources.count == 1 && !rejected.checkpoints.isEmpty)
+        #expect(rejected.sources.first?.record.metadata.origin.agentVersion == "future")
+        #expect(rejected.coverageGaps.isEmpty)
         let continuation = try #require(rejected.continuation)
         let next = try JSONDecoder().decode(CodexHistoryRequest.self, from: continuation.eventJSON)
         #expect(next.threads == ["child"] && next.children.isEmpty)
@@ -146,8 +147,9 @@ struct CodexBudgetContinuationTests {
         #expect(child.continuation == nil)
         #expect(child.sources.count == 1 && child.sources[0].record.metadata.identity.session.sessionID == "child")
         let calls = await history.recordedCalls()
-        #expect(calls.contains("direction:desc") && !calls.contains("direction:asc"))
-        #expect(!calls.contains { $0.contains("prior-boundary") || $0.contains("prior-unfinished-boundary") })
+        #expect(calls.contains("direction:desc") && calls.contains("direction:asc"))
+        #expect(calls.contains("items:changed:prior-boundary") && !calls.contains("items:child:prior-boundary"))
+        #expect(!calls.contains { $0.contains("prior-unfinished-boundary") })
     }
 
     @Test func singleUnfinishedTailRestartsDescendingAndCapturesItsLaterCompletionWithVisibleGap() async throws {

@@ -171,6 +171,137 @@ struct CodexHistoryTests {
         }
     }
 
+    @Test func missingItemMethodIsBlockedScopedAndLeavesAnotherNativeThreadUsable() async throws {
+        let history = CodexTestHistory(), crypto = try BackgroundCryptography.ephemeralForTesting()
+        await history.configure("blocked", thread: try codexThread("blocked"), pages: [])
+        await history.configureFailure("items:blocked", error: .missingMethod("thread/items/list"))
+        await history.configure("working", thread: try codexThread("working"), pages: [.init(data: [try codexItem("readable")])])
+        let adapter = try codexTestAdapter(history: history)
+        let request = CodexHistoryRequest(audit: nil, threads: ["blocked", "working"])
+        let blocked = try await adapter.normalize(adapter.packet(request), capturedAt: Date(), cryptography: crypto)
+        let gap = try #require(blocked.coverageGaps.first)
+        #expect(gap.reason == .unsupportedContent && gap.scope?.interface == .t3)
+        #expect(gap.operation == .liveRead)
+        #expect(gap.recovery?.session?.sessionID == "blocked" && gap.isRequiredFormatFailure == true)
+        #expect(blocked.sources.isEmpty && blocked.recoveredReferences.isEmpty)
+        let working = try await adapter.normalize(#require(blocked.continuation), capturedAt: Date(), cryptography: crypto)
+        #expect(working.sources.map(\.record.metadata.identity.itemID) == ["readable"] && working.coverageGaps.isEmpty)
+        let historical = CodexHistoryRequest(audit: try HistoricalAuditContext(reason: .restart, endingAt: Date()), threads: ["blocked"])
+        let failedAudit = try await adapter.normalize(adapter.packet(historical), capturedAt: Date(), cryptography: crypto)
+        #expect(failedAudit.coverageGaps.first?.operation == .historicalRead)
+    }
+
+    @Test func missingDiscoveryMethodReportsRouteFailureWithoutInventingRecoveryIdentity() async throws {
+        let history = CodexTestHistory(), crypto = try BackgroundCryptography.ephemeralForTesting()
+        await history.configureFailure("list", error: .missingMethod("thread/list"))
+        let adapter = try codexTestAdapter(history: history)
+        let audit = try HistoricalAuditContext(reason: .restart, endingAt: Date())
+        let batch = try await adapter.normalize(adapter.initialHistoricalCapture(audit: audit), capturedAt: Date(), cryptography: crypto)
+        let gap = try #require(batch.coverageGaps.first)
+        #expect(gap.reason == .unsupportedContent && gap.scope?.path == .publicHistory)
+        #expect(gap.operation == .historicalRead)
+        #expect(gap.isRequiredFormatFailure == true && gap.recovery == nil)
+        #expect(batch.sources.isEmpty && batch.continuation == nil)
+        #expect(batch.historicalProgress?.hasUnreadContent == true)
+    }
+
+    @Test func missingTurnMethodKeepsDatedItemsCollectingAndLeavesUndatedItemOmitted() async throws {
+        let history = CodexTestHistory(), crypto = try BackgroundCryptography.ephemeralForTesting()
+        await history.configure("parent", thread: try codexThread(), pages: [.init(data: [try codexItem("dated"), try codexItem("undated", timestamp: nil)])])
+        await history.configureFailure("turns:parent", error: .missingMethod("thread/turns/list"))
+        let batch = try await codexTestAdapter(history: history).normalize(codexPacket(thread: "parent"), capturedAt: Date(), cryptography: crypto)
+        #expect(batch.sources.map(\.record.metadata.identity.itemID) == ["dated"])
+        #expect(batch.coverageGaps.contains { $0.reason == .missingTimestamp && $0.recovery?.itemID == "undated" })
+        #expect(!batch.recoveredReferences.contains { $0.itemID == "undated" || $0.locator == .unavailable })
+    }
+
+    @Test func unchangedThreadWithAnOmissionIsReparsedAndOnlyItsRecoveredItemResolves() async throws {
+        let history = CodexTestHistory(), checkpoints = CodexCheckpoints(), crypto = try BackgroundCryptography.ephemeralForTesting()
+        let now = Date(timeIntervalSince1970: 1_791_434_400)
+        await history.configure("parent", thread: try codexThread(updatedAt: 1_791_434_000),
+            pages: [.init(data: [try codexItem("broken", body: ["phase": "final_answer", "text": 42]), try codexItem("readable")])])
+        let adapter = try codexTestAdapter(history: history, checkpoints: { await checkpoints.get($0) })
+        let request = CodexHistoryRequest(audit: try HistoricalAuditContext(reason: .restart, endingAt: now), threads: ["parent"])
+        let first = try await adapter.normalize(adapter.packet(request), capturedAt: now, cryptography: crypto)
+        #expect(first.sources.map(\.record.metadata.identity.itemID) == ["readable"])
+        #expect(first.coverageGaps.contains { $0.recovery?.itemID == "broken" && $0.isRequiredFormatFailure == true })
+        await checkpoints.save(first.checkpoints)
+        await history.configure("parent", thread: try codexThread(updatedAt: 1_791_434_000),
+            pages: [.init(data: [try codexItem("broken"), try codexItem("readable")])])
+        let recovered = try await adapter.normalize(adapter.packet(request), capturedAt: now, cryptography: crypto)
+        #expect(recovered.sources.count == 2 && recovered.coverageGaps.isEmpty)
+        #expect(recovered.recoveredReferences.contains { $0.itemID == "broken" })
+        #expect((await history.recordedCalls()).filter { $0.hasPrefix("items:") }.count == 2)
+    }
+
+    @Test func finalReadableAuditPageCannotResolveAnEarlierSessionOmission() async throws {
+        let history = CodexTestHistory(), crypto = try BackgroundCryptography.ephemeralForTesting()
+        let now = Date(timeIntervalSince1970: 1_791_434_400)
+        await history.configure("parent", thread: try codexThread(updatedAt: 1_791_434_000),
+            pages: [.init(data: [try codexItem("broken", body: ["phase": "final_answer", "text": 42])], nextCursor: "1"),
+                .init(data: [try codexItem("readable")])])
+        let adapter = try codexTestAdapter(history: history)
+        let request = CodexHistoryRequest(audit: try HistoricalAuditContext(reason: .restart, endingAt: now), threads: ["parent"])
+        let first = try await adapter.normalize(adapter.packet(request), capturedAt: now, cryptography: crypto)
+        #expect(first.coverageGaps.contains { $0.recovery?.itemID == "broken" })
+        let last = try await adapter.normalize(#require(first.continuation), capturedAt: now, cryptography: crypto)
+        #expect(last.sources.map(\.record.metadata.identity.itemID) == ["readable"] && last.coverageGaps.isEmpty)
+        #expect(last.historicalProgress?.hasUnreadContent == true)
+        #expect(last.recoveredReferences.contains { $0.itemID == "readable" })
+        #expect(!last.recoveredReferences.contains { $0.locator == .unavailable && $0.itemID == nil })
+    }
+
+    @Test func earlierThreadOmissionCannotBlockTheNextThreadsSessionRecovery() async throws {
+        let history = CodexTestHistory(), crypto = try BackgroundCryptography.ephemeralForTesting()
+        let now = Date(timeIntervalSince1970: 1_791_434_400)
+        await history.configure("broken-thread", thread: try codexThread("broken-thread", updatedAt: 1_791_434_000),
+            pages: [.init(data: [try codexItem("broken", body: ["phase": "final_answer", "text": 42])])])
+        await history.configure("clean-thread", thread: try codexThread("clean-thread", updatedAt: 1_791_434_000),
+            pages: [.init(data: [try codexItem("readable")])])
+        let adapter = try codexTestAdapter(history: history)
+        let request = CodexHistoryRequest(audit: try HistoricalAuditContext(reason: .restart, endingAt: now),
+            threads: ["broken-thread", "clean-thread"])
+        let first = try await adapter.normalize(adapter.packet(request), capturedAt: now, cryptography: crypto)
+        #expect(first.coverageGaps.contains { $0.recovery?.itemID == "broken" })
+        #expect(!first.recoveredReferences.contains { $0.locator == .unavailable && $0.itemID == nil })
+        let next = try await adapter.normalize(#require(first.continuation), capturedAt: now, cryptography: crypto)
+        #expect(next.coverageGaps.isEmpty)
+        #expect(next.recoveredReferences.contains {
+            $0.locator == .unavailable && $0.itemID == nil && $0.session?.sessionID == "clean-thread"
+        })
+        // The audit as a whole still reports the earlier thread's omission.
+        #expect(next.historicalProgress?.hasUnreadContent == true)
+    }
+
+    @Test func restoredMissingNativeItemIDResolvesOnlyAfterCompleteNoGapPass() async throws {
+        let history = CodexTestHistory(), checkpoints = CodexCheckpoints(), crypto = try BackgroundCryptography.ephemeralForTesting()
+        let now = Date(timeIntervalSince1970: 1_791_434_400)
+        await history.configure("parent", thread: try codexThread(updatedAt: 1_791_434_000), pages: [.init(data: [try codexItem("")])])
+        let adapter = try codexTestAdapter(history: history, checkpoints: { await checkpoints.get($0) })
+        let request = CodexHistoryRequest(audit: try HistoricalAuditContext(reason: .restart, endingAt: now), threads: ["parent"])
+        let first = try await adapter.normalize(adapter.packet(request), capturedAt: now, cryptography: crypto)
+        let missing = try #require(first.coverageGaps.first?.recovery)
+        #expect(missing.locator == .unavailable && missing.itemID == nil)
+        await checkpoints.save(first.checkpoints)
+        await history.configure("parent", thread: try codexThread(updatedAt: 1_791_434_000), pages: [.init(data: [try codexItem("restored-native")])])
+        let restored = try await adapter.normalize(adapter.packet(request), capturedAt: now, cryptography: crypto)
+        #expect(restored.coverageGaps.isEmpty && restored.sources.count == 1)
+        #expect(restored.recoveredReferences.contains { $0.identifiesSameLocation(as: missing) })
+    }
+
+    @Test func warmLiveSuffixDoesNotClaimWholeSessionRecovery() async throws {
+        let history = CodexTestHistory(), checkpoints = CodexCheckpoints(), crypto = try BackgroundCryptography.ephemeralForTesting()
+        await history.configure("parent", thread: try codexThread(), pages: [.init(data: [try codexItem("readable")])])
+        let adapter = try codexTestAdapter(history: history, checkpoints: { await checkpoints.get($0) })
+        let cold = try await adapter.normalize(codexPacket(thread: "parent"), capturedAt: Date(), cryptography: crypto)
+        #expect(cold.recoveredReferences.contains { $0.locator == .unavailable && $0.itemID == nil })
+        await checkpoints.save(cold.checkpoints)
+        let warm = try await adapter.normalize(codexPacket(thread: "parent"), capturedAt: Date(), cryptography: crypto)
+        #expect(warm.sources.count == 1 && warm.coverageGaps.isEmpty)
+        #expect(warm.recoveredReferences.contains { $0.itemID == "readable" })
+        #expect(!warm.recoveredReferences.contains { $0.locator == .unavailable && $0.itemID == nil })
+    }
+
     @Test func auditSkipsThreadsUnchangedSinceAnEarlierCompletedRead() async throws {
         let history = CodexTestHistory(), checkpoints = CodexCheckpoints(), crypto = try BackgroundCryptography.ephemeralForTesting()
         let now = Date(timeIntervalSince1970: 1_791_434_400)

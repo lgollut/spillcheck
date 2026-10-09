@@ -1,0 +1,125 @@
+{
+  "actualReaderVersion": "0.161.0",
+  "date": "2026-10-09",
+  "ephemeralReaderWorkspaceRemoved": true,
+  "fullReadAndFirstItemPageHaveSameNativeItemIDs": true,
+  "fullReadAndFullTurnsHaveSameNativeItemIDs": true,
+  "interpretation": {
+    "actualParentSpawnFieldsObserved": [
+      "message",
+      "fork_turns",
+      "task_name"
+    ],
+    "childAssistantNativeIDCorrespondenceEstablished": true,
+    "nativeChildInitialTaskTextAsUserPromptEstablished": false,
+    "nativeChildOriginalUserItemAvailableInPublicHistory": false,
+    "noAuthorityFallbackOrIdentityMerge": true,
+    "noGeneralCorrectlySubmittedChildPromptIncapabilityClaim": true,
+    "oneShotCandidateNotPreparedOrRequested": true
+  },
+  "nativeChildOriginalMessagesByRole": {
+    "assistant": {
+      "containsBootstrapReadyMarker": false,
+      "containsChildFinalMarker": true,
+      "containsChildIntermediateMarker": true,
+      "containsChildPromptMarker": false,
+      "containsEntireActualSpawnMessage": false,
+      "containsFixtureHelperName": false,
+      "messageRecords": 2
+    },
+    "developer": {
+      "containsBootstrapReadyMarker": false,
+      "containsChildFinalMarker": false,
+      "containsChildIntermediateMarker": false,
+      "containsChildPromptMarker": false,
+      "containsEntireActualSpawnMessage": false,
+      "containsFixtureHelperName": false,
+      "messageRecords": 3
+    },
+    "user": {
+      "containsBootstrapReadyMarker": false,
+      "containsChildFinalMarker": false,
+      "containsChildIntermediateMarker": false,
+      "containsChildPromptMarker": false,
+      "containsEntireActualSpawnMessage": false,
+      "containsFixtureHelperName": false,
+      "messageRecords": 1
+    }
+  },
+  "nativeIDsPublished": false,
+  "nativeOriginalMessageIDPublicMatches": {
+    "assistant": {
+      "matchedPublicItemCount": 2,
+      "originalMessageCount": 2
+    },
+    "developer": {
+      "matchedPublicItemCount": 0,
+      "originalMessageCount": 3
+    },
+    "user": {
+      "matchedPublicItemCount": 0,
+      "originalMessageCount": 1
+    }
+  },
+  "nativeOriginalSourcePathsPublished": false,
+  "nativeParentChildRelationshipVerified": true,
+  "nativeSpawnSubmissionCompliance": {
+    "actualMessageExactlyEqualsAnyQuotedOriginalFixtureLiteral": false,
+    "actualMessageStringBytes": 2424,
+    "containsBootstrapReadyMarker": false,
+    "containsChildFinalMarker": false,
+    "containsChildIntermediateMarker": false,
+    "containsChildPromptMarker": false,
+    "containsFixtureHelperName": false,
+    "forkTurnsNone": true,
+    "knownArgumentFields": [
+      "fork_turns",
+      "message",
+      "task_name"
+    ]
+  },
+  "noOriginalSourceArchive": true,
+  "noProviderTurnsOrSettingsChanges": true,
+  "noUnrelatedHistoryEnumeration": true,
+  "ownedReaderStopped": true,
+  "passed": true,
+  "phase0Passed": false,
+  "productionGUICollectionEnabled": false,
+  "run": "r3",
+  "schemaVersion": 1,
+  "scope": "exact-public-verified-parent-spawn-arguments-and-original-child-message-identities-after-producer",
+  "sourceBytesRead": 26480,
+  "sourceHost": "official-codex-GUI",
+  "status": "exact-original-spawn-and-child-public-prompt-contract-unestablished",
+  "stderrBytesDiscarded": 0,
+  "threadItemsList": {
+    "itemTypes": {
+      "agentMessage": 2,
+      "commandExecution": 3,
+      "reasoning": 1
+    },
+    "pageComplete": true,
+    "requestedPromptMarkerAnywhere": false,
+    "requestedPromptMarkerOnNativeUserMessage": false
+  },
+  "threadReadIncludeTurns": {
+    "itemTypes": {
+      "agentMessage": 2,
+      "commandExecution": 3,
+      "reasoning": 1
+    },
+    "requestedPromptMarkerAnywhere": false,
+    "requestedPromptMarkerOnNativeUserMessage": false,
+    "turnCount": 1
+  },
+  "threadTurnsListFullItems": {
+    "itemTypes": {
+      "agentMessage": 2,
+      "commandExecution": 3,
+      "reasoning": 1
+    },
+    "pageComplete": true,
+    "requestedPromptMarkerAnywhere": false,
+    "requestedPromptMarkerOnNativeUserMessage": false
+  }
+}

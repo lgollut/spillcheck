@@ -1,0 +1,69 @@
+{
+  "appMemory": {
+    "lastSampleRSSBytes": 145768448,
+    "nominalSamplingDelaySeconds": 0.1,
+    "sampleCount": 75,
+    "sampledPeakRSSBytes": 146145280,
+    "scope": "Signed GUI process startup, five-content synthetic ingestion and idle; excludes scanner/helper children, large inventory and authenticated rendering. Actual sample spacing includes ps execution overhead; sampling is not an exact high-water mark."
+  },
+  "ciphertextMarkerInspectionPassed": true,
+  "cleanupPending": false,
+  "diagnosticBytes": 0,
+  "passed": true,
+  "processElapsedSeconds": 9.067,
+  "protectedStoreBytesAfterQuit": 245760,
+  "publicationNotes": [
+    "Signed synthetic regression only; not genuine provider, GUI or concurrent host acceptance.",
+    "Measured before final recovery-reference and operation-incident refinements."
+  ],
+  "result": {
+    "acceptancePhase": "shutdown-complete",
+    "alertCount": 0,
+    "alertsByDeliveryState": {},
+    "collectionConfigured": true,
+    "gapReasons": [],
+    "launchAtLogin": false,
+    "monitoringEnabled": true,
+    "newVaultCleanupPassed": true,
+    "notificationState": "Off",
+    "observedAgentVersions": [
+      "unknown"
+    ],
+    "occurrenceCount": 5,
+    "occurrencesByContentType": {
+      "finalResponse": 1,
+      "intermediateResponse": 1,
+      "toolError": 1,
+      "toolOutput": 1,
+      "userPrompt": 1
+    },
+    "queueCount": 0,
+    "revealedExcerptCount": 0,
+    "revealedSourceMetadataCount": 0,
+    "revealedValueCount": 0,
+    "schemaVersion": 1,
+    "storageReady": true,
+    "syntheticOccurrenceCount": 5,
+    "syntheticOccurrencesByContentType": {
+      "finalResponse": 1,
+      "intermediateResponse": 1,
+      "toolError": 1,
+      "toolOutput": 1,
+      "userPrompt": 1
+    },
+    "syntheticSessionCount": 1,
+    "syntheticValuePresent": true,
+    "valueCount": 1,
+    "viewingAuthorized": false,
+    "windowVisible": true,
+    "workflowEvents": {
+      "mask-userMask": 2
+    }
+  },
+  "scannerIsSignedBundleChild": true,
+  "schemaVersion": 1,
+  "signedAppExitCode": 0,
+  "sourceIsSynthetic": true,
+  "stdoutBytes": 0,
+  "timedOut": false
+}

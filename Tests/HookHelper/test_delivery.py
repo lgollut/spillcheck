@@ -2,6 +2,7 @@
 import json
 import os
 import pathlib
+import select
 import socket
 import subprocess
 import tempfile
@@ -42,6 +43,8 @@ class HookDeliveryTests(unittest.TestCase):
         self.thread = None
         self.frames = []
         self.server_errors = []
+        self.connected = threading.Event()
+        self.connected_at = None
 
     def tearDown(self):
         if self.thread:
@@ -65,6 +68,8 @@ class HookDeliveryTests(unittest.TestCase):
         def listen():
             try:
                 client, _ = self.listener.accept()
+                self.connected_at = time.monotonic()
+                self.connected.set()
                 with client:
                     client.settimeout(1)
                     if early_close:
@@ -86,11 +91,24 @@ class HookDeliveryTests(unittest.TestCase):
     def deliver(self, payload, arguments=None):
         start = time.monotonic()
         result = subprocess.run(arguments or self.arguments(), input=payload, capture_output=True, cwd=self.root, timeout=1)
-        elapsed = time.monotonic() - start
+        # The attempt deadline starts inside the helper, after process startup.
+        elapsed = time.monotonic() - (self.connected_at if self.connected_at is not None else start)
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout, b"{}\n")
         self.assertEqual(result.stderr, b"")
         self.assertEqual(list(self.root.iterdir()), [self.socket_path] if self.listener else [])
+        return elapsed
+
+    def wait_for_response(self, process):
+        # Observe the response directly. Popen.wait(timeout=...) polls with
+        # backoff and can report an exit tens of milliseconds after it happened.
+        readable, _, _ = select.select([process.stdout], [], [], 1)
+        self.assertTrue(readable, "helper did not respond within one second")
+        elapsed = time.monotonic() - self.connected_at
+        process.wait(timeout=1)
+        self.assertEqual(process.returncode, 0)
+        self.assertEqual(process.stdout.read(), b"{}\n")
+        self.assertEqual(process.stderr.read(), b"")
         return elapsed
 
     def test_unavailable_endpoint_returns_no_effect_without_files(self):
@@ -166,18 +184,14 @@ class HookDeliveryTests(unittest.TestCase):
 
     def test_open_stdin_cannot_hold_helper_indefinitely(self):
         self.serve()
-        start = time.monotonic()
         process = subprocess.Popen(self.arguments(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                    stderr=subprocess.PIPE, cwd=self.root)
         try:
+            self.assertTrue(self.connected.wait(timeout=1), "helper did not connect")
             # Keep the writer open after valid JSON. EOF is required, but bounded.
             process.stdin.write(b'{"tool_response":"SYNTHETIC_OPEN_STDIN"}')
             process.stdin.flush()
-            process.wait(timeout=1)
-            elapsed = time.monotonic() - start
-            self.assertEqual(process.returncode, 0)
-            self.assertEqual(process.stdout.read(), b"{}\n")
-            self.assertEqual(process.stderr.read(), b"")
+            elapsed = self.wait_for_response(process)
             self.assertGreater(elapsed, 0.16)
             self.assertLess(elapsed, 0.3)
             self.assertEqual(list(self.root.iterdir()), [self.socket_path])
@@ -197,19 +211,15 @@ class HookDeliveryTests(unittest.TestCase):
 
     def test_slow_stdin_does_not_restart_deadline_for_ack(self):
         self.serve(delay=0.3)
-        start = time.monotonic()
         process = subprocess.Popen(self.arguments(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                    stderr=subprocess.PIPE, cwd=self.root)
         try:
+            self.assertTrue(self.connected.wait(timeout=1), "helper did not connect")
             process.stdin.write(b'{"tool_response":"SYNTHETIC_SLOW_STDIN"}')
             process.stdin.flush()
             time.sleep(0.1)
             process.stdin.close()
-            process.wait(timeout=1)
-            elapsed = time.monotonic() - start
-            self.assertEqual(process.returncode, 0)
-            self.assertEqual(process.stdout.read(), b"{}\n")
-            self.assertEqual(process.stderr.read(), b"")
+            elapsed = self.wait_for_response(process)
             self.assertGreater(elapsed, 0.16)
             self.assertLess(elapsed, 0.27)
         finally:

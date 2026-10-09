@@ -25,6 +25,7 @@ let package = Package(
             exclude: [
                 "README.md", "HookHelper", "ProtectionSignedProbe", "ClaudeLive", "CodexLive", "AgentSetupProbe",
                 "NativeWorkflowProbe", "ResourceAcceptance", "AppAcceptance", "Tooling", "Support",
+                "ClaudeGUIProbe", "ClaudeGUIModProbe", "CodexGUIProbe",
             ],
             sources: ["SpillcheckCoreTests"],
             resources: [.copy("Fixtures")]

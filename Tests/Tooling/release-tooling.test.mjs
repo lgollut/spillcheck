@@ -1,20 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { readFileSync, writeFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { git, validateMetadata, extractChangelogSection } from "../../scripts/release-metadata.mjs";
-import { parseChangeset, validateChangesetPolicy, validateGeneratedRelease } from "../../scripts/check-changesets.mjs";
+import { assertAppSlug, parseChangeset, validateChangesetPolicy, validateGeneratedRelease } from "../../scripts/check-changesets.mjs";
 import { versionRelease } from "../../scripts/version-release.mjs";
+import { gitRepository, infoPlist, project, writeFile as write } from "./release-fixtures.mjs";
 
-const project = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const manifestPaths = ["package.json", "package-lock.json", ".changeset/config.json"];
-
-function write(root, path, contents) {
-  mkdirSync(dirname(join(root, path)), { recursive: true });
-  writeFileSync(join(root, path), contents);
-}
 
 function writeToolingBaseline(root) {
   for (const path of manifestPaths) {
@@ -32,12 +25,8 @@ function commit(root, message = "Fixture change") {
 }
 
 function fixture(t, { bootstrap = false } = {}) {
-  const root = mkdtempSync(join(tmpdir(), "spillcheck-release-test-"));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-  git(root, ["init", "--quiet", "--initial-branch=main"]);
-  git(root, ["config", "user.name", "Release tests"]);
-  git(root, ["config", "user.email", "release-tests@example.invalid"]);
-  write(root, "Spillcheck/Info.plist", '<plist><dict><key>CFBundleShortVersionString</key><string>0.1.0</string><key>CFBundleVersion</key><string>1</string></dict></plist>\n');
+  const root = gitRepository(t, "spillcheck-release-test-");
+  write(root, "Spillcheck/Info.plist", infoPlist("0.1.0", 1));
   write(root, "docs/guide.md", "Contributor notes\n");
   if (!bootstrap) {
     writeToolingBaseline(root);
@@ -79,20 +68,42 @@ test("pending changesets inherited from main cannot satisfy a new PR", (t) => {
   assert.throws(() => validateChangesetPolicy({ root, base, head: commit(root) }), /inherited notes/);
 });
 
-test("explained empty notes pass docs and CI but fail production, unknown, and mixed changes", (t) => {
+test("explained empty notes pass docs, CI, and release tooling but fail production, unknown, and mixed changes", (t) => {
   const { root, base } = fixture(t);
   note(root, "docs", null, "Document release setup; app behavior is unchanged.");
   write(root, "docs/guide.md", "New contributor instructions\n");
   write(root, ".github/workflows/ci.yml", "name: CI\n");
-  let head = commit(root);
-  assert.equal(validateChangesetPolicy({ root, base, head }).releaseRequired, false);
-  for (const path of ["Sources/Core.swift", "Package.swift", "Dependencies/Scanner/dependencies.json", "Unclassified/config.json"]) {
+  write(root, "scripts/release-helper.mjs", "export {};\n");
+  write(root, "scripts/README.md", "Release helper notes\n");
+  const toolingHead = commit(root);
+  assert.equal(validateChangesetPolicy({ root, base, head: toolingHead }).releaseRequired, false);
+  for (const path of ["Sources/Core.swift", "Package.swift", "Dependencies/Scanner/dependencies.json", "scripts/build-app.sh", "Makefile", "Unclassified/config.json"]) {
+    git(root, ["reset", "--quiet", "--hard", toolingHead]);
     write(root, path, "production change\n");
-    head = commit(root);
-    assert.throws(() => validateChangesetPolicy({ root, base, head }), /require a spillcheck version bump/);
+    assert.throws(() => validateChangesetPolicy({ root, base, head: commit(root) }), /require a spillcheck version bump/, path);
   }
   note(root, "feature", "minor", "Add the production feature.");
   assert.equal(validateChangesetPolicy({ root, base, head: commit(root) }).releaseRequired, true);
+});
+
+test("docs, tests, CI, and release-tooling changes cannot request an app release", (t) => {
+  const { root, base } = fixture(t);
+  write(root, "docs/guide.md", "New contributor instructions\n");
+  write(root, "Tests/Tooling/release.test.mjs", "export {};\n");
+  write(root, "scripts/release-helper.mjs", "export {};\n");
+  note(root, "docs", "patch", "Document the release flow.");
+  assert.throws(() => validateChangesetPolicy({ root, base, head: commit(root) }), /must use an empty changeset/);
+  rmSync(join(root, ".changeset/docs.md"));
+  note(root, "docs-explained", null, "Document the release flow; app behavior is unchanged.");
+  note(root, "docs-bump", "minor", "Release the documentation.");
+  assert.throws(() => validateChangesetPolicy({ root, base, head: commit(root) }), /must use an empty changeset/);
+});
+
+test("the App slug must be a GitHub App slug without its bot suffix", () => {
+  assert.equal(assertAppSlug("spillcheck-release"), "spillcheck-release");
+  for (const slug of [undefined, "", "spillcheck-release[bot]", "Spillcheck", "a--b", "-release", "release-"]) {
+    assert.throws(() => assertAppSlug(slug), /without \[bot\]/, String(slug));
+  }
 });
 
 test("tooling bootstrap preserves the baseline and accepts an explicit empty note", (t) => {

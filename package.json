@@ -4,7 +4,7 @@
   "private": true,
   "description": "Versioning and release tooling for the Spillcheck macOS app",
   "engines": {
-    "node": "24.x"
+    "node": "26.x"
   },
   "scripts": {
     "changeset": "changeset",

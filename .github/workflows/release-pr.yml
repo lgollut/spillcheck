@@ -48,17 +48,18 @@ jobs:
             echo '::error::The installation token must belong to CHANGESETS_APP_SLUG.'
             exit 1
           fi
+      # Changesets pushes the release branch through the API with its github-token
+      # input, so checkout keeps only the read-only workflow token on disk.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.tested-sha }}
           fetch-depth: 0
-          token: ${{ steps.app-token.outputs.token }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '24'
+          node-version-file: .nvmrc
           cache: npm
       - name: Install release tooling
-        run: npm ci
+        run: npm ci --ignore-scripts
       - name: Check that the tested commit is still main
         id: freshness
         env:
@@ -87,22 +88,8 @@ jobs:
         if: steps.changesets.outputs.pr-number != ''
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          GH_REPO: ${{ github.repository }}
           RELEASE_PR_NUMBER: ${{ steps.changesets.outputs.pr-number }}
-        run: |
-          body_path="$RUNNER_TEMP/spillcheck-release-pr-body.md"
-          export RELEASE_PR_BODY_PATH="$body_path"
-          gh pr view "$RELEASE_PR_NUMBER" --json body --jq .body > "$body_path"
-          node --input-type=module <<'NODE'
-          import { readFileSync, writeFileSync } from 'node:fs';
-          const file = process.env.RELEASE_PR_BODY_PATH;
-          const body = readFileSync(file, 'utf8');
-          const heading = body.indexOf('# Releases\n');
-          if (heading < 0) throw new Error('Changesets PR body is missing its release notes heading.');
-          const explanation = 'Merge this PR when its version and changelog are ready. Successful main CI will tag that commit and publish a GitHub Release with the changelog. Releases currently contain notes only, with no app assets.\n\nNew merges into main refresh this PR. The version and app build number are generated; submit corrections on a feature branch.\n\n';
-          writeFileSync(file, explanation + body.slice(heading));
-          NODE
-          gh pr edit "$RELEASE_PR_NUMBER" --body-file "$body_path"
+        run: node scripts/github-release.mjs describe-release-pr
 
   tag-release:
     name: Tag tested release merge
@@ -117,7 +104,7 @@ jobs:
           client-id: ${{ vars.CHANGESETS_APP_CLIENT_ID }}
           private-key: ${{ secrets.CHANGESETS_APP_PRIVATE_KEY }}
           permission-contents: write
-          permission-pull-requests: write
+          permission-pull-requests: read
       - name: Check release App identity
         env:
           EXPECTED_SLUG: ${{ vars.CHANGESETS_APP_SLUG }}
@@ -134,10 +121,12 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '24'
+          node-version-file: .nvmrc
           cache: npm
+      # The checkout keeps the App write token for the tag push; dependency
+      # install scripts must not run with it.
       - name: Install release tooling
-        run: npm ci
+        run: npm ci --ignore-scripts
       - name: Validate release metadata
         run: npm run release:check
       - name: Tag this exact tested release commit

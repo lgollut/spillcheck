@@ -1,4 +1,5 @@
-import { readFileSync } from "node:fs";
+// Read and validate the app version shared by package.json, package-lock.json, and Info.plist.
+import { existsSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -12,6 +13,25 @@ export function readFileAt({ root = process.cwd(), ref, path }) {
   return ref ? execFileSync("git", ["show", `${ref}:${path}`], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }) : readFileSync(resolve(root, path), "utf8");
 }
 
+// Returns null only when the path is absent; an unreadable commit still throws.
+export function readFileAtIfPresent({ root = process.cwd(), ref, path }) {
+  if (ref) {
+    try { git(root, ["cat-file", "-e", `${ref}:${path}`]); } catch { return null; }
+  } else if (!existsSync(resolve(root, path))) {
+    return null;
+  }
+  return readFileAt({ root, ref, path });
+}
+
+// Runs main only when the module is the invoked script, reporting failures without a stack trace.
+export function runAsScript(moduleUrl, main) {
+  if (!process.argv[1] || moduleUrl !== pathToFileURL(resolve(process.argv[1])).href) return;
+  Promise.resolve().then(main).catch((error) => {
+    console.error(error.message);
+    process.exitCode = 1;
+  });
+}
+
 export function parseReleaseVersion(version) {
   if (typeof version !== "string" || !/^\d+\.\d+\.\d+$/.test(version) || semver.valid(version) !== version) {
     throw new Error(`Expected a canonical release version, received ${JSON.stringify(version)}`);
@@ -19,17 +39,22 @@ export function parseReleaseVersion(version) {
   return version;
 }
 
-function plistString(contents, key) {
-  const pattern = new RegExp(`<key>\\s*${key}\\s*</key>\\s*<string>([^<]*)</string>`, "g");
+function plistStringMatches(contents, key) {
+  const pattern = new RegExp(`(<key>\\s*${key}\\s*</key>\\s*<string>)([^<]*)(</string>)`, "g");
   const matches = [...contents.matchAll(pattern)];
   if (matches.length !== 1) throw new Error(`Info.plist must contain exactly one ${key} string`);
-  return matches[0][1];
+  return matches[0];
+}
+
+export function replacePlistString(contents, key, value) {
+  const [whole, prefix, , suffix] = plistStringMatches(contents, key);
+  return contents.replace(whole, () => `${prefix}${value}${suffix}`);
 }
 
 export function readAppMetadata(options = {}) {
   const plist = readFileAt({ ...options, path: "Spillcheck/Info.plist" });
-  const version = parseReleaseVersion(plistString(plist, "CFBundleShortVersionString"));
-  const buildString = plistString(plist, "CFBundleVersion");
+  const version = parseReleaseVersion(plistStringMatches(plist, "CFBundleShortVersionString")[2]);
+  const buildString = plistStringMatches(plist, "CFBundleVersion")[2];
   if (!/^[1-9]\d*$/.test(buildString) || !Number.isSafeInteger(Number(buildString))) {
     throw new Error("CFBundleVersion must be a positive safe integer");
   }
@@ -66,12 +91,7 @@ export function validateMetadata(options = {}) {
   return metadata;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  try {
-    const metadata = validateMetadata();
-    console.log(`Release metadata agrees: ${metadata.version}, build ${metadata.build}`);
-  } catch (error) {
-    console.error(error.message);
-    process.exitCode = 1;
-  }
-}
+runAsScript(import.meta.url, () => {
+  const metadata = validateMetadata();
+  console.log(`Release metadata agrees: ${metadata.version}, build ${metadata.build}`);
+});

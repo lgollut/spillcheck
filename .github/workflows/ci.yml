@@ -19,6 +19,9 @@ defaults:
   run:
     shell: bash
 
+env:
+  XCODE_DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
+
 jobs:
   metadata:
     name: Changeset and release metadata
@@ -35,20 +38,20 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '24'
+          node-version-file: .nvmrc
           cache: npm
       - name: Install release tooling
-        run: npm ci
+        run: npm ci --ignore-scripts
+      # Fail before merge rather than in the post-merge release jobs. The changeset
+      # check and release scripts validate the slug format where they use it.
       - name: Check public GitHub App configuration
         run: |
-          if [[ -z "$CHANGESETS_APP_CLIENT_ID" ]]; then
-            echo '::error::Set the CHANGESETS_APP_CLIENT_ID repository Actions variable.'
-            exit 1
-          fi
-          if [[ ! "$CHANGESETS_APP_SLUG" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
-            echo '::error::Set CHANGESETS_APP_SLUG to the installed GitHub App slug, without [bot].'
-            exit 1
-          fi
+          for name in CHANGESETS_APP_CLIENT_ID CHANGESETS_APP_SLUG; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::Set the $name repository Actions variable."
+              exit 1
+            fi
+          done
       - name: Validate changesets and generated release PRs
         run: npm run changeset:check
       - name: Validate app version metadata
@@ -64,9 +67,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Select Xcode 27.0
+      - name: Select Xcode
         run: |
-          sudo xcode-select --switch /Applications/Xcode_27.0.app/Contents/Developer
+          sudo xcode-select --switch "$XCODE_DEVELOPER_DIR"
           xcodebuild -version
           swift --version
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -98,14 +101,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Select Xcode 27.0
+      - name: Select Xcode
         run: |
-          sudo xcode-select --switch /Applications/Xcode_27.0.app/Contents/Developer
+          sudo xcode-select --switch "$XCODE_DEVELOPER_DIR"
           xcodebuild -version
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
-      - name: Test scanner bundling and release policy
+      - name: Test scanner bundling, release policy, and vault-owner evidence
         run: |
           python3 Tests/Tooling/check-scanner-bundling.py
           python3 Tests/Tooling/check-release-policy.py
@@ -125,9 +128,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Select Xcode 27.0
+      - name: Select Xcode
         run: |
-          sudo xcode-select --switch /Applications/Xcode_27.0.app/Contents/Developer
+          sudo xcode-select --switch "$XCODE_DEVELOPER_DIR"
           xcodebuild -version
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -147,6 +150,7 @@ jobs:
       - name: Compile the unsigned Debug app
         run: scripts/build-app.sh --configuration Debug --derived-data .build/ci-app CODE_SIGNING_ALLOWED=NO
 
+  # The main ruleset and scripts/github-release.mjs require this exact job name.
   required-checks:
     name: Required checks
     if: always()

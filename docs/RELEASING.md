@@ -1,15 +1,16 @@
 # Releases
 
 Spillcheck uses Changesets to version the macOS app. The private root
-`package.json` supplies its version; nothing is published to npm. Node 24 runs
-the repository tooling. `package.json`, both root version fields in
+`package.json` supplies its version; nothing is published to npm. Node 26, pinned
+in `.nvmrc` for local use and CI, runs the repository tooling. `package.json`, both root version fields in
 `package-lock.json`, and `Spillcheck/Info.plist` must agree.
 
 ## Normal workflow
 
 1. Create a feature branch from `main`, implement the change, and add a changeset
-   with its explanation and `spillcheck` bump. Documentation, tests, and CI-only
-   work must add an explained empty changeset. See [Contributing](../CONTRIBUTING.md).
+   with its explanation and `spillcheck` bump. Documentation, tests, CI, and
+   release-tooling work must add an explained empty changeset; CI rejects a bump
+   for it. See [Contributing](../CONTRIBUTING.md) for the exact paths.
 2. Open a PR to `main`. CI checks that the branch added a valid changeset,
    runs the core and tooling tests, and compiles the unsigned Debug app. Core test
    cases run serially to avoid competing with each other's process and socket
@@ -66,9 +67,12 @@ before merging it:
    Block force pushes and deletion. A solo maintainer can require zero approving
    reviews. The release App does not need a bypass for `main`.
 2. Create an active tag ruleset targeting `v*`. Restrict updates and deletion so
-   published version tags remain immutable. Leave creation permitted for the App.
-   If you also restrict creation, use a separate creation rule with the release
-   App as its bypass actor, so it cannot bypass the immutability rules.
+   published version tags remain immutable, with no bypass actors.
+3. Create a second active tag ruleset targeting `v*` that restricts creations,
+   with the release App as its only bypass actor (**Always allow**). Release tags
+   are immutable, so a `vX.Y.Z` pushed by hand to the wrong commit would block
+   that release. Keeping the bypass in this separate ruleset means the App can
+   create tags but cannot update or delete them.
 
 Do not apply a force-push restriction to `changeset-release/main` unless the
 release App can bypass that restriction: Changesets regenerates that branch.

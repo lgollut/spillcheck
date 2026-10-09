@@ -1,19 +1,18 @@
+// Consume pending changesets, then synchronize the lockfile and Info.plist with the new version.
 import { readFileSync, writeFileSync, readdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 import semver from "semver";
-import { validateMetadata } from "./release-metadata.mjs";
+import { replacePlistString, runAsScript, validateMetadata } from "./release-metadata.mjs";
 
-const require = createRequire(import.meta.url);
-export const changesetsCli = require.resolve("@changesets/cli/bin.js");
+const changesetsCli = createRequire(import.meta.url).resolve("@changesets/cli/bin.js");
 
-export function versionRelease({ root = process.cwd(), cliPath = changesetsCli } = {}) {
+export function versionRelease({ root = process.cwd() } = {}) {
   const before = validateMetadata({ root });
   const pending = readdirSync(resolve(root, ".changeset")).filter((name) => name.endsWith(".md") && name !== "README.md");
   if (!pending.length) return { ...before, changed: false, output: "No pending changesets" };
-  const output = execFileSync(process.execPath, [cliPath, "version"], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  const output = execFileSync(process.execPath, [changesetsCli, "version"], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
   const manifest = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
   if (manifest.version === before.version) return { ...before, changed: false, output };
   if (!semver.gt(manifest.version, before.version)) throw new Error("A release must increase the app version");
@@ -25,20 +24,14 @@ export function versionRelease({ root = process.cwd(), cliPath = changesetsCli }
   lock.packages[""].version = manifest.version;
   writeFileSync(lockPath, `${JSON.stringify(lock, null, 2)}\n`);
   const plistPath = resolve(root, "Spillcheck/Info.plist");
-  const plist = readFileSync(plistPath, "utf8")
-    .replace(/(<key>\s*CFBundleShortVersionString\s*<\/key>\s*<string>)[^<]*(<\/string>)/, (_, prefix, suffix) => `${prefix}${manifest.version}${suffix}`)
-    .replace(/(<key>\s*CFBundleVersion\s*<\/key>\s*<string>)[^<]*(<\/string>)/, (_, prefix, suffix) => `${prefix}${build}${suffix}`);
-  writeFileSync(plistPath, plist);
+  const plist = readFileSync(plistPath, "utf8");
+  const versioned = replacePlistString(plist, "CFBundleShortVersionString", manifest.version);
+  writeFileSync(plistPath, replacePlistString(versioned, "CFBundleVersion", String(build)));
   return { ...validateMetadata({ root, requireChangelog: true }), changed: true, output };
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  try {
-    const result = versionRelease();
-    console.log(result.output.trim());
-    console.log(`App version ${result.version}, build ${result.build}${result.changed ? "" : " (unchanged)"}`);
-  } catch (error) {
-    console.error(error.message);
-    process.exitCode = 1;
-  }
-}
+runAsScript(import.meta.url, () => {
+  const result = versionRelease();
+  console.log(result.output.trim());
+  console.log(`App version ${result.version}, build ${result.build}${result.changed ? "" : " (unchanged)"}`);
+});

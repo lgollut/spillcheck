@@ -1,44 +1,37 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import test from "node:test";
+import { test } from "node:test";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { git } from "../../scripts/release-metadata.mjs";
 import { versionRelease } from "../../scripts/version-release.mjs";
 import {
   GitHubApiError,
   assertRequiredChecks,
+  describeReleasePullRequest,
   githubClient,
   githubReleaseBody,
   publishRelease,
+  releasePullRequestBody,
   tagCommit,
   tagRelease,
 } from "../../scripts/github-release.mjs";
+import { gitRepository, infoPlist, project, writeFile } from "./release-fixtures.mjs";
 
 const repo = "owner/spillcheck";
 const slug = "spillcheck-release";
 const otherSha = "a".repeat(40);
-const project = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
-function runGit(root, ...args) {
-  return execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
-}
+const runGit = (root, ...args) => git(root, args);
 
 function repository(t, { bootstrap = false, version = "0.2.0" } = {}) {
-  const root = mkdtempSync(join(tmpdir(), "spillcheck-github-release-"));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-  runGit(root, "init", "-q", "--initial-branch=main");
-  runGit(root, "config", "user.name", "Release fixture");
-  runGit(root, "config", "user.email", "release@example.invalid");
-  mkdirSync(join(root, "Spillcheck"));
+  const root = gitRepository(t, "spillcheck-github-release-");
   const writeMetadata = (value, build) => {
     writeFileSync(join(root, "package.json"), JSON.stringify({ name: "spillcheck", version: value, private: true }));
     writeFileSync(join(root, "package-lock.json"), JSON.stringify({
       name: "spillcheck", version: value, lockfileVersion: 3,
       packages: { "": { name: "spillcheck", version: value } },
     }));
-    writeFileSync(join(root, "Spillcheck/Info.plist"), `<plist><dict><key>CFBundleShortVersionString</key><string>${value}</string><key>CFBundleVersion</key><string>${build}</string></dict></plist>`);
+    writeFile(root, "Spillcheck/Info.plist", infoPlist(value, build));
   };
   const commit = (message) => {
     runGit(root, "add", ".");
@@ -404,6 +397,33 @@ test("the HTTP client sends structured payloads and does not expose tokens in er
     assert.equal(error.message.includes(token), false);
     return true;
   });
+});
+
+test("the release PR keeps Changesets' notes under an app-specific introduction", async () => {
+  const generated = "# Spillcheck\n\nThis PR was opened by the Changesets release action. Publish to npm yourself.\n\n# Releases\n## spillcheck@0.2.0\n\n- Add a feature.\n";
+  const described = releasePullRequestBody(generated);
+  assert.match(described, /^Merge this PR when its version and changelog are ready\./);
+  assert.ok(described.endsWith("# Releases\n## spillcheck@0.2.0\n\n- Add a feature.\n"));
+  assert.doesNotMatch(described, /npm/);
+  assert.equal(releasePullRequestBody(described), described);
+  assert.throws(() => releasePullRequestBody("No generated notes"), /release notes heading/);
+
+  const calls = [];
+  let body = generated;
+  const api = { async request(method, path, options = {}) {
+    calls.push({ method, path, body: options.body });
+    if (method === "PATCH") body = options.body.body;
+    return { body };
+  } };
+  assert.deepEqual(await describeReleasePullRequest({ api, repo, number: "7" }), { number: 7, updated: true });
+  assert.deepEqual(calls.map(({ method, path }) => `${method} ${path}`), [`GET /repos/${repo}/pulls/7`, `PATCH /repos/${repo}/pulls/7`]);
+  assert.equal(body, described);
+  assert.deepEqual(await describeReleasePullRequest({ api, repo, number: "7" }), { number: 7, updated: false });
+  assert.equal(calls.length, 3);
+  for (const number of [undefined, "", "0", "7; rm", "../7"]) {
+    await assert.rejects(describeReleasePullRequest({ api, repo, number }), /positive integer/);
+  }
+  assert.equal(calls.length, 3);
 });
 
 test("release body describes the initial changelog-only scope", () => {

@@ -1,14 +1,15 @@
-import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+// Describe the release PR, tag its tested merge, and publish the changelog-only GitHub Release.
 import semver from "semver";
 import {
   extractChangelogSection,
   git,
   parseReleaseVersion,
   readFileAt,
+  readFileAtIfPresent,
+  runAsScript,
   validateMetadata,
 } from "./release-metadata.mjs";
-import { validateGeneratedRelease } from "./check-changesets.mjs";
+import { assertAppSlug, isTrustedReleasePR, validateGeneratedRelease } from "./check-changesets.mjs";
 
 const MAX_API_PAGES = 20;
 const SHA_PATTERN = /^[a-f0-9]{40}$/;
@@ -20,11 +21,11 @@ export class GitHubApiError extends Error {
   }
 }
 
-export function githubClient(token, { fetchImpl = fetch, apiUrl = "https://api.github.com" } = {}) {
+export function githubClient(token, { fetchImpl = fetch } = {}) {
   if (!token) throw new Error("A GitHub token is required");
   return {
     async request(method, path, { query = {}, body } = {}) {
-      const url = new URL(path, `${apiUrl.replace(/\/$/, "")}/`);
+      const url = new URL(path, "https://api.github.com/");
       for (const [key, value] of Object.entries(query)) url.searchParams.set(key, String(value));
       const response = await fetchImpl(url, {
         method,
@@ -47,14 +48,16 @@ export function githubClient(token, { fetchImpl = fetch, apiUrl = "https://api.g
   };
 }
 
-function validateContext({ repo, sha, slug }) {
+function assertRepository(repo) {
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo ?? "")) {
     throw new Error("GITHUB_REPOSITORY must identify owner/repository");
   }
+}
+
+function validateContext({ repo, sha, slug }) {
+  assertRepository(repo);
   if (!SHA_PATTERN.test(sha ?? "")) throw new Error("GITHUB_SHA must be a full commit SHA");
-  if (!/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(slug ?? "")) {
-    throw new Error("CHANGESETS_APP_SLUG must be the configured GitHub App slug, without [bot]");
-  }
+  assertAppSlug(slug);
 }
 
 async function* pages(api, path, key, query = {}) {
@@ -81,12 +84,8 @@ function assertCheckoutAndMain({ root, sha }) {
 }
 
 function manifestAt(root, ref) {
-  try {
-    git(root, ["cat-file", "-e", `${ref}:package.json`]);
-  } catch {
-    return undefined;
-  }
-  return JSON.parse(readFileAt({ root, ref, path: "package.json" }));
+  const contents = readFileAtIfPresent({ root, ref, path: "package.json" });
+  return contents && JSON.parse(contents);
 }
 
 function releaseVersionChange({ root, sha }) {
@@ -115,10 +114,8 @@ export async function trustedReleasePullRequest({ api, repo, sha, slug }) {
       // Read canonical PR details rather than relying on a partial association response.
       const pr = await api.request("GET", `/repos/${repo}/pulls/${candidate.number}`);
       if (
-        pr.state === "closed" && pr.merged === true && pr.merged_at && pr.merge_commit_sha === sha &&
-        pr.user?.login === `${slug}[bot]` && pr.user?.type === "Bot" &&
-        pr.head?.ref === "changeset-release/main" && pr.base?.ref === "main" &&
-        pr.head?.repo?.full_name === repo && pr.base?.repo?.full_name === repo
+        isTrustedReleasePR(pr, slug) && pr.base?.ref === "main" && pr.base.repo?.full_name === repo &&
+        pr.state === "closed" && pr.merged === true && pr.merged_at && pr.merge_commit_sha === sha
       ) matching.push(pr);
     }
   }
@@ -199,6 +196,24 @@ export async function tagRelease({
   return { tag, sha, existing: false };
 }
 
+const RELEASE_PR_INTRODUCTION = "Merge this PR when its version and changelog are ready. Successful main CI will tag that commit and publish a GitHub Release with the changelog. Releases currently contain notes only, with no app assets.\n\nNew merges into main refresh this PR. The version and app build number are generated; submit corrections on a feature branch.\n\n";
+
+// Replaces Changesets' npm publishing introduction while keeping its generated release notes.
+export function releasePullRequestBody(body) {
+  const heading = body.indexOf("# Releases\n");
+  if (heading < 0) throw new Error("Changesets PR body is missing its release notes heading");
+  return RELEASE_PR_INTRODUCTION + body.slice(heading);
+}
+
+export async function describeReleasePullRequest({ api, repo, number }) {
+  assertRepository(repo);
+  if (!/^[1-9]\d*$/.test(String(number ?? ""))) throw new Error("Release PR number must be a positive integer");
+  const pr = await api.request("GET", `/repos/${repo}/pulls/${number}`);
+  const body = releasePullRequestBody(pr.body ?? "");
+  if (body !== pr.body) await api.request("PATCH", `/repos/${repo}/pulls/${number}`, { body: { body } });
+  return { number: Number(number), updated: body !== pr.body };
+}
+
 export function githubReleaseBody(section) {
   return `${section}\n\n---\n\nThis release contains the changelog only. Signed macOS app distribution remains deferred until the recorded release checks pass.\n`;
 }
@@ -238,24 +253,26 @@ export async function publishRelease({
   return { tag, sha, existing: false, url: created.html_url };
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  try {
-    const command = process.argv[2];
-    if (!["tag", "publish"].includes(command)) throw new Error("Usage: node scripts/github-release.mjs tag|publish");
-    const api = githubClient(process.env.GH_TOKEN);
-    const ciApi = process.env.CI_READ_TOKEN ? githubClient(process.env.CI_READ_TOKEN) : api;
-    const context = {
-      repo: process.env.GITHUB_REPOSITORY,
-      sha: process.env.GITHUB_SHA,
-      slug: process.env.CHANGESETS_APP_SLUG,
-      api, ciApi,
-    };
-    const result = command === "tag"
-      ? await tagRelease({ ...context, runId: process.env.GITHUB_RUN_ID })
-      : await publishRelease({ ...context, tag: process.env.GITHUB_REF_NAME });
-    console.log(result.skipped ? `No release tag needed: ${result.reason}` : `${result.existing ? "Verified existing" : "Created"} ${result.tag}${result.url ? `: ${result.url}` : ""}`);
-  } catch (error) {
-    console.error(error.message);
-    process.exitCode = 1;
+runAsScript(import.meta.url, async () => {
+  const command = process.argv[2];
+  if (!["describe-release-pr", "tag", "publish"].includes(command)) {
+    throw new Error("Usage: node scripts/github-release.mjs describe-release-pr|tag|publish");
   }
-}
+  const api = githubClient(process.env.GH_TOKEN);
+  if (command === "describe-release-pr") {
+    const result = await describeReleasePullRequest({ api, repo: process.env.GITHUB_REPOSITORY, number: process.env.RELEASE_PR_NUMBER });
+    console.log(`${result.updated ? "Described" : "Already described"} release PR #${result.number}`);
+    return;
+  }
+  const ciApi = process.env.CI_READ_TOKEN ? githubClient(process.env.CI_READ_TOKEN) : api;
+  const context = {
+    repo: process.env.GITHUB_REPOSITORY,
+    sha: process.env.GITHUB_SHA,
+    slug: process.env.CHANGESETS_APP_SLUG,
+    api, ciApi,
+  };
+  const result = command === "tag"
+    ? await tagRelease({ ...context, runId: process.env.GITHUB_RUN_ID })
+    : await publishRelease({ ...context, tag: process.env.GITHUB_REF_NAME });
+  console.log(result.skipped ? `No release tag needed: ${result.reason}` : `${result.existing ? "Verified existing" : "Created"} ${result.tag}${result.url ? `: ${result.url}` : ""}`);
+});

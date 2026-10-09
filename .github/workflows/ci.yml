@@ -82,7 +82,10 @@ jobs:
         run: |
           export SPILLCHECK_TEST_PYTHON
           SPILLCHECK_TEST_PYTHON="$(python3 -c 'import sys; print(sys.executable)')"
-          make test
+          # Blocking process/socket probes have short deadlines. Isolate test
+          # cases from each other's load while retaining concurrency within them.
+          python3 scripts/prepare-scanner.py
+          swift test --no-parallel
       - name: Record optional test scope
         run: |
           echo 'Signed app, live provider, GUI, and distribution acceptance checks remain separate from this provider-free CI run.' >> "$GITHUB_STEP_SUMMARY"

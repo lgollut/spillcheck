@@ -11,7 +11,9 @@ the repository tooling. `package.json`, both root version fields in
    with its explanation and `spillcheck` bump. Documentation, tests, and CI-only
    work must add an explained empty changeset. See [Contributing](../CONTRIBUTING.md).
 2. Open a PR to `main`. CI checks that the branch added a valid changeset,
-   runs the core and tooling tests, and compiles the unsigned Debug app.
+   runs the core and tooling tests, and compiles the unsigned Debug app. Core test
+   cases run serially to avoid competing with each other's process and socket
+   timing probes; their assertions and internal concurrency remain enabled.
 3. Merge the reviewed PR after `Required checks` succeeds. Successful `main` CI
    creates or updates the App-owned `changeset-release/main` PR.
 4. Leave the release PR open while more feature PRs merge. Automation regenerates

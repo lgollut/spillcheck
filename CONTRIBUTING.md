@@ -32,7 +32,7 @@ Run the relevant checks locally before opening a PR:
 
 ```sh
 make scanner-dependencies
-SPILLCHECK_TEST_PYTHON="$(python3 -c 'import sys; print(sys.executable)')" make test
+SPILLCHECK_TEST_PYTHON="$(python3 -c 'import sys; print(sys.executable)')" swift test --no-parallel
 npm run release:check
 npm run test:release
 ```
@@ -42,6 +42,8 @@ The Swift tests and scanner installer require macOS on Apple Silicon. The
 CI also compiles the Debug app with signing disabled. Its `Required checks` job
 combines changeset validation, core tests, tooling tests, and app compilation.
 It runs for PRs targeting `main` and for every push to `main`.
+CI runs test cases serially because the process and socket probes have short
+deadlines. Tests still exercise their own concurrent tasks and races.
 
 CI does not exercise real provider sessions, production Keychain authentication,
 the GUI, notarization, or installed-app acceptance. Follow the recorded

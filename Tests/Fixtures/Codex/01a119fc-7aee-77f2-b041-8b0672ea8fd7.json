@@ -1,0 +1,114 @@
+{
+  "items" : [
+    {
+      "completedAtMs" : 1791437343509,
+      "item" : {
+        "aggregatedOutput" : "01a119fc-7aee-77f2-b041-8b0672ea8fd7\n",
+        "command" : "\/bin\/zsh -lc 'printenv CODEX_THREAD_ID'",
+        "commandActions" : [
+          {
+            "command" : "printenv CODEX_THREAD_ID",
+            "type" : "unknown"
+          }
+        ],
+        "cwd" : "\/Users\/test-user\/test-project",
+        "durationMs" : 0,
+        "exitCode" : 0,
+        "id" : "exec-95ae9948-f7d5-42ca-b8f6-ee98bbe962ad",
+        "pluginId" : null,
+        "processId" : "37329",
+        "scriptPath" : null,
+        "source" : "unifiedExecStartup",
+        "status" : "completed",
+        "type" : "commandExecution"
+      },
+      "startedAtMs" : 1791437343509,
+      "turnId" : "01a119fc-7b70-7350-8807-fa88fa9cf393"
+    },
+    {
+      "completedAtMs" : 1791437346996,
+      "item" : {
+        "content" : [
+
+        ],
+        "id" : "rs_05ce6d47820f9032016ac72a214fb08191a97030776209d677",
+        "summary" : [
+
+        ],
+        "type" : "reasoning"
+      },
+      "startedAtMs" : 1791437345339,
+      "turnId" : "01a119fc-7b70-7350-8807-fa88fa9cf393"
+    },
+    {
+      "completedAtMs" : 1791437347695,
+      "item" : {
+        "delivery" : null,
+        "id" : "msg_05ce6d47820f9032016ac72a22fa508191ba8bde26b2702157",
+        "memoryCitation" : null,
+        "phase" : "final_answer",
+        "questions" : null,
+        "text" : "LEAKRET_M4_CHILD_FINAL ghp_8nR4vY2qL7sD9mF3xK6cP1aB5hJ0uE4wT9zS",
+        "type" : "agentMessage"
+      },
+      "startedAtMs" : 1791437347004,
+      "turnId" : "01a119fc-7b70-7350-8807-fa88fa9cf393"
+    }
+  ],
+  "thread" : {
+    "cliVersion" : "0.160.1",
+    "id" : "01a119fc-7aee-77f2-b041-8b0672ea8fd7"
+  },
+  "turns" : [
+    {
+      "completedAt" : 1791437348,
+      "durationMs" : 8561,
+      "error" : null,
+      "id" : "01a119fc-7b70-7350-8807-fa88fa9cf393",
+      "items" : [
+        {
+          "aggregatedOutput" : "01a119fc-7aee-77f2-b041-8b0672ea8fd7\n",
+          "command" : "\/bin\/zsh -lc 'printenv CODEX_THREAD_ID'",
+          "commandActions" : [
+            {
+              "command" : "printenv CODEX_THREAD_ID",
+              "type" : "unknown"
+            }
+          ],
+          "cwd" : "\/Users\/test-user\/test-project",
+          "durationMs" : 0,
+          "exitCode" : 0,
+          "id" : "exec-95ae9948-f7d5-42ca-b8f6-ee98bbe962ad",
+          "pluginId" : null,
+          "processId" : "37329",
+          "scriptPath" : null,
+          "source" : "unifiedExecStartup",
+          "status" : "completed",
+          "type" : "commandExecution"
+        },
+        {
+          "content" : [
+
+          ],
+          "id" : "rs_05ce6d47820f9032016ac72a214fb08191a97030776209d677",
+          "summary" : [
+
+          ],
+          "type" : "reasoning"
+        },
+        {
+          "delivery" : null,
+          "id" : "msg_05ce6d47820f9032016ac72a22fa508191ba8bde26b2702157",
+          "memoryCitation" : null,
+          "phase" : "final_answer",
+          "questions" : null,
+          "text" : "LEAKRET_M4_CHILD_FINAL ghp_8nR4vY2qL7sD9mF3xK6cP1aB5hJ0uE4wT9zS",
+          "type" : "agentMessage"
+        }
+      ],
+      "itemsView" : "full",
+      "startedAt" : 1791437339,
+      "status" : "completed"
+    }
+  ]
+}

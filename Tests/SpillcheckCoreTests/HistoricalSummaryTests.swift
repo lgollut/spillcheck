@@ -1,0 +1,60 @@
+import Foundation
+import Testing
+@testable import SpillcheckCore
+
+@Suite("Historical summaries from retained inventory")
+struct HistoricalSummaryTests {
+    @Test func summarySurvivesRestartAndFollowsReviewDeletionAndObsoleteState() throws {
+        let audit = try HistoricalAuditContext(reason: .restart, endingAt: fixtureTime)
+        var ledger = InventoryLedger()
+        let first = try ledger.ingest(analysis(item: "old-1", provenance: .historical(audit)))
+        _ = try ledger.ingest(analysis(item: "old-2", provenance: .historical(audit)))
+        _ = try ledger.ingest(analysis(item: "other-value", fingerprintByte: 2, provenance: .historical(audit)))
+        _ = try ledger.ingest(analysis(item: "live", fingerprintByte: 3))
+        #expect(ledger.alertDecisions.count == 1)
+        let restored = try JSONDecoder().decode(InventorySnapshot.self, from: JSONEncoder().encode(ledger.snapshot))
+        ledger = try InventoryLedger(snapshot: restored)
+        var summary = try #require(ledger.snapshot.historicalSummaries().first)
+        #expect(summary.audit == audit)
+        #expect(summary.ordinaryOccurrenceCount == 3)
+        #expect(summary.ordinaryValueCount == 2)
+        let firstID = try #require(first.insertedOccurrenceIDs.first)
+        try ledger.review(firstID, as: .falsePositive)
+        summary = try #require(ledger.snapshot.historicalSummaries().first)
+        #expect(summary.ordinaryOccurrenceCount == 2)
+        try ledger.review(firstID, as: .confirmedSecret)
+        #expect(try ledger.snapshot.historicalSummaries().first?.ordinaryOccurrenceCount == 3)
+        try ledger.acknowledgeObsolete(fingerprint(), as: .rotated, at: fixtureTime)
+        summary = try #require(ledger.snapshot.historicalSummaries().first)
+        #expect(summary.ordinaryOccurrenceCount == 1)
+        #expect(summary.obsoleteOccurrenceCount == 2)
+        #expect(summary.ordinaryValueCount == 1)
+        _ = try ledger.removeContent(for: fingerprint())
+        _ = try ledger.ingest(analysis(item: "old-obsolete-new", provenance: .historical(audit)))
+        _ = try ledger.ingest(analysis(item: "old-1", provenance: .historical(audit)))
+        summary = try #require(ledger.snapshot.historicalSummaries().first)
+        #expect(summary.ordinaryOccurrenceCount == 1)
+        #expect(summary.obsoleteOccurrenceCount == 1)
+        _ = try ledger.removeContent(for: fingerprint(2))
+        summary = try #require(ledger.snapshot.historicalSummaries().first)
+        #expect(summary.ordinaryOccurrenceCount == 0)
+        #expect(!summary.shouldNotify)
+        #expect(summary.notificationIdentifier == "leakret-audit-\(audit.id.uuidString.lowercased())")
+    }
+
+    @Test func firstCollectorOwnsProvenanceAndDistinctAuditsRemainSeparate() throws {
+        let firstAudit = try HistoricalAuditContext(reason: .firstLaunch, endingAt: fixtureTime)
+        let secondAudit = try HistoricalAuditContext(reason: .resume, endingAt: fixtureTime.addingTimeInterval(60))
+        var ledger = InventoryLedger()
+        _ = try ledger.ingest(analysis(item: "live-first"))
+        _ = try ledger.ingest(analysis(item: "live-first", provenance: .historical(firstAudit)))
+        _ = try ledger.ingest(analysis(item: "history-first", provenance: .historical(firstAudit)))
+        _ = try ledger.ingest(analysis(item: "history-first"))
+        _ = try ledger.ingest(analysis(item: "later-audit", provenance: .historical(secondAudit)))
+        let summaries = try ledger.snapshot.historicalSummaries()
+        #expect(summaries.map(\.audit.id) == [secondAudit.id, firstAudit.id])
+        #expect(summaries.map(\.ordinaryOccurrenceCount) == [1, 1])
+        #expect(ledger.occurrences.count == 3)
+        #expect(ledger.alertDecisions.count == 1)
+    }
+}

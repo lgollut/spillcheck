@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "state": "after-normal-quit",
+  "attempts": 5,
+  "wallMillisecondsIncludingProcessStartup": [
+    19.675958999999995,
+    18.672500000000003,
+    20.428749999999994,
+    19.515958,
+    18.684583000000003
+  ],
+  "stdinLeftOpenUntilHelperExited": true,
+  "onlyControlledEmptyJSONResponse": true,
+  "ownedExperimentDirectoryRemoved": true,
+  "passed": true
+}

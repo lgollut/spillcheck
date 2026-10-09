@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "consecutiveAppBuilds": 2,
+  "bothBuildsExitCode": 0,
+  "bothSignatureVerificationsPassed": true,
+  "scannerAndManifestBytesAndMtimesUnchanged": true,
+  "before": {
+    "scanner": {
+      "sha256": "e943487158b102b900094ad25e76d6000b276480ffdd8f4b5215f0e0b1f40d41",
+      "mtimeNanoseconds": 1791452653455785458
+    },
+    "manifest": {
+      "sha256": "a013e10bd49bd50be5c9ad0907a4fc5375b4bd44e2056081fbb1b3dda37028d4",
+      "mtimeNanoseconds": 1791452653893478038
+    }
+  },
+  "after": {
+    "scanner": {
+      "sha256": "e943487158b102b900094ad25e76d6000b276480ffdd8f4b5215f0e0b1f40d41",
+      "mtimeNanoseconds": 1791452653455785458
+    },
+    "manifest": {
+      "sha256": "a013e10bd49bd50be5c9ad0907a4fc5375b4bd44e2056081fbb1b3dda37028d4",
+      "mtimeNanoseconds": 1791452653893478038
+    }
+  },
+  "passed": true,
+  "releaseSigning": "not-checked",
+  "logs": [
+    ".build/implementation/m5-final-app-build.log",
+    ".build/implementation/m6-incremental-app-build.log"
+  ],
+  "earlierCacheMiss": "docs/implementation/m6-incremental-signing-cache-miss.json"
+}

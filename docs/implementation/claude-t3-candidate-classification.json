@@ -1,0 +1,88 @@
+{
+  "exitCode": 0,
+  "diagnosticBytes": 0,
+  "result": {
+    "alertCount": 0,
+    "ciphertextMarkerInspectionPassed": true,
+    "durableDeliveries": 2,
+    "finalCatchUpNewOccurrences": 0,
+    "finished": true,
+    "firstObservedAt": {
+      "CHILD_FINAL": "2026-10-07T23:06:53.396Z",
+      "CHILD_PROMPT": "2026-10-07T23:06:53.396Z",
+      "FINAL": "2026-10-07T23:06:50.604Z",
+      "INTERMEDIATE": "2026-10-07T23:06:50.604Z",
+      "MCP_ERROR": "2026-10-07T23:06:50.604Z",
+      "MCP_OK": "2026-10-07T23:06:50.604Z",
+      "PROMPT": "2026-10-07T23:06:50.604Z",
+      "SHELL_ERROR": "2026-10-07T23:06:50.604Z",
+      "SHELL_OK": "2026-10-07T23:06:50.604Z"
+    },
+    "gapReasons": [
+      "unsupportedContent"
+    ],
+    "lastPending": 0,
+    "occurrenceCount": 20,
+    "occurrencesByContentType": {
+      "finalResponse": 2,
+      "intermediateResponse": 1,
+      "toolError": 2,
+      "toolOutput": 3,
+      "userPrompt": 12
+    },
+    "otherCandidates": [
+      {
+        "categories": [
+          "apiKey"
+        ],
+        "locations": [
+          {
+            "contentType": "userPrompt",
+            "ranges": [
+              {
+                "lower": 190,
+                "upper": 231
+              }
+            ]
+          }
+        ],
+        "occurrenceCount": 1,
+        "rules": [
+          "generic-api-key"
+        ],
+        "signals": [
+          "ambiguous"
+        ]
+      }
+    ],
+    "queueCount": 0,
+    "replayStable": true,
+    "sessionCount": 1,
+    "setupState": "selected-source",
+    "syntheticAlertCount": 0,
+    "syntheticValuePresent": true,
+    "typedCommitted": {
+      "CHILD_FINAL": 1,
+      "CHILD_PROMPT": 1,
+      "FINAL": 1,
+      "INTERMEDIATE": 1,
+      "MCP_ERROR": 1,
+      "MCP_OK": 1,
+      "PROMPT": 1,
+      "SHELL_ERROR": 1,
+      "SHELL_OK": 1
+    },
+    "typedObserved": {
+      "CHILD_FINAL": 1,
+      "CHILD_PROMPT": 1,
+      "FINAL": 1,
+      "INTERMEDIATE": 1,
+      "MCP_ERROR": 1,
+      "MCP_OK": 1,
+      "PROMPT": 1,
+      "SHELL_ERROR": 1,
+      "SHELL_OK": 1
+    },
+    "valueCount": 2
+  }
+}

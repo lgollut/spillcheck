@@ -1,0 +1,51 @@
+{
+  "captureInsertedBeforeReturn": true,
+  "stdoutNoEffect": true,
+  "stderrEmpty": true,
+  "deliverySecondsIncludingStartup": 0.035832875,
+  "queueCount": 1,
+  "protectedFiles": {
+    "leakret.sqlite": {
+      "mode": "0o600",
+      "containsMarker": false
+    },
+    "leakret.sqlite-shm": {
+      "mode": "0o600",
+      "containsMarker": false
+    },
+    "leakret.sqlite-wal": {
+      "mode": "0o600",
+      "containsMarker": false
+    }
+  },
+  "pausedDelivery": {
+    "pausedRejectsWithoutQueueInsertion": true,
+    "seconds": 0.010159584,
+    "stdoutNoEffect": true,
+    "stderrEmpty": true
+  },
+  "quitDelivery": {
+    "appProcessAbsent": true,
+    "socketRemoved": true,
+    "seconds": 0.019198124999999996,
+    "stdoutNoEffect": true,
+    "stderrEmpty": true,
+    "retainedQueueCount": 1
+  },
+  "oversizeDelivery": {
+    "queueUnchanged": true,
+    "knownRejectionPersisted": true,
+    "secondsIncludingStartup": 0.102447208,
+    "stdoutNoEffect": true,
+    "stderrEmpty": true
+  },
+  "restartWithExistingKeysAndQueuePassed": true,
+  "windowClosedDelivery": {
+    "captureInserted": true,
+    "samePIDBeforeReopen": true,
+    "stdoutNoEffect": true,
+    "stderrEmpty": true,
+    "verificationSecondsIncludingProcessInspection": 0.20708541700000002,
+    "samePIDAfterReopen": true
+  }
+}

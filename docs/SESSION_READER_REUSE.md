@@ -1,73 +1,74 @@
-# Session reader guidance for Leakret
+# Session reader guidance
 
-Reviewed October 7, 2026. This note records reader patterns and proposed recovery
-checks for the feasibility work. No private session histories were read, readers
-run, or tests executed for this assessment. The repository contains documentation
-only; these patterns do not establish collection coverage.
+Session readers must preserve the content and identities needed for secret
+detection while bounding history work. This guidance covers transcript framing,
+checkpoint persistence, recovery, and occurrence reconciliation. The
+[supported matrix](implementation/supported-matrix.md) records which provider
+interfaces and versions have passed genuine collection checks.
 
-Bounded file readers, JSONL framing, checkpoints, and recovery contracts are
-candidates for reuse when they fit Leakret without unnecessary dependencies or
-adaptation. Implement independently where the application's needs differ.
-Leakret needs a role-neutral transcript decoder and exact content extraction;
-prompt-only parsing cannot provide the required assistant and tool-output
-coverage. See the [implementation plan](IMPLEMENTATION_PLAN.md) for the
-feasibility gates and [specification](SPEC.md) for required behavior.
+## Reading and framing
 
-## Reader patterns and required adaptations
+Discover sources only beneath explicitly configured profiles and roots. Check
+file ownership and type, bound metadata traversal, and retain cancellation
+points. Treat compressed histories and relocated stores as separate capabilities
+that need versioned fixtures and visible status.
 
-| Pattern | Required Leakret behavior |
-| --- | --- |
-| Source discovery and bounded reads | Check regular files, support explicit agent profiles and roots, retain cancellation points, and use keyed fingerprints for secret-bearing boundary bytes. Standard roots include `.claude/projects`, `.codex/sessions`, and `.codex/archived_sessions`; compressed histories require separate validation. |
-| JSONL framing | Preserve complete supported message and tool content, leave incomplete trailing records pending, and report gaps when a limit is exceeded. Recovery classification must handle every supported role. |
-| Prepare and commit | Separate reading from durable processing. Commit encrypted findings, source receipts, progress, and alert decisions together under the seven-day window and declared adapter coverage. |
-| Session metadata and event identity | Preserve upstream session/item IDs, timestamps, originating-thread relationships, and source context. Prove hook/history mappings independently rather than treating a format clue as content coverage. |
+Preserve user messages, assistant messages, tool results, errors, and supported
+native-child content. A prompt-only reader cannot satisfy Spillcheck's coverage.
+Decode transport escaping without discarding generated context or normalizing
+the exact value bytes. Scan complete supported content before clipping retained
+excerpts, and keep a lossless mapping to canonical UTF-8 ranges.
 
-A narrow reader adaptation may save work. A package tied to another application's
-observation or journal domain can bring unrelated behavior; compare that cost
-with implementing Leakret's smaller requirements directly.
+Leave incomplete trailing JSON pending until it can be read completely. Oversized
+records must drain within a bounded budget, produce a coverage gap, and allow
+later records to proceed. Recovery diagnostics must contain controlled metadata
+rather than raw source text. The [Claude incremental reader](../Sources/SpillcheckCore/ClaudeIncrementalReader.swift)
+and [adapter](../Sources/SpillcheckCore/ClaudeAdapter.swift) implement these
+boundaries for the validated transcript format.
 
-## Content and occurrence identity
+## Progress and identity
 
-Readers must retain user prompts, assistant messages, tool results, errors, and
-supported subagent content. Removing generated context, joining text blocks,
-stripping controls, or clipping at 4 KiB before scanning can lose exact secret
-bytes and ranges. Scan before excerpt clipping and preserve a lossless mapping
-to canonical source segments. A secret can appear beyond the first 4 KiB.
+Use keyed fingerprints for secret-bearing checkpoint boundaries. Persist
+checkpoints, continuations, findings, source receipts, and alert decisions
+together after durable processing. A failed transaction leaves progress behind
+the source, never ahead of it. See the [history contracts](../Sources/SpillcheckCore/HistoryContracts.swift)
+and [protected store](../Sources/SpillcheckCore/ProtectedStore.swift).
 
-Distinguish an originating event from its appearance in a canonical conversation.
-Copies of the same conversation are replays; a different conversation containing
-the same value is a new occurrence and may require a new alert. Fork-wide UUID
-deduplication, unkeyed content digests, and text similarity are insufficient.
-Keep value grouping separate from occurrence identity.
+Distinguish the originating event from its appearance in a canonical
+conversation. Copies of one conversation are replays; a different conversation
+containing the same value is a new occurrence. Preserve upstream IDs and prove
+hook/history mappings independently. Matching text or timestamps cannot establish
+shared identity. Keep exact-value grouping separate from occurrence identity.
 
-## Proposed regression scenarios
+Bound cold discovery independently of warm and append reads. A seven-day date
+filter does not establish a bounded first audit. Yield at the byte/time limit,
+persist continuation state, and show the unread period as partial coverage.
+Observed timestamp endpoints do not prove continuous coverage between them.
 
-- Leave incomplete trailing JSON unread; resume after completion or restart
-  without duplicate occurrences.
-- Detect replacement files, truncation, changed keyed boundaries, and
-  truncate/regrow sequences where size alone cannot prove unchanged content.
-- Bound bytes and rows per step, restart halfway, and avoid historical payload
-  reads on unchanged caught-up passes.
-- Inject checkpoint/commit failures and lost acknowledgements; retry without
-  advancing progress or creating new findings or alerts.
-- Drain oversized records within bounds, retain no raw recovery text, report
-  one controlled gap, and continue with later records.
+## Regression scenarios
+
+- Complete an interrupted trailing record and resume after restart without
+  duplicate findings or alerts.
+- Detect replacement, shrinkage, equal-size rewrites, changed keyed boundaries,
+  and truncate/regrow sequences.
+- Bound bytes and rows per pass; read no historical payload for unchanged,
+  caught-up sources.
+- Retry failed commits and lost acknowledgements without advancing progress or
+  creating new occurrences.
+- Drain oversized records, record one controlled gap, and continue with later
+  content.
 - Cancel stalled work and reject stale completions after pause, quit, or a
   generation change.
-- Verify canonical-conversation identity instead of merging appearances across
-  forks; retain exact-value grouping separately.
+- Reconcile alternate collectors without merging legitimate repeated
+  appearances in different conversations or source ranges.
 
-## Limits to prove
+[Claude history tests](../Tests/SpillcheckCoreTests/ClaudeHistoryTests.swift),
+[Codex history tests](../Tests/SpillcheckCoreTests/CodexHistoryTests.swift), and
+[capture completion tests](../Tests/SpillcheckCoreTests/CaptureCompletionTests.swift)
+exercise the current contracts. Their synthetic fixtures do not establish new
+live-provider, Desktop, or subagent-format coverage.
 
-Local transcript-reader behavior does not establish hook or Codex app-server
-coverage for CLI, Desktop, or T3 workflows. The collection prototype must add
-complete tool-result/error and assistant-message fixtures and validate overlap.
-
-Cold discovery may need body reads before eligible records can be found in mixed
-histories. Warm passes that avoid historical payload reads do not establish a
-bounded first seven-day audit. Measure cold selection separately, preserve
-progress at the budget, and display incomplete coverage.
-
-Compressed histories, relocated/profile stores, subagent formats, and exact
-detection ranges remain capabilities to validate in versioned adapter fixtures.
-None is established by these reader patterns alone.
+The supported file-mutation contract is append with stable native identities.
+Arbitrary growing-file edits outside certified boundaries remain unverified.
+Compressed histories are visibly unsupported; relocation requires an explicitly
+configured root. These limits remain in the implementation reports.

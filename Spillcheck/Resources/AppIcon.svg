@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!--
+    Spillcheck app icon, direction 2a "Four corners, heavier", default (light) appearance.
+    Master artwork on the macOS 1024 grid: the 824 tile sits 100 in from each edge.
+    Brand colors: White #FFFFFF tile, Off Black #222222 frame, Sage Green #6EE09C drop. The tile and
+    drop keep the design's light-from-above gradients, built around those colors.
+    AppIcon.icon reuses the bracket and drop paths below as its layers.
+  -->
+  <defs>
+    <linearGradient id="tile-fill" x1="0" y1="100" x2="0" y2="924" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#e9eeeb"/>
+    </linearGradient>
+    <!-- Lighter at the tip, deeper at the base, Sage Green at the centre of the drop's round body. -->
+    <linearGradient id="drop-fill" x1="0" y1="357.605" x2="0" y2="640" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#a7f2a9"/>
+      <stop offset="0.64" stop-color="#6ee09c"/>
+      <stop offset="1" stop-color="#41d698"/>
+    </linearGradient>
+    <filter id="tile-shadow" x="0" y="0" width="1024" height="1024" filterUnits="userSpaceOnUse">
+      <feGaussianBlur stdDeviation="11.264"/>
+    </filter>
+    <mask id="tile-top-edge" x="0" y="0" width="1024" height="1024" maskUnits="userSpaceOnUse">
+      <rect x="100" y="100" width="824" height="824" rx="185" fill="#fff"/>
+      <rect x="100" y="103.072" width="824" height="824" rx="185" fill="#000"/>
+    </mask>
+    <mask id="tile-bottom-edge" x="0" y="0" width="1024" height="1024" maskUnits="userSpaceOnUse">
+      <rect x="100" y="100" width="824" height="824" rx="185" fill="#fff"/>
+      <rect x="100" y="96.928" width="824" height="824" rx="185" fill="#000"/>
+    </mask>
+  </defs>
+
+  <!-- Tile: drop shadow, hairline edge, fill, then the inner top highlight and bottom shade. -->
+  <rect x="100" y="109.216" width="824" height="824" rx="185" fill="#000" fill-opacity="0.2" filter="url(#tile-shadow)"/>
+  <rect x="99.386" y="99.386" width="825.229" height="825.229" rx="185.614" fill="none" stroke="#000" stroke-opacity="0.1" stroke-width="1.229"/>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#tile-fill)"/>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="#fff" fill-opacity="0.5" mask="url(#tile-top-edge)"/>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="#000" fill-opacity="0.08" mask="url(#tile-bottom-edge)"/>
+
+  <!-- Detection frame: four corner brackets, each a 174 square with a 57 stroke and a 87 outer radius. -->
+  <g id="brackets" fill="none" stroke="#222222" stroke-width="57.344">
+    <path d="M389.12 243.712H302.08A58.368 58.368 0 0 0 243.712 302.08V389.12"/>
+    <path d="M634.88 243.712H721.92A58.368 58.368 0 0 1 780.288 302.08V389.12"/>
+    <path d="M243.712 634.88V721.92A58.368 58.368 0 0 0 302.08 780.288H389.12"/>
+    <path d="M634.88 780.288H721.92A58.368 58.368 0 0 0 780.288 721.92V634.88"/>
+  </g>
+
+  <!-- Drop: a 256 circle with one square corner, turned so the corner points up. -->
+  <g id="drop">
+    <path d="M512 357.605L602.51 448.114A128 128 0 1 1 421.49 448.114Z" fill="url(#drop-fill)"/>
+    <ellipse cx="448" cy="532.48" rx="20.48" ry="33.28" transform="rotate(25 448 532.48)" fill="#fff" fill-opacity="0.55"/>
+  </g>
+</svg>

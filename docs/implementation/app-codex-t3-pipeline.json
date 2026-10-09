@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "signedAppExitCode": 0,
+  "timedOut": false,
+  "sourceIsOwnedSynthetic": true,
+  "originalProviderStore": true,
+  "passiveHistory": true,
+  "profileDiscoveryDisabled": true,
+  "selectedThreadCount": 2,
+  "stdoutBytes": 0,
+  "diagnosticBytes": 0,
+  "ciphertextMarkerInspectionPassed": true,
+  "result": {
+    "acceptancePhase": "shutdown-complete",
+    "alertCount": 0,
+    "collectionConfigured": true,
+    "gapReasons": [],
+    "newVaultCleanupPassed": true,
+    "observedAgentVersions": [
+      "0.160.1"
+    ],
+    "occurrenceCount": 17,
+    "occurrencesByContentType": {
+      "finalResponse": 2,
+      "intermediateResponse": 1,
+      "toolError": 2,
+      "toolOutput": 3,
+      "userPrompt": 9
+    },
+    "processID": 64004,
+    "queueCount": 0,
+    "schemaVersion": 1,
+    "storageReady": true,
+    "syntheticOccurrenceCount": 17,
+    "syntheticOccurrencesByContentType": {
+      "finalResponse": 2,
+      "intermediateResponse": 1,
+      "toolError": 2,
+      "toolOutput": 3,
+      "userPrompt": 9
+    },
+    "syntheticSessionCount": 2,
+    "syntheticValuePresent": true,
+    "valueCount": 1
+  },
+  "passed": true,
+  "cleanupPending": false
+}

@@ -1,0 +1,33 @@
+{
+  "checkCount": 21,
+  "checks": [
+    "authenticated-exact-fields-and-window-mask",
+    "cancelled-authentication",
+    "late-authentication-after-sleep",
+    "late-authentication-after-sessionLock",
+    "late-authentication-after-userMask",
+    "late-authentication-after-selection-change",
+    "intra-entry-occurrence-selection-rejects-late-authentication",
+    "unchanged-occurrence-selection-keeps-current-content",
+    "deletion-during-authentication",
+    "binding-rejected-before-authentication",
+    "allowed-notification-stable-retry",
+    "denied-or-unrequested-permission-never-prompts",
+    "explicit-notification-permission-action",
+    "permission-request-error-keeps-denied-state-without-reprompting",
+    "deletion-during-notification-submit",
+    "pause-during-notification-submit",
+    "pause-during-notification-eligibility",
+    "changed-audit-counts-reuse-stable-identifier",
+    "notification-navigation-waits-for-protected-storage",
+    "owned-source-command-timeout",
+    "owned-source-command-cancellation"
+  ],
+  "command": "python3 scripts/check-native-workflow.py --products-path .build/out/Products/Debug --output-directory .build/native-workflow",
+  "credentialsRead": false,
+  "passed": true,
+  "reusedCoreProducts": true,
+  "sourceSessionsStarted": 0,
+  "systemAuthentication": "not-exercised-synthetic-private-key",
+  "systemNotifications": "injected-backend"
+}

@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "command": "swift test",
+  "testsPassed": 208,
+  "suitesPassed": 30,
+  "elapsedSeconds": 10.858,
+  "buildSeconds": 4.8,
+  "passed": true,
+  "updatedAt": "2026-10-08T09:00:38.919928+00:00"
+}

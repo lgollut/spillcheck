@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "evidenceSource": "public T3 thread metadata for exact owned disposable task",
+  "status": "completed",
+  "runs": [
+    {
+      "runId": "run:thread:thread%3Adelegated-task%3Acommand%253Amcp%253Ae8202153-88e4-43bd-af7f-1091e02689e2%253Adelegate-task%253Aleakret-m4-t3-claude-live-20261008-collection-r2:ordinal:2",
+      "startedAt": "2026-10-08T05:51:01.053Z",
+      "completedAt": "2026-10-08T05:51:06.002Z",
+      "status": "completed"
+    },
+    {
+      "runId": "run:thread:thread%3Adelegated-task%3Acommand%253Amcp%253Ae8202153-88e4-43bd-af7f-1091e02689e2%253Adelegate-task%253Aleakret-m4-t3-claude-live-20261008-collection-r2:ordinal:1",
+      "startedAt": "2026-10-08T05:49:02.859Z",
+      "completedAt": "2026-10-08T05:50:32.224Z",
+      "status": "completed"
+    }
+  ],
+  "messages": [
+    {
+      "itemId": "turn-item:provider:claudeAgent:native-item:da970e16-b1b2-4b67-9c15-def2bbf32f20",
+      "updatedAt": "2026-10-08T05:49:09.705Z"
+    },
+    {
+      "itemId": "turn-item:provider:claudeAgent:native-item:22f1888d-0053-4985-be6c-2608076b4b7d",
+      "updatedAt": "2026-10-08T05:50:32.189Z"
+    },
+    {
+      "itemId": "turn-item:provider:claudeAgent:native-item:c74f5a99-c00b-4437-81a3-d02ac3c998c5",
+      "updatedAt": "2026-10-08T05:51:05.977Z"
+    }
+  ]
+}

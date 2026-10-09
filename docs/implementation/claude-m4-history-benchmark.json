@@ -1,0 +1,14 @@
+{
+  "appendBytesReadIncludingKeyedAnchors" : 6222,
+  "appendMilliseconds" : 0.84379199999999999,
+  "appendPayloadBytes" : 78,
+  "coldBytesRead" : 65536,
+  "coldMilliseconds" : 63.226833999999997,
+  "fixtureBytes" : 15604047,
+  "recentOldSessionObserved" : true,
+  "schemaVersion" : 1,
+  "syntheticOnly" : true,
+  "unreadPrefixExplicitlyPartial" : true,
+  "warmBytesRead" : 0,
+  "warmMilliseconds" : 0.45737499999999998
+}

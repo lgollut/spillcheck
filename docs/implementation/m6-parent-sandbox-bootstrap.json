@@ -1,0 +1,385 @@
+{
+  "aliasControlCanonicalEndpoint": "<TMPDIR>/<RUN_005>/capture.sock",
+  "aliasControlProfile": "(version 1)(allow default)(deny network*)(allow network* (literal \"<TMPDIR>/<RUN_005>/capture.sock\"))(allow process-exec (literal \"/usr/bin/sandbox-exec\") (with no-sandbox))",
+  "aliasControlRequestedEndpoint": "<TMPDIR_ALIAS>/<RUN_005>/capture.sock",
+  "app": "<HOME>/Applications/Leakret.app",
+  "appProcessesLaunched": 0,
+  "appSignatureVerified": true,
+  "bootstrapException": "(allow process-exec (literal \"/usr/bin/sandbox-exec\") (with no-sandbox))",
+  "checks": {
+    "bareParentBlocksOwnedUnix": true,
+    "canonicalPermissionCoversTmpAlias": true,
+    "directProductionProfileControlDenied": true,
+    "disposableDirectoryRemoved": true,
+    "exactOwnedUnixExchangeAllowed": true,
+    "genericBootstrapEscapeDemonstrated": true,
+    "ordinaryChildrenBeforeAfterRemainNetworkDenied": true,
+    "parentIPv4IPv6Denied": true,
+    "plainNestingStillRejectedExit71": true,
+    "productionLeafNetworkAndForkDenied": true,
+    "productionScannerExactFindingWithoutDiagnostics": true,
+    "quoteBackslashPathWorks": true,
+    "tmpAliasSiblingUnixDenied": true,
+    "unapprovedSiblingUnixDenied": true,
+    "unconfinedNetworkAndForkControlValid": true,
+    "unsafeFactoryArgumentsRejected": true
+  },
+  "command": "python3 scripts/check-parent-sandbox.py --app <HOME>/Applications/Leakret.app --output docs/implementation/m6-parent-sandbox-bootstrap.json",
+  "disposableDirectoryRemoved": true,
+  "exampleTestOnlyProfile": "(version 1)(allow default)(deny network*)(allow network* (literal \"<TMPDIR>/<RUN_004>/capture.sock\"))(allow process-exec (literal \"/usr/bin/sandbox-exec\") (with no-sandbox))",
+  "launchPrefixTemplate": [
+    "/usr/bin/sandbox-exec",
+    "-p",
+    "<profile factory stdout>"
+  ],
+  "limits": [
+    "Test-only profile permits a generic sandbox-exec inheritance escape; it is not a secure production parent policy.",
+    "The trusted system bootstrap briefly runs outside the parent sandbox before applying the unchanged production scanner profile.",
+    "Loopback IPv4/IPv6 syscall probes and exact owned Unix exchange establish the tested policy behavior, not every possible network path.",
+    "No signed GUI, review UI, OS alert delivery, provider, or authentication ran in this feasibility experiment."
+  ],
+  "nestedWithExactBootstrapException": {
+    "diagnosticBytes": 0,
+    "elapsedSeconds": 0.884344,
+    "exitCode": 0,
+    "result": {
+      "ordinaryChild": {
+        "diagnosticBytes": 0,
+        "exitCode": 0,
+        "result": {
+          "forkAllowed": true,
+          "forkErrno": null,
+          "ipv4Errno": 1,
+          "ipv4LoopbackSendAllowed": false,
+          "ipv6Errno": 1,
+          "ipv6LoopbackSendAllowed": false
+        }
+      },
+      "ordinaryChildAfterBootstrap": {
+        "diagnosticBytes": 0,
+        "exitCode": 0,
+        "result": {
+          "forkAllowed": true,
+          "forkErrno": null,
+          "ipv4Errno": 1,
+          "ipv4LoopbackSendAllowed": false,
+          "ipv6Errno": 1,
+          "ipv6LoopbackSendAllowed": false
+        }
+      },
+      "ownedUnixSocket": {
+        "diagnosticBytes": 0,
+        "exitCode": 0,
+        "result": {
+          "bindListenConnectSend": false,
+          "errno": 1
+        }
+      },
+      "parentNetworkAndForkProbe": {
+        "forkAllowed": true,
+        "forkErrno": null,
+        "ipv4Errno": 1,
+        "ipv4LoopbackSendAllowed": false,
+        "ipv6Errno": 1,
+        "ipv6LoopbackSendAllowed": false
+      },
+      "permissiveBootstrapLeaf": {
+        "diagnosticBytes": 0,
+        "exitCode": 0,
+        "result": {
+          "forkAllowed": true,
+          "forkErrno": null,
+          "ipv4Errno": null,
+          "ipv4LoopbackSendAllowed": true,
+          "ipv6Errno": null,
+          "ipv6LoopbackSendAllowed": true
+        }
+      },
+      "productionProfileLeaf": {
+        "diagnosticBytes": 0,
+        "exitCode": 0,
+        "result": {
+          "forkAllowed": false,
+          "forkErrno": 1,
+          "ipv4Errno": 1,
+          "ipv4LoopbackSendAllowed": false,
+          "ipv6Errno": 1,
+          "ipv6LoopbackSendAllowed": false
+        }
+      },
+      "productionScanner": {
+        "diagnosticBytes": 0,
+        "exactSyntheticValueDetected": true,
+        "exitCode": 0,
+        "findingCount": 1,
+        "ruleIDs": [
+          "github-pat"
+        ]
+      },
+      "unapprovedSiblingUnixSocket": {
+        "diagnosticBytes": 0,
+        "exitCode": 0,
+        "result": {
+          "bindListenConnectSend": false,
+          "errno": 1
+        }
+      }
+    }
+  },
+  "nestedWithExactOwnedUnixAndBootstrapExceptions": {
+    "diagnosticBytes": 0,
+    "elapsedSeconds": 0.879418,
+    "exitCode": 0,
+    "result": {
+      "ordinaryChild": {
+        "diagnosticBytes": 0,
+        "exitCode": 0,
+        "result": {
+          "forkAllowed": true,
+          "forkErrno": null,
+          "ipv4Errno": 1,
+          "ipv4LoopbackSendAllowed": false,
+          "ipv6Errno": 1,
+          "ipv6LoopbackSendAllowed": false
+        }
+      },
+      "ordinaryChildAfterBootstrap": {
+        "diagnosticBytes": 0,
+        "exitCode": 0,
+        "result": {
+          "forkAllowed": true,
+          "forkErrno": null,
+          "ipv4Errno": 1,
+          "ipv4LoopbackSendAllowed": false,
+          "ipv6Errno": 1,
+          "ipv6LoopbackSendAllowed": false
+        }
+      },
+      "ownedUnixSocket": {
+        "diagnosticBytes": 0,
+        "exitCode": 0,
+        "result": {
+          "bindListenConnectSend": true,
+          "errno": null
+        }
+      },
+      "parentNetworkAndForkProbe": {
+        "forkAllowed": true,
+        "forkErrno": null,
+        "ipv4Errno": 1,
+        "ipv4LoopbackSendAllowed": false,
+        "ipv6Errno": 1,
+        "ipv6LoopbackSendAllowed": false
+      },
+      "permissiveBootstrapLeaf": {
+        "diagnosticBytes": 0,
+        "exitCode": 0,
+        "result": {
+          "forkAllowed": true,
+          "forkErrno": null,
+          "ipv4Errno": null,
+          "ipv4LoopbackSendAllowed": true,
+          "ipv6Errno": null,
+          "ipv6LoopbackSendAllowed": true
+        }
+      },
+      "productionProfileLeaf": {
+        "diagnosticBytes": 0,
+        "exitCode": 0,
+        "result": {
+          "forkAllowed": false,
+          "forkErrno": 1,
+          "ipv4Errno": 1,
+          "ipv4LoopbackSendAllowed": false,
+          "ipv6Errno": 1,
+          "ipv6LoopbackSendAllowed": false
+        }
+      },
+      "productionScanner": {
+        "diagnosticBytes": 0,
+        "exactSyntheticValueDetected": true,
+        "exitCode": 0,
+        "findingCount": 1,
+        "ruleIDs": [
+          "github-pat"
+        ]
+      },
+      "unapprovedSiblingUnixSocket": {
+        "diagnosticBytes": 0,
+        "exitCode": 0,
+        "result": {
+          "bindListenConnectSend": false,
+          "errno": 1
+        }
+      }
+    }
+  },
+  "nestedWithoutException": {
+    "diagnosticBytes": 0,
+    "elapsedSeconds": 0.595218,
+    "exitCode": 0,
+    "result": {
+      "ordinaryChild": {
+        "diagnosticBytes": 0,
+        "exitCode": 0,
+        "result": {
+          "forkAllowed": true,
+          "forkErrno": null,
+          "ipv4Errno": 1,
+          "ipv4LoopbackSendAllowed": false,
+          "ipv6Errno": 1,
+          "ipv6LoopbackSendAllowed": false
+        }
+      },
+      "ordinaryChildAfterBootstrap": {
+        "diagnosticBytes": 0,
+        "exitCode": 0,
+        "result": {
+          "forkAllowed": true,
+          "forkErrno": null,
+          "ipv4Errno": 1,
+          "ipv4LoopbackSendAllowed": false,
+          "ipv6Errno": 1,
+          "ipv6LoopbackSendAllowed": false
+        }
+      },
+      "ownedUnixSocket": {
+        "diagnosticBytes": 0,
+        "exitCode": 0,
+        "result": {
+          "bindListenConnectSend": false,
+          "errno": 1
+        }
+      },
+      "parentNetworkAndForkProbe": {
+        "forkAllowed": true,
+        "forkErrno": null,
+        "ipv4Errno": 1,
+        "ipv4LoopbackSendAllowed": false,
+        "ipv6Errno": 1,
+        "ipv6LoopbackSendAllowed": false
+      },
+      "permissiveBootstrapLeaf": {
+        "diagnostic": "sandbox-exec: sandbox_apply: Operation not permitted\n",
+        "diagnosticBytes": 53,
+        "exitCode": 71,
+        "stdoutBytes": 0
+      },
+      "productionProfileLeaf": {
+        "diagnostic": "sandbox-exec: sandbox_apply: Operation not permitted\n",
+        "diagnosticBytes": 53,
+        "exitCode": 71,
+        "stdoutBytes": 0
+      },
+      "productionScanner": {
+        "diagnostic": "sandbox-exec: sandbox_apply: Operation not permitted\n",
+        "diagnosticBytes": 53,
+        "exitCode": 71,
+        "stdoutBytes": 0
+      },
+      "unapprovedSiblingUnixSocket": {
+        "diagnosticBytes": 0,
+        "exitCode": 0,
+        "result": {
+          "bindListenConnectSend": false,
+          "errno": 1
+        }
+      }
+    }
+  },
+  "parentDenyNetworkProfile": "(version 1)(allow default)(deny network*)",
+  "passScope": "Feasibility of a cooperative test-only parent/production-scanner policy transition and exact local Unix IPC; not GUI or all-descendant network isolation.",
+  "passed": true,
+  "permanentNetworkSettingsChanged": false,
+  "preAliasReportSHA256": "09728ae7a34113eb922ece374d6b671971a0d6719cb4c6f5e5c7fbc8b20db01c",
+  "priorMeasurementsPreserved": true,
+  "productionCodeModified": false,
+  "productionProfile": "(version 1)(allow default)(deny network*)(deny process-fork)",
+  "productionProfileControl": {
+    "diagnosticBytes": 0,
+    "elapsedSeconds": 0.113331,
+    "exitCode": 0,
+    "result": {
+      "forkAllowed": false,
+      "forkErrno": 1,
+      "ipv4Errno": 1,
+      "ipv4LoopbackSendAllowed": false,
+      "ipv6Errno": 1,
+      "ipv6LoopbackSendAllowed": false
+    }
+  },
+  "productionProfileSourceSHA256": "f04ef20e71150ad88152ffa0f1c45ec12cd4d1f0627fe806ed7e1bcd02da63e6",
+  "profileFactoryCommand": "python3 scripts/check-parent-sandbox.py --profile-for-socket <absolute-owned-store-directory>/capture.sock",
+  "providerProcessesLaunched": 0,
+  "quotedPathUnixProbe": {
+    "diagnosticBytes": 0,
+    "elapsedSeconds": 0.113695,
+    "exitCode": 0,
+    "result": {
+      "bindListenConnectSend": true,
+      "errno": null
+    }
+  },
+  "rulesSHA256": "a8f553eb634ac3c5c1ca3f0dc95e2b8abdea7d14b622604c5af07f30ce7926ef",
+  "scannerPath": "<HOME>/Applications/Leakret.app/Contents/Helpers/betterleaks",
+  "scannerSHA256": "e943487158b102b900094ad25e76d6000b276480ffdd8f4b5215f0e0b1f40d41",
+  "schemaVersion": 2,
+  "syntheticOnly": true,
+  "systemAuthenticationPrompts": 0,
+  "tmpAliasOwnedUnixProbe": {
+    "diagnosticBytes": 0,
+    "elapsedSeconds": 0.155576,
+    "exitCode": 0,
+    "result": {
+      "bindListenConnectSend": true,
+      "errno": null
+    }
+  },
+  "tmpAliasSiblingUnixProbe": {
+    "diagnosticBytes": 0,
+    "elapsedSeconds": 0.137365,
+    "exitCode": 0,
+    "result": {
+      "bindListenConnectSend": false,
+      "errno": 1
+    }
+  },
+  "trustedScannerCommand": [
+    "/usr/bin/sandbox-exec",
+    "-p",
+    "(version 1)(allow default)(deny network*)(deny process-fork)",
+    "<HOME>/Applications/Leakret.app/Contents/Helpers/betterleaks",
+    "stdin",
+    "--regex-engine=stdlib",
+    "--config",
+    "<HOME>/Applications/Leakret.app/Contents/Resources/Scanner/betterleaks.toml",
+    "--report-format=json",
+    "--report-path=-",
+    "--log-level=fatal",
+    "--no-banner",
+    "--no-color",
+    "--exit-code=0",
+    "--ignore-gitleaks-allow",
+    "--max-decode-depth=0",
+    "--max-archive-depth=0",
+    "--gitleaks-ignore-path",
+    "<TMPDIR>/<RUN_004>/.gitleaksignore",
+    "--timeout=30",
+    "--validation=false",
+    "--confidence=low"
+  ],
+  "unconfinedControl": {
+    "diagnosticBytes": 0,
+    "elapsedSeconds": 0.127277,
+    "exitCode": 0,
+    "result": {
+      "forkAllowed": true,
+      "forkErrno": null,
+      "ipv4Errno": null,
+      "ipv4LoopbackSendAllowed": true,
+      "ipv6Errno": null,
+      "ipv6LoopbackSendAllowed": true
+    }
+  },
+  "unsafeFactoryArgumentsRejected": true
+}

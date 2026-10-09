@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "signedAppExitCode": 0,
+  "timedOut": false,
+  "stdoutBytes": 0,
+  "diagnosticBytes": 0,
+  "ciphertextMarkerInspectionPassed": true,
+  "sourceIsSynthetic": true,
+  "scannerIsSignedBundleChild": true,
+  "result": {
+    "alertCount": 0,
+    "collectionConfigured": true,
+    "gapReasons": [],
+    "occurrenceCount": 5,
+    "occurrencesByContentType": {
+      "finalResponse": 1,
+      "intermediateResponse": 1,
+      "toolError": 1,
+      "toolOutput": 1,
+      "userPrompt": 1
+    },
+    "processID": 18430,
+    "queueCount": 0,
+    "schemaVersion": 1,
+    "storageReady": true,
+    "valueCount": 1
+  },
+  "passed": true
+}

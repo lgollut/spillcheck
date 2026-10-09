@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "signedAppExitCode": 0,
+  "timedOut": false,
+  "sourceIsOwnedSynthetic": true,
+  "originalProviderStore": true,
+  "passiveHistory": true,
+  "profileDiscoveryDisabled": true,
+  "selectedThreadCount": 2,
+  "stdoutBytes": 0,
+  "diagnosticBytes": 0,
+  "ciphertextMarkerInspectionPassed": false,
+  "result": {
+    "collectionConfigured": false,
+    "phase": "key-unavailable-queue--25308",
+    "processID": 77813,
+    "schemaVersion": 1,
+    "storageReady": false
+  },
+  "passed": false
+}

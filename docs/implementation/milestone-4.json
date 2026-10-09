@@ -1,0 +1,312 @@
+{
+  "checks": {
+    "claudeCleanup": {
+      "disposableConfigurationDirectoriesRemaining": 0,
+      "evidence": "docs/implementation/claude-m4-cleanup.json",
+      "existingProviderSettingsOrHistoriesModified": false,
+      "ownedProcessesRemaining": 0,
+      "state": "passed"
+    },
+    "claudeFocusedTests": {
+      "command": "swift test --filter Claude",
+      "elapsedSeconds": 0.474,
+      "evidence": "docs/implementation/claude-m4-tests.json",
+      "state": "passed",
+      "suitesPassed": 4,
+      "testsPassed": 35
+    },
+    "claudeLargeHistory": {
+      "appendBytesReadIncludingKeyedAnchors": 6222,
+      "appendMilliseconds": 0.843792,
+      "appendPayloadBytes": 78,
+      "coldBytesRead": 65536,
+      "coldMilliseconds": 63.226834,
+      "evidence": "docs/implementation/claude-m4-history-benchmark.json",
+      "fixtureBytes": 15604047,
+      "recentOldSessionObserved": true,
+      "schemaVersion": 1,
+      "state": "passed-with-visible-partial-prefix",
+      "syntheticOnly": true,
+      "unreadPrefixExplicitlyPartial": true,
+      "warmBytesRead": 0,
+      "warmMilliseconds": 0.457375
+    },
+    "claudeSignedAppRegression": {
+      "ciphertextInspectionPassed": true,
+      "evidence": "docs/implementation/app-pipeline-m4.json",
+      "newVaultCleanupVerified": true,
+      "occurrenceCount": 5,
+      "queueCount": 0,
+      "requiredContentTypesCommitted": 5,
+      "signedAppExitCode": 0,
+      "state": "passed",
+      "valueCount": 1
+    },
+    "claudeStandaloneLive": {
+      "ciphertextInspectionPassed": true,
+      "durableDeliveries": 44,
+      "evidence": "docs/implementation/claude-m4-cli-live.json",
+      "gapReasons": [
+        "unsupportedContent"
+      ],
+      "occurrenceCount": 19,
+      "providerRunsSucceeded": 3,
+      "queueCount": 0,
+      "replayStable": true,
+      "requiredContentTypesCommitted": 5,
+      "requiredTypedCasesCommitted": 9,
+      "scope": "Actual disposable provider/helper/adapter/stdlib detector/store with ephemeral testing keys, not signed production-Keychain app",
+      "sessionCount": 2,
+      "state": "passed",
+      "syntheticAlertDecisions": 2,
+      "valueCount": 1
+    },
+    "claudeT3Live": {
+      "ciphertextInspectionPassed": true,
+      "durableDeliveries": 14,
+      "evidence": "docs/implementation/claude-m4-t3-live.json",
+      "intermediateAndChildFinalBeforeOriginalTaskTerminal": true,
+      "nativeSessionID": "a2f24341-84d0-4209-9d3b-a7c9c5da129c",
+      "occurrenceCount": 20,
+      "ownNativeChildPromptAndFinalCommitted": true,
+      "queueCount": 0,
+      "replayStable": true,
+      "requiredContentTypesCommitted": 5,
+      "requiredTypedCasesCommitted": 9,
+      "scope": "Historical attachment; parent FINAL observed in later child-notification turn. Fresh-conversation alert covered by standalone CLI.",
+      "state": "passed",
+      "syntheticAlertDecisions": 0,
+      "timingEvidence": "docs/implementation/claude-m4-t3-public-timing.json",
+      "valueCount": 1
+    },
+    "codexFinalFocusedAndFullPackage": {
+      "focusedCountScope": "Aggregate of the two recorded runs in codex-focused-tests.json; all29 current Codex tests included in full suite",
+      "focusedEvidence": "docs/implementation/codex-focused-tests.json",
+      "focusedTestsPassed": 29,
+      "fullPackageEvidence": "docs/implementation/m4-full-tests.json",
+      "fullPackageSeconds": 10.321,
+      "fullPackageSuitesPassed": 27,
+      "fullPackageTestsPassed": 189,
+      "passed": true,
+      "recordedFocusedRunTests": 28,
+      "separateFixtureTest": 1,
+      "signedScannerEvidence": "docs/implementation/m4-signed-scanner-tests.json",
+      "signedScannerTestsPassed": 1,
+      "state": "passed"
+    },
+    "codexGenuineHookTrust": {
+      "driver": "Tests/CodexLive/interactive.py",
+      "evidence": "docs/implementation/codex-interactive-live.json",
+      "state": "passed",
+      "passed": true,
+      "nativeReviewOperator": "implementation-agent",
+      "ownedEventDefinitionsReviewed": 7,
+      "hookTrustBypassed": false,
+      "durableDeliveries": 75,
+      "requiredTypedCasesCommitted": 7,
+      "requiredContentTypesCommitted": 5,
+      "occurrenceCount": 11,
+      "valueCount": 1,
+      "sessionCount": 1,
+      "syntheticAlertDecisions": 1,
+      "queueCount": 0,
+      "replayStable": true,
+      "ciphertextInspectionPassed": true,
+      "diagnosticBytes": 0,
+      "gapReasons": [],
+      "copiedAuthenticationRemoved": true,
+      "ownedProcessesStopped": true,
+      "scope": "Actual Codex 0.161.0 native /hooks ordinary review/trust in owned PTY; matching setup challenge committed before connected; real prompt/intermediate/final/shell and MCP success/error pipeline. Ephemeral test keys; signed production keys verified separately."
+    },
+    "codexOriginalStorePublicRead": {
+      "allReturnedItemsDated": true,
+      "childFixture": "Tests/Fixtures/Codex/01a119f5-3a5e-72c1-8ef2-b0b5de83367d.json",
+      "childItemWireBytes": 1349,
+      "childMetadataWireBytes": 1143,
+      "childNativeItemCount": 2,
+      "childTurnWireBytes": 1275,
+      "descendingTailAndAscendingReplayCursorObserved": true,
+      "evidence": "docs/implementation/codex-t3-public-read.json",
+      "fixtureDirectory": "Tests/Fixtures/Codex",
+      "forkDenied": true,
+      "mappedGapReasons": [],
+      "networkDenied": true,
+      "ownChildFinalExactValuePresent": true,
+      "ownChildPromptExactValueProven": false,
+      "parentFixture": "Tests/Fixtures/Codex/01a119f4-c91b-7443-bcdf-be4a6a59a579.json",
+      "parentItemWireBytes": 12019,
+      "parentMetadataWireBytesIncludingColdInitialize": 3462,
+      "parentNativeItemCount": 12,
+      "parentRequiredContentTypesPresent": 5,
+      "parentTurnWireBytes": 10796,
+      "resumeCalls": 0,
+      "schemaVersion": 2,
+      "scope": "Actual original-store passive production client: parent five types and own child final. Final cold-tail, core and signed ingestion checks passed separately; native hook verification remains pending.",
+      "state": "passed-scoped-passive-read",
+      "turnStartCalls": 0
+    },
+    "codexSignedAppProductionKeys": {
+      "ciphertextInspectionPassed": true,
+      "collectionConfigured": true,
+      "diagnosticBytes": 0,
+      "evidence": "docs/implementation/app-codex-t3-pipeline.json",
+      "newVaultCleanupVerified": true,
+      "occurrenceCount": 17,
+      "passed": true,
+      "phase": "shutdown-complete",
+      "queueCount": 0,
+      "requiredContentTypesCommitted": 5,
+      "scope": "Exact owned original-provider T3 sessions with production Keychain keys; native drain, termination, scoped positive/negative-control test-right cleanup and ciphertext inspection passed.",
+      "selectedThreadCount": 2,
+      "signedAppExitCode": 0,
+      "state": "passed",
+      "stdoutBytes": 0,
+      "storageReady": true,
+      "timedOut": false,
+      "valueCount": 1
+    },
+    "codexStandalonePublicFixture": {
+      "ciphertextInspectionPassed": true,
+      "evidence": "docs/implementation/codex-cli-live.json",
+      "gapReasons": [],
+      "occurrenceCount": 14,
+      "ownChildFinalCommitted": true,
+      "producerVersion": "0.161.0",
+      "queueCount": 0,
+      "replayStable": true,
+      "requiredContentTypesCommitted": 5,
+      "scope": "Actual disposable shell/MCP success and failure plus native child. Post-task selected-source observer; does not prove genuine hook trust or live alert timing.",
+      "sessionCount": 2,
+      "state": "passed-selected-source-pipeline",
+      "typedCasesCommitted": 8,
+      "valueCount": 1
+    },
+    "sharedHistoryTests": {
+      "command": "swift test --filter 'HistoryQueueTests|HistoricalSummaryTests|CoverageGapTests|HistoryProgressBoundsTests|ProtectionCleanupTests'",
+      "elapsedSeconds": 0.137,
+      "evidence": "docs/implementation/m4-shared-history-tests.json",
+      "state": "passed",
+      "strictMaximumProgressBytes": 104857600,
+      "suitesPassed": 5,
+      "testsPassed": 14
+    }
+  },
+  "deferredReleaseChecks": [
+    "macOS 14 runtime",
+    "Hardware without Touch ID"
+  ],
+  "gatePassed": true,
+  "historyContracts": {
+    "authorityChoiceProtectedAndFixedAcrossRestart": true,
+    "claudeSourceQuantumBytes": 2097152,
+    "continuationAndCheckpointAndProgressAndConsumptionAtomic": true,
+    "continuationPreservesAuditAndCaptureScopeAndExpiry": true,
+    "eligibilityUsesContentTime": true,
+    "liveClaimsBeforeHistoricalClaim": 4,
+    "liveHistoryCheckpointLanesIndependent": true,
+    "maximumBytesPerPass": 104857600,
+    "maximumDurationSecondsPerPass": 30,
+    "maximumSourcesPerPass": 256,
+    "profileMetadataAndSourceCursorsProtected": true,
+    "rollingWindowDays": 7,
+    "unknownOrUnreadCoverageRemainsVisible": true
+  },
+  "implementedSources": {
+    "claude": [
+      "Sources/LeakretCore/ClaudeAdapter.swift",
+      "Sources/LeakretCore/ClaudeIncrementalReader.swift",
+      "Sources/LeakretCore/ClaudeHistoryEnumerator.swift",
+      "Sources/LeakretCore/ClaudeActiveTranscriptMonitor.swift"
+    ],
+    "codex": [
+      "Sources/LeakretCore/CodexHistoryClient.swift",
+      "Sources/LeakretCore/CodexAdapter.swift",
+      "Sources/LeakretCore/CodexHistoryWork.swift",
+      "Sources/LeakretCore/CodexHookConfiguration.swift",
+      "Sources/LeakretCore/CodexActiveHistoryMonitor.swift"
+    ],
+    "shared": [
+      "Sources/LeakretCore/HistoryContracts.swift",
+      "Sources/LeakretCore/CollectionRouter.swift",
+      "Sources/LeakretCore/CollectionPipelineContracts.swift",
+      "Sources/LeakretCore/ProtectedStore.swift",
+      "Sources/LeakretCore/DetectionPipeline.swift",
+      "Leakret/App/AppRuntime.swift"
+    ]
+  },
+  "intelSupportValidated": false,
+  "laterMilestones": [
+    "5: Complete viewing/inventory workflow and actual notification delivery",
+    "6: Final acceptance/resource matrix and signed/notarized distribution"
+  ],
+  "limits": [
+    "Claude supports immutable append with native identities; growing-file edits outside keyed boundaries remain uncertified",
+    "Unread old prefixes are partial even after an old timestamp boundary; observed bounds do not prove complete window coverage",
+    "Compressed Claude histories unsupported; relocated histories require explicitly configured root",
+    "Codex native hook and passive history routes validated only for the recorded interface/version tuples",
+    "Desktop collection and native source-opening success unverified",
+    "No production latency quantiles or exhaustive detection/coverage claim"
+  ],
+  "measuredVersionTuples": {
+    "claude": {
+      "adapter": "2",
+      "interfaces": [
+        "standalone-cli",
+        "t3"
+      ],
+      "producer": "2.1.293"
+    },
+    "codex": {
+      "currentCanonicalAuthority": "codex-public-native-v1",
+      "reader": "0.161.0",
+      "t3": "0.0.46-nightly.20261007.2761",
+      "t3Producer": "0.160.1",
+      "versionedTranscriptIsSeparateExplicitAuthority": true
+    }
+  },
+  "milestone": 4,
+  "notarized": false,
+  "pendingGateChecks": [],
+  "preservedFailedEvidence": [
+    {
+      "summary": "docs/implementation/milestone-4.md",
+      "exploratoryArtifactRemoved": true,
+      "reason": "M0 isolated copied rollout returned metadata but zero turns/items; original-store route later returned native items"
+    },
+    {
+      "evidence": "docs/implementation/claude-m4-t3-interrupted.json",
+      "reason": "Earlier observer report removed by shared clean; unverified, superseded by fresh preserved run"
+    },
+    {
+      "evidence": "docs/implementation/app-codex-t3-pipeline-locked.json",
+      "reason": "Production queue key -25308 while Mac locked; no fallback protection introduced"
+    },
+    {
+      "evidence": "docs/implementation/app-codex-t3-pipeline-drain-pending.json",
+      "reason": "Five queued captures at deadline; cleanup false"
+    },
+    {
+      "evidence": "docs/implementation/app-codex-t3-pipeline-termination-pending.json",
+      "reason": "Queue drained, but test termination timed out before cleanup"
+    },
+    {
+      "evidence": "docs/implementation/app-codex-t3-pipeline-mainactor-wait.json",
+      "reason": "Synchronous AppKit termination inside Swift task blocked async shutdown"
+    },
+    {
+      "evidence": "docs/implementation/app-codex-t3-pipeline-cleanup-pending.json",
+      "reason": "Ingestion and normal termination passed; scoped right absence verification rejected undocumented -1019"
+    },
+    {
+      "evidence": "docs/implementation/codex-interactive-live-expired-r2.json",
+      "reason": "Earlier disposable lease expired installedUnverified with zero deliveries; superseded by fresh ordinary native review/trust and durable challenge."
+    }
+  ],
+  "releaseReady": false,
+  "report": "docs/implementation/milestone-4.md",
+  "reviewState": "passed",
+  "schemaVersion": 1,
+  "state": "passed",
+  "summary": "Milestone 4 passed: 189 core tests, signed scanner, actual standalone/T3 agent paths, signed production-key ingestion/shutdown/cleanup, bounded catch-up, and genuine native Codex hook review/challenge/fixture processing.",
+  "updatedAt": "2026-10-08T08:22:14.364611+00:00"
+}

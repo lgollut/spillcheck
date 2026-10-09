@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "command": "swift test --filter DetectionPipelineTests",
+  "testsPassed": 9,
+  "suitesPassed": 1,
+  "testSeconds": 0.099,
+  "newInFlightCases": 3,
+  "passed": true,
+  "log": ".build/implementation/m6-inflight-tests.log"
+}

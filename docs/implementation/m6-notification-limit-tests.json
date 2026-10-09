@@ -1,0 +1,38 @@
+{
+  "milestone": 6,
+  "scope": "historical notification progress budget visibility",
+  "command": "swift test --scratch-path <TMPDIR>/<RUN_002> --filter WorkflowStorageTests",
+  "exitCode": 0,
+  "testCount": 6,
+  "suiteCount": 1,
+  "buildSeconds": 22.24,
+  "testSeconds": 0.516,
+  "log": ".build/implementation/m6-notification-limit-tests.log",
+  "checks": {
+    "encryptedProgressFixtureRows": 1001,
+    "summaryWithheldAbove1000": true,
+    "coverageGapReason": "notificationBudgetExhausted",
+    "concurrentPollCount": 8,
+    "repeatedPollCount": 4,
+    "progressDecryptsAboveLimit": 0,
+    "durableGapCount": 1,
+    "deduplicatedAcrossRestart": true,
+    "summaryEligibleAt1000": true,
+    "profileAndGapReasonAbsentFromSQLitePlaintext": true,
+    "productionStructuralIDsAndAADBindings": true
+  },
+  "warnings": [
+    "Existing redundant #require warning in ClaudeHistoryTests.swift:125",
+    "Existing redundant #require warning in ClaudeHistoryTests.swift:138",
+    "Existing redundant #require warning in ClaudeHistoryTests.swift:169"
+  ],
+  "initialFixtureCompileIssue": {
+    "description": "Missing inner try around Int.fetchOne in #require",
+    "corrected": true,
+    "log": "<TMPDIR>/<RUN_003>"
+  },
+  "limitations": [
+    "Core storage fixture only; no provider or GUI process was run.",
+    "Final signed app build and native coverage-status verification remain with root."
+  ]
+}

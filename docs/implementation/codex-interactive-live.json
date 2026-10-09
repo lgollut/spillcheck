@@ -1,0 +1,84 @@
+{
+  "schemaVersion": 1,
+  "hookTrustBypassed": false,
+  "existingConfigurationModified": false,
+  "driverExitCode": 0,
+  "diagnosticBytes": 0,
+  "result": {
+    "ciphertextMarkerInspectionPassed": true,
+    "durableDeliveries": 75,
+    "finished": true,
+    "gapReasons": [],
+    "occurrenceCount": 11,
+    "occurrencesByContentType": {
+      "finalResponse": 1,
+      "intermediateResponse": 1,
+      "toolError": 2,
+      "toolOutput": 2,
+      "userPrompt": 5
+    },
+    "queueCount": 0,
+    "replayStable": true,
+    "sessionCount": 1,
+    "setupState": "connected",
+    "syntheticAlertCount": 1,
+    "syntheticValuePresent": true,
+    "typedCommitted": {
+      "FINAL": 1,
+      "INTERMEDIATE": 1,
+      "MCP_ERROR": 1,
+      "MCP_OK": 1,
+      "PROMPT": 1,
+      "SHELL_ERROR": 1,
+      "SHELL_OK": 1
+    },
+    "typedObserved": {
+      "FINAL": 1,
+      "INTERMEDIATE": 1,
+      "MCP_ERROR": 1,
+      "MCP_OK": 1,
+      "PROMPT": 1,
+      "SHELL_ERROR": 1,
+      "SHELL_OK": 1
+    },
+    "valueCount": 1
+  },
+  "passed": true,
+  "nativeReview": {
+    "operator": "implementation-agent",
+    "interface": "Codex 0.161.0 native terminal /hooks",
+    "eventDefinitionsReviewed": 7,
+    "events": [
+      "SessionStart",
+      "UserPromptSubmit",
+      "PostToolUse",
+      "SubagentStart",
+      "SubagentStop",
+      "Stop",
+      "SessionEnd"
+    ],
+    "exactBundledCommandAndDisposableSocketAndProfileVerified": true,
+    "before": "7 hooks need review; installed 1, active 0, review 1",
+    "action": "Ordinary /hooks trust-all after reviewing all seven identical owned helper commands",
+    "after": "PostToolUse Hook 1: Trusted; event overview installed 1, active 1",
+    "launchOptions": [
+      "--no-daemon",
+      "-a",
+      "never",
+      "-s",
+      "read-only"
+    ],
+    "trustBypassOptionUsed": false,
+    "trustDatabaseModifiedDirectly": false,
+    "humanReviewClaimed": false
+  },
+  "cleanup": {
+    "providerExitCode": 0,
+    "disposableRootRemoved": true,
+    "copiedAuthenticationRemoved": true,
+    "socketRemoved": true,
+    "ownedRootProcessesRemaining": 0,
+    "syntheticMCPProcessesRemaining": 0
+  },
+  "updatedAt": "2026-10-08T08:22:14.364611+00:00"
+}

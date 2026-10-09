@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "platform": "darwin_arm64",
+  "verifiedDate": "2026-10-07",
+  "engines": {
+    "betterleaks": {
+      "version": "1.9.0",
+      "archive": {
+        "url": "https://github.com/betterleaks/betterleaks/releases/download/v1.9.0/betterleaks_1.9.0_darwin_arm64.tar.gz",
+        "sha256": "83dd7eaab13d44a1e8e347a17064cdef153a1478db473276d41b38d55613d3f2"
+      },
+      "checksumsUrl": "https://github.com/betterleaks/betterleaks/releases/download/v1.9.0/checksums.txt",
+      "binarySha256": "70d2103c2915aababa0e1eea121bd3db0ff0da86bee40ddc6f5982181acaf6d0",
+      "config": {
+        "url": "https://raw.githubusercontent.com/betterleaks/betterleaks/v1.9.0/config/betterleaks.toml",
+        "filename": "betterleaks.toml",
+        "sha256": "a8f553eb634ac3c5c1ca3f0dc95e2b8abdea7d14b622604c5af07f30ce7926ef"
+      },
+      "license": {
+        "url": "https://raw.githubusercontent.com/betterleaks/betterleaks/v1.9.0/LICENSE",
+        "sha256": "caea114592a8f8e5e05a116d63a99e0ccd79a3ff74f4ddf270bcf4c929eb021e",
+        "spdx": "MIT"
+      }
+    }
+  }
+}

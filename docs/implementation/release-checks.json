@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "updatedAt": "2026-10-09",
+  "status": "local-development-complete-release-gate-open",
+  "purpose": "Retain release requirements and explicit user deferrals after removal of exploratory code and reports. This record does not substitute for runtime acceptance evidence.",
+  "releaseReady": false,
+  "releaseBaseline": {
+    "macOS": "14 or later",
+    "architecture": "Apple Silicon first",
+    "distribution": "signed and notarized direct distribution"
+  },
+  "authenticationRequirementsChanged": false,
+  "userAuthorizedDeferrals": {
+    "platform": {
+      "decision": "Defer those two tests until before release and continue",
+      "checks": [
+        "macOS 14 runtime",
+        "Hardware without Touch ID"
+      ],
+      "deadline": "Before release",
+      "releaseBaselineChanged": false,
+      "authenticationRequirementsChanged": false
+    },
+    "distribution": {
+      "decision": "Distribution explicitly deferred for now.",
+      "decisionDate": "2026-10-08",
+      "deadline": "Before distribution",
+      "requirementsWaived": false
+    }
+  },
+  "remainingReleaseChecks": [
+    {
+      "check": "macOS 14 runtime",
+      "state": "unavailable",
+      "needed": "A macOS 14 test environment; user confirmed only the development Mac is available"
+    },
+    {
+      "check": "Hardware without Touch ID",
+      "state": "unavailable",
+      "needed": "A Mac without Touch ID; password fallback on a Touch ID Mac does not substitute for this test"
+    },
+    {
+      "check": "Developer ID signing and notarization",
+      "state": "deferred-by-user"
+    },
+    {
+      "check": "Gatekeeper install/update and production-vault key persistence across distribution upgrades",
+      "state": "unverified"
+    },
+    {
+      "check": "Actual logout/login launch",
+      "state": "unverified"
+    }
+  ],
+  "implementationStatus": "docs/implementation/milestones.json",
+  "acceptanceEvidence": "docs/implementation/milestone-6.json",
+  "supportedMatrix": "docs/implementation/supported-matrix.md"
+}

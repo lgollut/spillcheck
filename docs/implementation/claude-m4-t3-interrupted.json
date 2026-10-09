@@ -1,0 +1,9 @@
+{
+  "clientRequestId": "leakret-m4-t3-claude-live-20261008-collection-r1",
+  "nativeSessionId": "fc0bab88-6308-4c64-9e55-d451dd9cd7eb",
+  "passed": false,
+  "unverified": true,
+  "reason": "shared-build-clean-removed-active-artifacts",
+  "providerTerminal": true,
+  "providerHasPendingRuns": false
+}

@@ -1,0 +1,991 @@
+{
+  "schemaVersion": 1,
+  "milestone": 6,
+  "updatedAt": "2026-10-08T11:22:13.013795+00:00",
+  "state": "local-acceptance-passed-release-gate-open",
+  "localAcceptancePassed": true,
+  "localAcceptanceScope": "Recorded current-Mac local behavioral and measurement scopes, including exact signed restart/removal/obsolete workflows and cooperative offline GUI/scanner/notification checks. Full release/platform and all-interface offline/performance results are not claimed.",
+  "originalAcceptanceMatrixComplete": false,
+  "gatePassed": false,
+  "releaseReady": false,
+  "report": "docs/implementation/milestone-6.md",
+  "userAuthorizedDeferrals": {
+    "distribution": {
+      "authorized": true,
+      "decision": "Distribution explicitly deferred for now.",
+      "deadline": "Before distribution",
+      "requirementsWaived": false
+    },
+    "platform": {
+      "authorized": true,
+      "checks": [
+        "macOS 14 runtime",
+        "Hardware without Touch ID"
+      ],
+      "deadline": "Before release",
+      "evidence": "docs/implementation/release-checks.json",
+      "releaseBaselineChanged": false,
+      "authenticationRequirementsChanged": false
+    },
+    "remainingLocalGapsWaived": false
+  },
+  "testedEnvironment": {
+    "macOS": "26.6.2",
+    "architecture": "arm64",
+    "xcode": "27.0",
+    "swift": "6.4",
+    "minimumOSRuntimeTested": false
+  },
+  "versionScope": {
+    "matrix": "docs/implementation/supported-matrix.md",
+    "codexCLI": {
+      "producer": "0.161.0",
+      "reader": "0.161.0",
+      "nativeChildOwnFinalVerified": true,
+      "nativeChildOwnPromptVerified": false,
+      "nativeChildOwnPromptRequiredByEstablishedFixture": false
+    },
+    "codexT3": {
+      "producer": "0.160.1",
+      "reader": "0.161.0",
+      "t3": "0.0.46-nightly.20261007.2761",
+      "nativeChildPromptVerified": false
+    },
+    "claudeCLIAndT3": {
+      "version": "2.1.293",
+      "nativeChildPromptAndFinalVerified": true
+    },
+    "currentlyInstalledClaude": {
+      "version": "2.1.294",
+      "status": "unsupported-unvalidated",
+      "genuineCoverageClaim": false
+    },
+    "desktopCollectionSupported": false,
+    "desktopOpeningSuccessVerified": false,
+    "intelCoverageClaimed": false
+  },
+  "checks": {
+    "fullCoreAndSignedScanner": {
+      "passed": true,
+      "testsPassed": 212,
+      "suitesPassed": 30,
+      "elapsedSeconds": 10.308,
+      "buildSeconds": 5.2,
+      "signedScannerBundleExercised": true,
+      "evidence": "docs/implementation/m6-full-tests.json"
+    },
+    "inFlightAcknowledgementAndDeletion": {
+      "passed": true,
+      "testsPassed": 9,
+      "newCases": 3,
+      "testSeconds": 0.099,
+      "evidence": "docs/implementation/m6-inflight-tests.json",
+      "newTests": [
+        "acknowledgementDuringScanUsesCurrentMarkerAndCancelsPendingAlerts",
+        "acknowledgementAndRemovalDuringScanRetryAsMetadataOnlyAfterRestart",
+        "deletionDuringReanalysisKeepsRemovedSourceDeletedAndNewAppearanceDetectable"
+      ]
+    },
+    "notificationProgressBudget": {
+      "passed": true,
+      "testsPassed": 6,
+      "maximumProgressRows": 1000,
+      "overLimitFixtureRows": 1001,
+      "overLimitProgressDecrypts": 0,
+      "overLimitSummaryWithheld": true,
+      "visibleGap": "notificationBudgetExhausted",
+      "gapDeduplicatedAcrossRestart": true,
+      "evidence": "docs/implementation/m6-notification-limit-tests.json"
+    },
+    "nativeControllerProbe": {
+      "passed": true,
+      "checksPassed": 21,
+      "systemAuthentication": "synthetic-private-key",
+      "systemNotifications": "injected-backend",
+      "evidence": "docs/implementation/m5-native-workflow-probe.json"
+    },
+    "setupProbe": {
+      "passed": true,
+      "checksPassed": 7,
+      "providerSessionsStarted": 0,
+      "credentialsRead": false,
+      "evidence": "docs/implementation/m5-agent-setup-probe.json"
+    },
+    "nativeWorkflow": {
+      "passedWithinReportScopes": true,
+      "evidence": "docs/implementation/milestone-5.json",
+      "earlierWalkthrough": "docs/implementation/m5-app-workflow.json",
+      "finalRegression": "docs/implementation/m5-final-app-workflow.json",
+      "earlierAuthenticationRequests": 5,
+      "earlierCompletedReveals": 4,
+      "earlierCancellations": 1,
+      "finalDenialReceipt": "permissionDenied",
+      "finalRawCaches": 0,
+      "finalQueueCount": 0,
+      "finalNormalExitAndScopedCleanup": true
+    },
+    "developmentInstallation": {
+      "passedWithinReportScope": true,
+      "evidence": "docs/implementation/m6-development-install.json",
+      "signatureVerified": true,
+      "existingAppReplaced": false,
+      "releaseDistribution": false,
+      "launchAtLoginRegisterSucceeded": true,
+      "launchAtLoginUnregisterSucceeded": true,
+      "launchAtLoginFinalEnabled": false,
+      "actualLoginLaunchTested": false,
+      "existingHookSettingsEdited": false
+    },
+    "scannerBundlingPolicy": {
+      "passed": true,
+      "testsPassed": 5,
+      "scope": "Synthetic policy tests; no signing operations",
+      "evidence": "docs/implementation/m6-scanner-bundling.json"
+    },
+    "releasePolicy": {
+      "passed": true,
+      "testsPassed": 14,
+      "scope": "Synthetic signatures/profiles; no release signing or notarization uploads",
+      "evidence": "docs/implementation/m6-release-policy.json"
+    },
+    "incrementalDevelopmentSigning": {
+      "passed": true,
+      "consecutiveBuilds": 2,
+      "signatureVerificationsPassed": true,
+      "scannerAndManifestBytesAndMtimesUnchanged": true,
+      "releaseSigningChecked": false,
+      "evidence": "docs/implementation/m6-incremental-signing.json"
+    },
+    "genuineCodexCLIPublicObservation": {
+      "passed": true,
+      "evidence": "docs/implementation/m6-codex-observation-latency.json",
+      "producerVersion": "0.161.0",
+      "readerVersion": "0.161.0",
+      "requiredTypedCasesCommittedBeforeCatchUp": 8,
+      "canonicalLiveRevisionsMeasured": 8,
+      "observerReadStartedWhileProducerRunning": true,
+      "hooksInstalled": false,
+      "hookTrustBypassed": false,
+      "privateKeychainOperations": 0,
+      "finalCatchUpNewOccurrences": 0,
+      "cleanupPassed": true,
+      "nativeChildOwnFinalVerified": true,
+      "nativeChildOwnPromptVerified": false
+    },
+    "largeHistoryPeriodSupplement": {
+      "passed": true,
+      "evidence": "docs/implementation/m6-resource-history-period.json",
+      "freshIsolatedRun": true,
+      "originalResourceMeasurementsPreserved": true,
+      "originalRunDatesRecoverable": false,
+      "productionKeychainItemsCreated": 0,
+      "providerOrGUIOperations": 0,
+      "completeWindowCoverage": false,
+      "cleanupPending": false
+    },
+    "signedRestartAndCooperativeOffline": {
+      "passed": true,
+      "checksPassed": 27,
+      "evidence": "docs/implementation/m6-signed-restart-offline.json",
+      "normalAppRuns": 4,
+      "sameManifestAcrossRestarts": true,
+      "ciphertextInspectionsClean": true,
+      "plainRemovedPayloadReferences": 3,
+      "plainRemovedReferencesInaccessible": 3,
+      "originalCreatorCleanupPassed": true,
+      "privateValueDecryptions": 0,
+      "offlineRunIndex": 4,
+      "nativeNotificationNavigationEvents": 2,
+      "postTestNotificationsEnabled": false,
+      "launchAtLoginEnabled": false,
+      "appBundleChanged": false,
+      "actualProviderSessionInvoked": false,
+      "allDescendantsNetworkDenied": false,
+      "allSupportedInterfacesOfflineTested": false,
+      "postTestPreferences": {
+        "launchAtLoginLeftOff": true,
+        "notificationSettingVerifiedWithNativeUI": true,
+        "notificationsRestoredToDisabled": true
+      },
+      "notificationEvidenceProvenance": {
+        "appNotificationNavigationEventCount": 2,
+        "bannerTextIndependentlyReadThroughAccessibility": false,
+        "clickSummary": "The user confirmed clicking the notification and opening a masked Token entry.",
+        "matchingReviewedReplacementSelectedAndMasked": true,
+        "navigationSummary": "Native accessibility showed the reviewed replacement occurrence selected with value and context masked. The production app recorded notification navigation.",
+        "textMaskEvidenceValidated": true,
+        "textSummary": "Masked notification text is established by controlled production notification construction and the user's response to the masked-notification test.",
+        "userConfirmedVisibleNotificationClick": true
+      }
+    }
+  },
+  "acceptanceCriteria": [
+    {
+      "number": 1,
+      "status": "passed-on-declared-content-tuples",
+      "scope": "Annotated scanner corpus and actual Codex/Claude CLI/T3 parent content types; Claude native child prompt/final and Codex native child final.",
+      "evidence": [
+        "docs/implementation/milestone-3.json",
+        "docs/implementation/milestone-4.json",
+        "docs/implementation/m6-claude-observation-latency.json",
+        "docs/implementation/m6-codex-observation-latency.json"
+      ],
+      "limits": [
+        "Codex native child prompt appearance is unverified.",
+        "Desktop collection and newer version/interface tuples are not claimed."
+      ]
+    },
+    {
+      "number": 2,
+      "status": "passed-versioned-bounded-history-scopes",
+      "scope": "Recent source content in old conversations, source-time seven-day cutoff, cold/warm/append checkpoints, and durable continuation.",
+      "evidence": [
+        "docs/implementation/milestone-4.json",
+        "docs/implementation/m6-resources.json",
+        "docs/implementation/m6-resource-history-period.json"
+      ],
+      "limits": [
+        "Unread prefixes remain visible partial coverage; bounded selection is not an exhaustive seven-day audit."
+      ]
+    },
+    {
+      "number": 3,
+      "status": "passed-tested-replay-and-alert-scopes",
+      "scope": "Canonical replay, legitimate new source/range appearances, per-value/per-conversation eligibility, and actual fresh CLI alert decisions.",
+      "evidence": [
+        "docs/implementation/milestone-4.json",
+        "docs/implementation/m6-full-tests.json",
+        "docs/implementation/m6-claude-observation-latency.json",
+        "docs/implementation/m6-codex-observation-latency.json"
+      ],
+      "limits": [
+        "T3 selected-source historical attachment does not prove a fresh live-session alert."
+      ]
+    },
+    {
+      "number": 4,
+      "status": "passed-current-local-scopes",
+      "scope": "Strong/ambiguous confidence, reversible per-occurrence review, actual native review/filtering and exact occurrence control selection.",
+      "evidence": [
+        "docs/implementation/milestone-5.json",
+        "docs/implementation/m6-full-tests.json"
+      ],
+      "limits": [
+        "Synthetic corpus does not establish exhaustive detection or credential validity."
+      ]
+    },
+    {
+      "number": 5,
+      "status": "passed-current-Mac-with-deferred-platform-checks",
+      "scope": "Production Keychain/LocalAuthentication wrapping, real reveal/cancel, immediate masking, controlled notification navigation/text, and marker inspections.",
+      "evidence": [
+        "docs/implementation/production-vault-interactive.json",
+        "docs/implementation/milestone-5.json",
+        "docs/implementation/m5-final-app-workflow.json"
+      ],
+      "limits": [
+        "macOS 14 and hardware without Touch ID remain required before release.",
+        "Marker inspection does not establish forensic erasure."
+      ]
+    },
+    {
+      "number": 6,
+      "status": "passed-retention-and-fallback-current-Mac",
+      "scope": "Real retained value/context after owned source deletion, unavailable/unverified opening fallback, and separately prepared terminal resume.",
+      "evidence": [
+        "docs/implementation/production-vault-interactive.json",
+        "docs/implementation/milestone-5.json"
+      ],
+      "limits": [
+        "Direct Desktop opening success is unverified.",
+        "Metadata-only obsolete appearances have no retained value/excerpt fallback."
+      ]
+    },
+    {
+      "number": 7,
+      "status": "passed-current-native-and-helper-scopes",
+      "scope": "Native close/pause/resume/Quit; five paused and five after-Quit helper attempts; login registration/unregistration ended off.",
+      "evidence": [
+        "docs/implementation/milestone-5.json",
+        "docs/implementation/m5-paused-hook.json",
+        "docs/implementation/m5-after-quit-hook.json",
+        "docs/implementation/m5-final-app-workflow.json",
+        "docs/implementation/m6-development-install.json"
+      ],
+      "limits": [
+        "Paused/after-Quit timings are not a distribution of active helper latency.",
+        "Actual logout/login launch is untested."
+      ]
+    },
+    {
+      "number": 8,
+      "status": "passed-signed-native-restart-scope",
+      "scope": "Exact signed GUI plain removal, normal Quit/reopen, same-manifest inspection, three old protected references inaccessible, old replay absent and genuinely new appearance normally detectable; in-flight storage cases remain separately tested.",
+      "evidence": [
+        "docs/implementation/milestone-2.json",
+        "docs/implementation/m6-inflight-tests.json",
+        "docs/implementation/milestone-5.json",
+        "docs/implementation/m6-signed-restart-offline.json"
+      ],
+      "limits": [
+        "Active-storage accessibility only; no forensic erasure claim.",
+        "One disposable synthetic Claude transcript on the current Mac and unchanged development signing identity; distribution upgrade is separate."
+      ]
+    },
+    {
+      "number": 9,
+      "status": "passed-cooperative-signed-offline-scope",
+      "scope": "One signed GUI run with synthetic collection, actual production scanner, protected inventory, native occurrence review, accepted local notification requests plus separate visible masked display/click observations, under the cooperative test-only parent profile.",
+      "evidence": [
+        "docs/implementation/m6-resources.json",
+        "docs/implementation/m6-signed-restart-offline.json",
+        "docs/implementation/m6-parent-sandbox-bootstrap.json"
+      ],
+      "limits": [
+        "This is a cooperative test-only parent policy. The bootstrap executable exception does not constrain argv and is not a secure all-descendant policy.",
+        "Local OS notification services run outside the app process; system-wide networking was not disabled.",
+        "The source transcript is synthetic. No real provider generation, T3 or Codex offline workflow ran in this check.",
+        "Metadata-only retention and visible OS delivery include explicit native observations. Counts alone do not prove either claim.",
+        "Visible click and masked Token entry were user-confirmed; native accessibility verified the matching reviewed replacement selected and masked. Notification text masking uses controlled production construction and the user response, without independent banner-text accessibility inspection."
+      ]
+    },
+    {
+      "number": 10,
+      "status": "passed-required-measurement-categories-with-published-limits",
+      "scope": "40 actual-scanner sequential pipeline samples; 12 genuine Claude CLI and eight genuine Codex CLI live source revisions; 128-MiB history cost; storage/queue limits; resource process and sampled signed GUI RSS. A separate fresh same-fixture repeat records inclusive audit endpoints, emitted-source bounds and newly retained content bounds.",
+      "evidence": [
+        "docs/implementation/m6-resources.json",
+        "docs/implementation/m6-claude-observation-latency.json",
+        "docs/implementation/m6-signed-app-memory.json",
+        "docs/implementation/m6-codex-observation-latency.json",
+        "docs/implementation/m6-resource-history-period.json"
+      ],
+      "limits": [
+        "Live source latency is measured for Claude 2.1.293 and Codex 0.161.0 standalone CLI fixtures only.",
+        "T3 live latency, hook-delivery latency and historical latency distributions remain unmeasured.",
+        "Provider transcript/public item timestamps do not prove physical first output byte/publication delay or source availability; observation delay can include local polling and queue waiting.",
+        "Signed GUI sampling excludes children, large inventory, authenticated rendering and exact high-water mark.",
+        "History period dates belong to a separate fresh repeat; original benchmark dates are unrecoverable. Unread old prefix and partial coverage remain explicit; endpoint spans do not prove continuous/full-window coverage."
+      ],
+      "requiredMeasurementCategories": [
+        "Latency",
+        "Memory",
+        "Temporary and protected storage",
+        "Large-history bytes actually read",
+        "Configured limits and visible losses",
+        "Audit endpoints and observed content bounds"
+      ],
+      "requirementInterpretation": "SPEC criterion 10 requires reported measurement categories, limits/losses and period; it does not specify a separate per-interface distribution, physical first-byte sensor or large/authenticated GUI workload. Recorded scope limitations remain published; explicit release/platform requirements are unchanged."
+    },
+    {
+      "number": 11,
+      "status": "passed-signed-native-restart-and-forgetting-scope",
+      "scope": "Exact signed GUI rotated acknowledgement/removal/normal Quit/reopen, replay absence, metadata-only silent new appearance, same-conversation replacement ordinary retention/alert, explicit marker forgetting and later ordinary original-value retention/evaluation.",
+      "evidence": [
+        "docs/implementation/milestone-2.json",
+        "docs/implementation/m6-inflight-tests.json",
+        "docs/implementation/m6-resources.json",
+        "docs/implementation/milestone-5.json",
+        "docs/implementation/m6-signed-restart-offline.json"
+      ],
+      "limits": [
+        "Native acknowledgement tested rotated; revocation shares core semantics tested separately.",
+        "Ordinary evaluation after forgetting does not require another notification if an existing per-session strong-signal receipt already suppresses it."
+      ]
+    }
+  ],
+  "measurements": {
+    "syntheticActualScannerPipeline": {
+      "evidence": "docs/implementation/m6-resources.json",
+      "cases": [
+        {
+          "case": "github-error",
+          "p50Milliseconds": 336.06908333331376,
+          "p95Milliseconds": 526.3547916674725,
+          "sampleCount": 5
+        },
+        {
+          "case": "negative-prose",
+          "p50Milliseconds": 176.99658333367552,
+          "p95Milliseconds": 291.1696250002933,
+          "sampleCount": 4
+        },
+        {
+          "case": "one-mib-output",
+          "p50Milliseconds": 548.3249166672977,
+          "p95Milliseconds": 814.7386666660168,
+          "sampleCount": 4
+        },
+        {
+          "case": "past-4k",
+          "p50Milliseconds": 196.01979166691308,
+          "p95Milliseconds": 208.3468750006432,
+          "sampleCount": 4
+        },
+        {
+          "case": "pem-multiline",
+          "p50Milliseconds": 206.96562500052096,
+          "p95Milliseconds": 264.0895000004093,
+          "sampleCount": 4
+        },
+        {
+          "case": "repeated-lines",
+          "p50Milliseconds": 250.65929166703427,
+          "p95Milliseconds": 290.0958750005884,
+          "sampleCount": 5
+        },
+        {
+          "case": "repeated-output-24",
+          "p50Milliseconds": 236.7580000000089,
+          "p95Milliseconds": 352.4757083332588,
+          "sampleCount": 4
+        },
+        {
+          "case": "repeated-same-line",
+          "p50Milliseconds": 237.2612916669823,
+          "p95Milliseconds": 259.66349999998783,
+          "sampleCount": 5
+        },
+        {
+          "case": "unicode-prefix",
+          "p50Milliseconds": 252.7567083334361,
+          "p95Milliseconds": 279.6564166665121,
+          "sampleCount": 5
+        }
+      ],
+      "excludes": "Provider observation delay, helper process startup, IPC transport, worker idle polling, UI and OS notification display",
+      "includes": "Durable queue encryption/insert, normalization, actual scanner process, value/context encryption, inventory commit",
+      "inputBytes": 4229351,
+      "maximumMilliseconds": 814.7386666660168,
+      "p50Milliseconds": 240.70250000022497,
+      "p95Milliseconds": 548.3249166672977,
+      "sampleCount": 40,
+      "targetP95Milliseconds": 120000,
+      "fullApplicationLatency": false
+    },
+    "genuineClaudeCLI": {
+      "evidence": "docs/implementation/m6-claude-observation-latency.json",
+      "version": "2.1.293",
+      "interface": "standaloneCLI",
+      "passed": true,
+      "providerRuns": 3,
+      "requiredTypedCasesCommitted": 9,
+      "valueCount": 1,
+      "occurrenceCount": 19,
+      "sessionCount": 2,
+      "alertCount": 2,
+      "queueCount": 0,
+      "gapReasons": [
+        "unsupportedContent"
+      ],
+      "sourceLatency": {
+        "committedSourceRevisionCount": 12,
+        "historical": {
+          "canonicalObservationToCommitObservation": {
+            "count": 0,
+            "excludedNegativeOrNonfiniteCount": 0,
+            "max": null,
+            "p50": null,
+            "p95": null
+          },
+          "committedSourceRevisionCount": 0,
+          "providerTimestampToCanonicalObservation": {
+            "count": 0,
+            "excludedNegativeOrNonfiniteCount": 0,
+            "max": null,
+            "p50": null,
+            "p95": null
+          },
+          "queueCaptureToCommitObservation": {
+            "count": 0,
+            "excludedNegativeOrNonfiniteCount": 0,
+            "max": null,
+            "p50": null,
+            "p95": null
+          }
+        },
+        "limits": [
+          "Samples are unique canonical source revisions carrying the disposable synthetic value and a retained detection, with an exact full detector receipt.",
+          "Provider contentTime is its transcript timestamp, not a measurement of physical first output byte or agent publication; provider buffering and clock differences cannot be separated.",
+          "Canonical observedAt is the adapter read-start timestamp, set before asynchronous transcript reads; a later append can produce a negative provider delta without clock skew.",
+          "Each latency leg excludes and counts negative or nonfinite wall-clock deltas independently; clock adjustments can also affect positive durations.",
+          "Queue capture time belongs to the enclosing durable hook or poll and can precede publication of a source row; it is not the source's first available byte.",
+          "Commit observation is taken after the enclosing capture's pipeline activity completes, so it upper-bounds per-source durable commit and includes remaining batch/checkpoint work.",
+          "Final catch-up and replay are excluded. An empty historical population is unmeasured. Standalone CLI results do not measure T3 latency."
+        ],
+        "live": {
+          "canonicalObservationToCommitObservation": {
+            "count": 12,
+            "excludedNegativeOrNonfiniteCount": 0,
+            "max": 340.1600122451782,
+            "p50": 175.66096782684326,
+            "p95": 340.1600122451782
+          },
+          "committedSourceRevisionCount": 12,
+          "providerTimestampToCanonicalObservation": {
+            "count": 12,
+            "excludedNegativeOrNonfiniteCount": 0,
+            "max": 1165.437936782837,
+            "p50": 271.14784717559814,
+            "p95": 1165.437936782837
+          },
+          "queueCaptureToCommitObservation": {
+            "count": 12,
+            "excludedNegativeOrNonfiniteCount": 0,
+            "max": 703.4271955490112,
+            "p50": 501.1481046676636,
+            "p95": 703.4271955490112
+          }
+        },
+        "observedSourceRevisionCount": 12,
+        "percentileMethod": "nearest-rank",
+        "schemaVersion": 1,
+        "units": "milliseconds",
+        "unmeasuredSourceRevisionCount": 0
+      },
+      "t3LatencyMeasured": false,
+      "historicalLatencyMeasured": false,
+      "p95EqualsMaxAtSampleCount12": true,
+      "pureProviderPublicationDelayMeasured": false,
+      "observationDelayMayIncludeLocalPollingAndQueueWait": true,
+      "cleanup": {
+        "disposableRootRemoved": true,
+        "temporaryAuthenticationRemoved": true,
+        "ownedProcessGroupsStopped": true,
+        "driverProcessGroupCleanup": {
+          "grace_ms": 200,
+          "term_permission_denied": false,
+          "kill_permission_denied": false
+        },
+        "existingHookSettingsModified": false,
+        "existingHistoriesModified": false
+      }
+    },
+    "largeSyntheticClaudeHistory": {
+      "evidence": "docs/implementation/m6-resources.json",
+      "agentVersion": "2.1.293",
+      "append": {
+        "boundedPasses": 1,
+        "newOccurrences": 2,
+        "queueToInventoryMilliseconds": 2135.5046666667477,
+        "sourceBytesReadIncludingBoundaryVerification": 6698
+      },
+      "appendLogicalBytes": 554,
+      "cold": {
+        "boundedPasses": 1,
+        "queueToInventoryMilliseconds": 2232.442833334062,
+        "retainedOccurrences": 9,
+        "sourceBytesReadIncludingBoundaryVerification": 2097152
+      },
+      "differentReplacementValueEvaluated": true,
+      "notes": "Old monotonic prefix is deliberately unread. A visible unresolved-correlation gap and partial progress remain; this is not an exhaustive historical audit or a Codex benchmark.",
+      "provider": "Claude Code versioned synthetic transcript",
+      "sevenDayContentTimeCutoffPassed": true,
+      "sourceLogicalBytesBeforeAppend": 134253008,
+      "unchangedHistoryNotReprocessed": true,
+      "unreadPrefixVisibleAsPartialCoverage": true,
+      "warm": {
+        "boundedPasses": 1,
+        "newOccurrences": 0,
+        "queueToInventoryMilliseconds": 8.776041666351375,
+        "sourceBytesReadIncludingBoundaryVerification": 0
+      },
+      "absoluteCoveredDateBoundsReported": true,
+      "historicalLatencyDistributionMeasured": false,
+      "absoluteCoveredDateBoundsReportedInOriginalRun": false,
+      "separateHistoryPeriodEvidenceAvailable": true,
+      "historyPeriodSupplement": {
+        "evidence": "docs/implementation/m6-resource-history-period.json",
+        "passed": true,
+        "freshIsolatedRun": true,
+        "originalRunTimestampsRecoverable": false,
+        "originalResourceMeasurementsPreserved": true,
+        "originalReportSHA256BeforeSupplement": "7d8ef5e886e5a6c71d39caa40526ef3e73ab2824980fc6130a685845e637c074",
+        "scope": "New audit endpoints and adapter/retained content bounds from the same 128-MiB cold/warm/append fixture algorithm and pinned scanner/rules/corpus. Original measurements were not rerun or backfilled; these timestamps belong only to the separate repeat.",
+        "completeWindowCoverage": false,
+        "fixtureBaseTime": "2026-10-08T10:59:30.000Z",
+        "cold": {
+          "adapterNewestContentCheckpointTime": "2026-10-08T10:59:20.000Z",
+          "adapterOldestEmittedContentTime": "2026-10-01T10:59:30.000Z",
+          "auditEndInclusive": "2026-10-08T10:59:30.000Z",
+          "auditReason": "firstLaunch",
+          "auditStartInclusive": "2026-10-01T10:59:30.000Z",
+          "hasUnreadContent": true,
+          "lookbackSeconds": 604800,
+          "newRetainedNewestContentTime": "2026-10-08T10:59:20.000Z",
+          "newRetainedOldestContentTime": "2026-10-01T10:59:30.000Z",
+          "progressRecordCount": 1
+        },
+        "unchanged": {
+          "adapterNewestContentCheckpointTime": "2026-10-08T10:59:20.000Z",
+          "adapterOldestEmittedContentTime": null,
+          "auditEndInclusive": "2026-10-08T10:59:31.000Z",
+          "auditReason": "restart",
+          "auditStartInclusive": "2026-10-01T10:59:31.000Z",
+          "hasUnreadContent": true,
+          "lookbackSeconds": 604800,
+          "newRetainedNewestContentTime": null,
+          "newRetainedOldestContentTime": null,
+          "progressRecordCount": 1
+        },
+        "append": {
+          "adapterNewestContentCheckpointTime": "2026-10-08T10:59:30.935Z",
+          "adapterOldestEmittedContentTime": "2026-10-08T10:59:30.935Z",
+          "auditEndInclusive": "2026-10-08T10:59:31.936Z",
+          "auditReason": "resume",
+          "auditStartInclusive": "2026-10-01T10:59:31.936Z",
+          "hasUnreadContent": true,
+          "lookbackSeconds": 604800,
+          "newRetainedNewestContentTime": "2026-10-08T10:59:30.935Z",
+          "newRetainedOldestContentTime": "2026-10-08T10:59:30.935Z",
+          "progressRecordCount": 1
+        },
+        "notes": "Audit endpoints select an inclusive seven-day content-time window. Adapter bounds describe emitted sources and the newest checkpoint watermark, not all timestamps in unread bytes. Retained bounds describe only new detections in that pass. Warm reuse reads zero payload bytes; an old prefix remains unread and visibly partial.",
+        "elapsedSeconds": 2.85889675,
+        "cleanupPending": false
+      },
+      "absoluteCoveredDateBoundsScope": "Separate fresh same-fixture history-period supplement; original resource-run dates were not reconstructed or backfilled."
+    },
+    "queue": {
+      "evidence": "docs/implementation/m6-resources.json",
+      "budgetBytes": 104857600,
+      "maximumSingleEventBytes": 8388608,
+      "expirySeconds": 86400,
+      "peakEncryptedQueuedBytes": 99398249,
+      "acceptedBeforeSaturation": 10,
+      "expiredWhilePausedCount": 10,
+      "finalQueuedBytes": 0,
+      "saturationAndExpiryVisible": true,
+      "oversizeRejectedWithoutChangingQueue": true
+    },
+    "resourceProbeMemory": {
+      "evidence": "docs/implementation/m6-resources.json",
+      "scope": "Separate synthetic resource acceptance process, not GUI memory",
+      "processingAndReplayCumulativePeakRSSBytes": 89587712,
+      "wholeProbePeakRSSBytes": 340590592,
+      "scannerChildPeakRSSBytes": 30965760,
+      "wholeProbePeakIncludesInspectionAndSaturation": true,
+      "separatePeaksAreNotSimultaneousTotal": true,
+      "sampledOwnedTreePeakRSSBytes": 319700992,
+      "samplingCanMissShortPeaks": true
+    },
+    "signedGUIProcess": {
+      "evidence": "docs/implementation/m6-signed-app-memory.json",
+      "sampleCount": 71,
+      "sampledPeakRSSBytes": 159973376,
+      "lastSampleRSSBytes": 157761536,
+      "scope": "Signed GUI process startup, five-content synthetic ingestion and idle; excludes scanner/helper children, large inventory and authenticated rendering. Actual sample spacing includes ps execution overhead; sampling is not an exact high-water mark.",
+      "nominalSamplingDelaySeconds": 0.1,
+      "processElapsedSeconds": 8.972,
+      "protectedStoreBytesAfterQuit": 192512,
+      "requiredContentTypesCommitted": 5,
+      "queueCount": 0,
+      "cleanCiphertextAndScopedCleanup": true,
+      "fullMatrixMemoryAcceptance": false
+    },
+    "storage": {
+      "evidence": "docs/implementation/m6-resources.json",
+      "notes": "Logical on-disk sizes include SQLite journals. Queue payload budget does not cap total metadata or physical database size.",
+      "peakProtectedStoreLogicalBytes": 101601280,
+      "peakSequentialPipelineEncryptedQueueBytes": 1509631,
+      "protectedStoreLogicalBytesAfterClose": 100552704,
+      "protectedStoreLogicalBytesBeforeClose": 101601280,
+      "scannerWorkingDirectoryBytes": 0,
+      "forensicErasureClaimed": false
+    },
+    "genuineCodexCLI": {
+      "evidence": "docs/implementation/m6-codex-observation-latency.json",
+      "version": "0.161.0",
+      "readerVersion": "0.161.0",
+      "interface": "standalone-cli",
+      "collectionPath": "exact-selected-public-native-items",
+      "passed": true,
+      "providerRuns": 1,
+      "requiredTypedCasesCommitted": 8,
+      "requiredTypedCasesCommittedBeforeCatchUp": 8,
+      "valueCount": 1,
+      "occurrenceCount": 14,
+      "sessionCount": 2,
+      "alertCount": 2,
+      "durablePollDeliveries": 33,
+      "queueCount": 0,
+      "gapReasons": [],
+      "sourceLatency": {
+        "committedSourceRevisionCount": 8,
+        "firstCanonicalReadStartedAt": "2026-10-08T10:34:27.890Z",
+        "historical": {
+          "canonicalReadStartToCommitObservation": {
+            "count": 0,
+            "excludedNegativeOrNonfiniteCount": 0,
+            "max": null,
+            "p50": null,
+            "p95": null
+          },
+          "committedSourceRevisionCount": 0,
+          "providerTimestampToCanonicalReadStart": {
+            "count": 0,
+            "excludedNegativeOrNonfiniteCount": 0,
+            "max": null,
+            "p50": null,
+            "p95": null
+          },
+          "queueCaptureToCommitObservation": {
+            "count": 0,
+            "excludedNegativeOrNonfiniteCount": 0,
+            "max": null,
+            "p50": null,
+            "p95": null
+          }
+        },
+        "lastCommitObservedAt": "2026-10-08T10:34:53.049Z",
+        "limits": [
+          "Samples are unique public canonical source revisions carrying the disposable synthetic value, with an exact full detector receipt and a retained occurrence for that source and content time.",
+          "Read start is measured immediately before awaiting CodexAdapter.normalize. Product metadata.observedAt remains the queue capturedAt timestamp and is not used as read start.",
+          "Provider contentTime is completedAtMs when available, otherwise startedAtMs or a turn timestamp. It does not measure first-byte publication or when public history made that item available.",
+          "A public read may include an item published after its start. Each latency leg excludes and counts negative or nonfinite wall-clock deltas; clock adjustments can affect positive durations too.",
+          "Queue capture belongs to the enclosing public poll, not the source's first available byte.",
+          "Commit observation follows completion of the enclosing pipeline capture. It upper-bounds the source's exact durable commit and includes remaining batch and checkpoint work.",
+          "Live or historical classification comes from the retained occurrence after the production pipeline applies its start boundary. Final catch-up and replay are excluded from timing.",
+          "This measures standalone CLI exact-ID public-history polling, not hook delivery, T3 latency, hosted tools, or long-running output fragment publication."
+        ],
+        "live": {
+          "canonicalReadStartToCommitObservation": {
+            "count": 8,
+            "excludedNegativeOrNonfiniteCount": 0,
+            "max": 785.0569486618042,
+            "p50": 322.343111038208,
+            "p95": 785.0569486618042
+          },
+          "committedSourceRevisionCount": 8,
+          "providerTimestampToCanonicalReadStart": {
+            "count": 8,
+            "excludedNegativeOrNonfiniteCount": 0,
+            "max": 999.143123626709,
+            "p50": 606.0370206832886,
+            "p95": 999.143123626709
+          },
+          "queueCaptureToCommitObservation": {
+            "count": 8,
+            "excludedNegativeOrNonfiniteCount": 0,
+            "max": 2605.1520109176636,
+            "p50": 401.9138813018799,
+            "p95": 2605.1520109176636
+          }
+        },
+        "observedSourceRevisionCount": 8,
+        "percentileMethod": "nearest-rank",
+        "schemaVersion": 1,
+        "units": "milliseconds",
+        "unmeasuredSourceRevisionCount": 0
+      },
+      "observerReadStartedWhileProducerRunning": true,
+      "t3LatencyMeasured": false,
+      "historicalLatencyMeasured": false,
+      "hookDeliveryLatencyMeasured": false,
+      "nativeChildPromptVerified": false,
+      "p95EqualsMaxAtSampleCount8": true,
+      "pureProviderPublicationDelayMeasured": false,
+      "productionMetadataObservedAtUsedAsReadStart": false,
+      "readStartedAtCapturedImmediatelyBeforeAdapterNormalize": true,
+      "finalCatchUpAndReplayExcluded": true,
+      "cleanup": {
+        "disposableRootRemoved": true,
+        "observerProcessGroup": {
+          "groupKillPermissionDenied": false,
+          "launched": true,
+          "leaderExited": true,
+          "ownedGroupTerminationRequested": true
+        },
+        "ownedProcessGroupsStopped": true,
+        "producerProcessGroup": {
+          "groupKillPermissionDenied": false,
+          "leaderExited": true,
+          "ownedGroupTerminationRequested": true
+        },
+        "temporaryAuthenticationRemoved": true,
+        "versionProbeProcessGroup": {
+          "groupKillPermissionDenied": false,
+          "leaderExited": true,
+          "ownedGroupTerminationRequested": true
+        }
+      },
+      "measurementReusedFrom": "docs/implementation/m6-codex-observation-latency-extra-child-prompt-assertion-r1.json",
+      "gateCorrection": {
+        "evaluatedAt": "2026-10-08T10:37:10.734885+00:00",
+        "measurementsChanged": false,
+        "originalExtraRequirement": "CHILD_PROMPT",
+        "providerRerun": false,
+        "reason": "The established Codex fixture requires eight typed markers including the native child's own final; its prompt was an extra assertion and remains unverified."
+      }
+    }
+  },
+  "offlineEvidence": {
+    "evidence": "docs/implementation/m6-signed-restart-offline.json",
+    "passedWithinRecordedScope": true,
+    "actualScannerIsolationPassed": true,
+    "singleSignedAppCooperativeOfflineAcceptancePassed": true,
+    "osNotificationVisibleMaskedAndClickedUnderRecordedPolicyVerified": true,
+    "notificationNavigationEventCount": 2,
+    "policy": {
+      "bootstrapException": "Literal /usr/bin/sandbox-exec may run without the inherited sandbox, then apply the unchanged production scanner policy.",
+      "exercisedRunVerified": true,
+      "genericBootstrapEscapeExists": true,
+      "mode": "network-denied-trusted-scanner-bootstrap",
+      "ownedUnixException": "Exact canonical owned-store/capture.sock only.",
+      "policyControlsReport": "docs/implementation/m6-parent-sandbox-bootstrap.json",
+      "policyDefinesExternalAppAndOrdinaryChildNetworkDenial": true
+    },
+    "scope": {
+      "acknowledgementTested": "rotated",
+      "activeStorageDeletionMeaning": "Remembered payload lookups are absent after removal; this is not forensic erasure from SQLite pages, snapshots or backups.",
+      "actualProviderSessionInvoked": false,
+      "allDescendantsNetworkDenied": false,
+      "allSupportedInterfacesOfflineTested": false,
+      "application": "Existing installed development-signed Leakret.app; unchanged production scanner and vault.",
+      "nativeObservationMethod": "Root-recorded accessibility and OS notification observations.",
+      "notificationReceiptMeaning": "Delivered is UserNotifications request acceptance or an existing OS request; visible notification and click require separate native observations.",
+      "source": "One disposable synthetic Claude 2.1.293 transcript, user-prompt content, same conversation.",
+      "systemWideOfflinePolicy": false
+    },
+    "limits": [
+      "This is a cooperative test-only parent policy. The bootstrap executable exception does not constrain argv and is not a secure all-descendant policy.",
+      "Local OS notification services run outside the app process; system-wide networking was not disabled.",
+      "The source transcript is synthetic. No real provider generation, T3 or Codex offline workflow ran in this check.",
+      "Metadata-only retention and visible OS delivery include explicit native observations. Counts alone do not prove either claim."
+    ],
+    "earlierSplitComponentEvidence": {
+      "evidence": "docs/implementation/m6-resources.json",
+      "actualScannerIsolationPassed": true,
+      "resourceAcceptanceParentNetworkIsolated": false,
+      "separateInheritedNetworkDenialWorkflowPassed": true,
+      "separateWorkflowUsesActualClaudeNormalizerEncryptedStoreReviewAndAlertDecisions": true,
+      "separateWorkflowDetector": "annotated-synthetic-offline-workflow-1",
+      "separateWorkflowScannerInvocations": 0,
+      "singleSignedAppEndToEndOfflineAcceptancePassed": false,
+      "osNotificationDeliveryUnderNetworkBlockVerified": false,
+      "persistentKeychainItemsCreated": 0
+    },
+    "productionScannerOrAppChangesRequired": false,
+    "postTestPreferences": {
+      "launchAtLoginLeftOff": true,
+      "notificationSettingVerifiedWithNativeUI": true,
+      "notificationsRestoredToDisabled": true
+    },
+    "notificationEvidenceProvenance": {
+      "appNotificationNavigationEventCount": 2,
+      "bannerTextIndependentlyReadThroughAccessibility": false,
+      "clickSummary": "The user confirmed clicking the notification and opening a masked Token entry.",
+      "matchingReviewedReplacementSelectedAndMasked": true,
+      "navigationSummary": "Native accessibility showed the reviewed replacement occurrence selected with value and context masked. The production app recorded notification navigation.",
+      "textMaskEvidenceValidated": true,
+      "textSummary": "Masked notification text is established by controlled production notification construction and the user's response to the masked-notification test.",
+      "userConfirmedVisibleNotificationClick": true
+    },
+    "notificationReceiptMeaning": "Delivered is UserNotifications request acceptance or an existing OS request; visible notification and click require separate native observations."
+  },
+  "configuredLimits": {
+    "retainedExcerptMaximumBytes": 4096,
+    "scannerWorkers": 1,
+    "acceptedWorkDeadlineSeconds": 110,
+    "historicalLookbackDays": 7,
+    "historyPassMaximumBytes": 104857600,
+    "historyPassMaximumSeconds": 30,
+    "historyPassMaximumSources": 256,
+    "historySourceQuantumBytes": 2097152,
+    "historicalNotificationMaximumProgressRows": 1000,
+    "inventoryAutomaticallyExpires": false
+  },
+  "pendingGateChecks": [
+    {
+      "check": "Developer ID signing, notarization/stapling, Gatekeeper install, distribution update and upgrade key persistence",
+      "state": "deferred-by-user-before-distribution"
+    },
+    {
+      "check": "Actual logout/login launch",
+      "state": "unverified"
+    },
+    {
+      "check": "macOS 14 runtime",
+      "state": "deferred-by-user-before-release"
+    },
+    {
+      "check": "Hardware without Touch ID",
+      "state": "deferred-by-user-before-release"
+    }
+  ],
+  "preservedFailedEvidence": [
+    "docs/implementation/m6-incremental-signing-failure.json",
+    "docs/implementation/m6-incremental-signing-cache-miss.json",
+    "docs/implementation/m6-resources-nested-sandbox-failed-r1.json",
+    "docs/implementation/m6-codex-observation-latency-extra-child-prompt-assertion-r1.json"
+  ],
+  "failedEphemeralCleanup": {
+    "evidence": "docs/implementation/m6-resources-nested-sandbox-cleanup.json",
+    "verifiedOwnedArtifactRemoved": true,
+    "keychainDeletionOperations": 0
+  },
+  "handoff": {
+    "developmentApp": "~/Applications/Leakret.app",
+    "launchAtLoginEnabled": false,
+    "newRealAgentHooksConfigured": false,
+    "existingUserHooksAndHistoriesModified": false,
+    "notificationPermission": "denied",
+    "signedOwnerAppRunsQuitNormally": true,
+    "signedOwnerDisposableRootAndNewVaultRemoved": true,
+    "postSignedOwnerNotificationsEnabled": false,
+    "postTestPreferencesEvidence": "docs/implementation/m6-signed-restart-offline.json",
+    "notificationSettingVerifiedWithNativeUI": true,
+    "notificationsRestoredToDisabled": true
+  },
+  "reproduction": {
+    "fullCoreWithSignedScanner": "SPILLCHECK_SIGNED_SCANNER_APP=\"$PWD/.build/app/Build/Products/Debug/Spillcheck.app\" swift test",
+    "inFlight": "swift test --filter DetectionPipelineTests",
+    "notificationProgress": "swift test --filter WorkflowStorageTests",
+    "nativeController": "python3 Tests/NativeWorkflowProbe/run.py --products-path .build/out/Products/Debug --output-directory .build/native-workflow",
+    "agentSetup": "python3 Tests/AgentSetupProbe/run.py",
+    "scannerBundling": "python3 Tests/Tooling/check-scanner-bundling.py",
+    "releasePolicy": "python3 Tests/Tooling/check-release-policy.py",
+    "resources": {
+      "build": "swift build --product spillcheck-resource-acceptance",
+      "run": "python3 Tests/ResourceAcceptance/run.py --skip-build --output .build/implementation/m6-resources-repeat.json"
+    },
+    "realPinnedClaudeCLI": {
+      "build": "swift build --product spillcheck-storage-acceptance",
+      "run": "python3 Tests/ClaudeLive/run.py --executable \"$HOME/.local/share/claude/versions/2.1.293\" --acceptance-executable .build/out/Products/Debug/spillcheck-storage-acceptance --output .build/implementation/m6-claude-observation-latency-repeat.json"
+    },
+    "signedGUIMemory": "python3 Tests/AppAcceptance/run-app-pipeline.py --app \"$HOME/Applications/Spillcheck.app\" --output .build/implementation/m6-signed-app-memory-repeat.json",
+    "nativeManualWorkflow": "docs/implementation/milestone-5.md#reproduce",
+    "realCodexCLI": {
+      "build": "swift build --scratch-path .build/codex-latency --product spillcheck-storage-acceptance",
+      "run": "python3 Tests/CodexLive/measure-latency.py --acceptance-executable .build/codex-latency/debug/spillcheck-storage-acceptance --report .build/implementation/m6-codex-observation-latency-repeat.json"
+    },
+    "historyPeriodSupplement": "python3 Tests/ResourceAcceptance/run.py --skip-build --history-period-only --output .build/implementation/m6-resource-history-period-repeat.json",
+    "signedRestartAndCooperativeOffline": {
+      "manualProcedure": "Tests/ProtectionSignedProbe/VaultOwner.md",
+      "finalize": "python3 Tests/ProtectionSignedProbe/finalize-vault-owner-evidence.py finalize --owner-report .build/implementation/vault-owner-report-r2.json --observations .build/implementation/vault-owner-native-observations-r2.json --launch-receipts .build/implementation/vault-owner-launch-receipts-r2.json --output docs/implementation/m6-signed-restart-offline.json",
+      "scope": "Manual synthetic GUI sequence, normal Quit and original creator cleanup; fresh paths required when repeating."
+    }
+  },
+  "unverifiedCoverageLimits": {
+    "codexNativeChildOwnPrompt": {
+      "state": "unverified-optional-scope",
+      "requiredByEstablishedCodexFixture": false,
+      "verifiedChildContent": "Native child's own final response",
+      "evidence": [
+        "docs/implementation/milestone-4.json",
+        "docs/implementation/m6-codex-observation-latency.json"
+      ]
+    }
+  },
+  "localAcceptanceCriteriaCompleteWithinRecordedScopes": true,
+  "measurementLimits": {
+    "additionalWorkloadsUnmeasured": [
+      "T3 live latency distributions",
+      "Historical latency distributions",
+      "Broader large-inventory/authenticated GUI resource workloads",
+      "Physical first-byte/publication delay"
+    ],
+    "classification": "Published measurement scope limits; not additional requirements imposed by SPEC criterion 10.",
+    "declaredBudgetsAndExplicitReleaseRequirementsWaived": false
+  }
+}

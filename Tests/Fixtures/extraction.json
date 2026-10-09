@@ -1,0 +1,20 @@
+[
+  {
+    "name": "Unicode value in a transport-decoded message",
+    "text": "préface 🔒: Päss 🔐\nrepeat: Päss 🔐",
+    "value": "Päss 🔐",
+    "expectedOccurrences": 2
+  },
+  {
+    "name": "Exact whitespace and case are meaningful",
+    "text": "password=[  Synthetic-Aa  ]",
+    "value": "  Synthetic-Aa  ",
+    "expectedOccurrences": 1
+  },
+  {
+    "name": "Multiline private-key shaped synthetic fixture",
+    "text": "output:\n-----BEGIN PRIVATE KEY-----\nLEAKRET_SYNTHETIC_NOT_A_KEY\n-----END PRIVATE KEY-----\nfinished",
+    "value": "-----BEGIN PRIVATE KEY-----\nLEAKRET_SYNTHETIC_NOT_A_KEY\n-----END PRIVATE KEY-----",
+    "expectedOccurrences": 1
+  }
+]

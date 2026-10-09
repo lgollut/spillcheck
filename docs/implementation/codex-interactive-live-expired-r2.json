@@ -1,0 +1,31 @@
+{
+  "copiedAuthRemoved": true,
+  "diagnosticBytes": 0,
+  "driverExitCode": 0,
+  "exactOwnedInteractivePIDStopped": true,
+  "existingConfigurationModified": false,
+  "hookTrustBypassed": false,
+  "leaseExpiredBeforeChallenge": true,
+  "leaseSeconds": 1800,
+  "ownedDirectoryRemoved": true,
+  "passed": false,
+  "result": {
+    "ciphertextMarkerInspectionPassed": true,
+    "durableDeliveries": 0,
+    "finished": true,
+    "gapReasons": [],
+    "occurrenceCount": 0,
+    "occurrencesByContentType": {},
+    "queueCount": 0,
+    "replayStable": true,
+    "sessionCount": 0,
+    "setupState": "installedUnverified",
+    "syntheticAlertCount": 0,
+    "syntheticValuePresent": false,
+    "typedCommitted": {},
+    "typedObserved": {},
+    "valueCount": 0
+  },
+  "schemaVersion": 1,
+  "syntheticMCPRemainingProcessCount": 0
+}

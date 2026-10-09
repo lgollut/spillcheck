@@ -1,18 +1,18 @@
-# Leakret implementation plan
+# Spillcheck implementation plan
 
-Status: proposed implementation plan, based on the existing specification and ADRs. No application code, hooks, or scanner installation is included in this change.
+Status: milestones 1–5 passed their implementation gates. Milestone 0 passed on the available Mac; the user explicitly deferred macOS 14 and hardware without Touch ID until before release. The local development MVP is runnable. Milestone 6 records passing local acceptance, measured resources and a four-run signed restart/cooperative offline GUI check; the full release gate remains open. The user explicitly deferred distribution. Developer ID packaging, notarization and upgrade acceptance remain unverified. [Execution status](implementation/milestones.json), [acceptance evidence](implementation/milestone-6.md), and each milestone's report record the exact tested scopes and open checks.
 
-Reviewed: October 7, 2026.
+Reviewed: October 8, 2026.
 
 ## Assessment of the current documentation
 
 The four existing documents agree on the product boundary. [CONTEXT.md](../CONTEXT.md) defines the domain vocabulary, [SPEC.md](SPEC.md) defines workflows and acceptance criteria, and [ADR 0001](adr/0001-local-analysis.md) and [ADR 0002](adr/0002-retain-encrypted-values.md) fix local processing and protected retention.
 
-The product is ready for a feasibility prototype. Full implementation should wait for measured adapter coverage and the background-write/authenticated-read vault test. Tool hooks alone do not establish complete coverage, and a seven-day date filter alone does not establish bounded historical reads.
+The implementation establishes versioned collection paths through T3 and standalone CLI, uses Betterleaks 1.9.0 with three fixture-justified Swift rules, and has signed-app evidence for encrypted retention and system-authorized revelation. [Acceptance evidence](implementation/milestone-6.md) distinguishes the app's measured behavior from unverified lifecycle and workload scopes. The required macOS 14 and non-Touch ID hardware checks remain unverified and must run before release under the user's explicit deferral, retained in [release checks](implementation/release-checks.json). Native source-opening routes remain unverified, with authenticated retained-context viewing exercised separately. Tool hooks alone do not establish complete coverage, and a seven-day date filter alone does not establish bounded historical reads.
 
 The recommended stack is Swift 6, SwiftUI and AppKit, GRDB/SQLite, CryptoKit, Keychain and LocalAuthentication, a compiled Swift hook helper, and bundled Betterleaks with reviewed local rules. Add native detector rules only for gaps demonstrated by fixtures. [The stack proposal](adr/0003-native-macos-stack.md) explains the choices and alternatives.
 
-The local development environment has Xcode 27.0, Swift 6.4, Codex CLI 0.160.1, and Claude Code 2.1.292. These are observed development tools, not a validated compatibility matrix. Desktop versions and minimum supported agent versions remain to be established.
+The implementation acceptance runs used macOS 26.6.2 arm64, Xcode 27.0, Swift 6.4, Codex CLI 0.161.0, Claude Code 2.1.293, and T3 0.0.46-nightly.20261007.2761. [The supported matrix](implementation/supported-matrix.md) defines the tested content paths and limitations. Minimum supported agent versions and Desktop collection remain unverified.
 
 The app must support installation and updates beyond a development checkout. Keep a stable application identity, owned hook entries, migrations, signing, and install/update validation in the first implementation. Recovery or migration of the inventory after loss or replacement of the Mac is not required. Device-bound vault keys are acceptable within that boundary; missing keys must still produce an explicit unavailable state.
 
@@ -27,7 +27,7 @@ The confirmed release baseline is macOS 14 or later, Apple Silicon first, and di
 
 Public interfaces are preferable. Version-specific transcript readers are acceptable only as isolated fallback adapters with fixture tests and visible limits. Do not make undocumented transcripts the app's domain model. No session may be resumed merely to collect it.
 
-The [session reader guidance](SESSION_READER_REUSE.md) identifies patterns for bounded reads, JSONL framing, checkpoints, cancellation, and replay. Reuse suitable code only when it fits Leakret and is simpler to maintain than an independent implementation. A reader that excludes assistant/tool outputs or changes the text before detection cannot provide exact secret values and ranges. Warm-read tests support incremental recovery, but do not prove bounded first-pass seven-day discovery or hook/history correlation.
+The [session reader guidance](SESSION_READER_REUSE.md) records requirements for bounded reads, JSONL framing, checkpoints, cancellation, and replay. Readers must preserve assistant and tool output, exact secret bytes, and source ranges. Warm-read tests support incremental recovery, but do not prove bounded first-pass seven-day discovery or hook/history correlation.
 
 ## Product decisions and proposed defaults
 
@@ -58,7 +58,7 @@ The processing path is:
 
 ### Push delivery and historical pull
 
-Live hook delivery is push. During adapter setup, register the bundled `leakret-hook` command in the agent's user-level hook configuration, preserving existing entries. Codex supports `~/.codex/hooks.json` or inline hooks in `config.toml`; Claude Code supports `~/.claude/settings.json`. Verify configuration loading and a synthetic event for each supported interface before declaring it connected. [Codex hook configuration](https://learn.chatgpt.com/docs/hooks), [Claude hook configuration](https://code.claude.com/docs/en/hooks).
+Live hook delivery is push. During adapter setup, register the bundled `spillcheck-hook` command in the agent's user-level hook configuration, preserving existing entries. Codex supports `~/.codex/hooks.json` or inline hooks in `config.toml`; Claude Code supports `~/.claude/settings.json`. Verify configuration loading and a synthetic event for each supported interface before declaring it connected. [Codex hook configuration](https://learn.chatgpt.com/docs/hooks), [Claude hook configuration](https://code.claude.com/docs/en/hooks).
 
 When a supported event fires, the agent starts the helper and supplies event JSON on stdin. The helper sends it to the running app's Unix-domain socket. The app acknowledges only after durable encrypted queue insertion; the helper returns without waiting for Betterleaks. Detection runs separately in the app. A timeout can leave delivery uncertain, so retries must retain stable event identity.
 
@@ -135,12 +135,12 @@ Test history-first and hook-first arrival, concurrent ingestion, restart/retry, 
 
 Use synthetic data only. Create disposable sessions and agent configurations, not modifications to the user's existing hook settings.
 
-Deliver `docs/prototype/coverage.md`, `docs/prototype/scanner.md`, and `docs/prototype/vault.md` with versions, corpus, commands, measurements, and limitations. These are future deliverables, not existing reports.
+This milestone was exploratory work and its separate projects and reports have been removed. Production [agent and scanner fixtures](../Tests/Fixtures/README.md), signed-app acceptance tooling, and [implementation reports](implementation/milestones.json) remain. The following gates record the original feasibility requirements; the [release checks](implementation/release-checks.json) preserve the outstanding platform requirements and the user's authorization to continue implementation.
 
 - Test Codex through T3 and the standalone CLI for successful shell/MCP outputs, errors, prompts, intermediate responses, final responses, and subagent content. Verify what is absent. Treat Desktop as an additional capability to add after validation.
 - Test the same content types for Claude Code through T3 and the standalone CLI. Compare batch results, individual results, failures, and display-message collection. Validate local Desktop Code sessions separately before adding support. Ordinary Claude Chat is outside the initial Code adapter.
 - Test read-only history access, an old session with a recent message, timestamps, pagination/checkpoints, source deletion, file rotation, and partial writes. Measure bytes read rather than only elapsed scan time.
-- Consult the session reader guidance for framing patterns and synthetic recovery scenarios. Reuse suitable code or implement independently, whichever gives Leakret a simpler fit. Preserve all supported roles, scan before clipping, use keyed content fingerprints, and distinguish canonical conversations. Test compressed histories and relocated stores as explicit capabilities rather than assuming existing support.
+- Consult the session reader guidance for framing and synthetic recovery scenarios. Preserve all supported roles, scan before clipping, use keyed content fingerprints, and distinguish canonical conversations. Test compressed histories and relocated stores as explicit capabilities rather than assuming existing support.
 - Test source opening for available, active, unavailable, and deleted sessions. Establish the fallback behavior for each interface.
 - Run pinned stable Betterleaks against the annotated corpus with network access blocked, using Gitleaks as a baseline and TruffleHog as an optional comparison. Evaluate any Betterleaks v2 prerelease separately. Measure category precision/recall, exact extraction, distinct occurrence recovery, runtime, and memory. Include low-confidence results, contextual passwords, credential URIs, malicious ignore comments, and output presented as instructions. Add Swift rules only if this reveals specific coverage gaps.
 - In a signed minimal Mac app, prototype `LAPersistedRight` first and Security.framework access-controlled keys if needed. Prove locked background encryption, authenticated private-key use, password fallback, canceled authentication, lock/sleep invalidation, and restart/key availability. Test macOS 14 as well as the development Mac, including hardware without Touch ID.
@@ -167,7 +167,7 @@ Exit gate: inject a crash before and after commit, restart without duplicate occ
 
 Start with Claude Code unless milestone 0 finds Codex materially simpler. Implement the validated collector, normalization, versioned Betterleaks report parser, any fixture-justified supplemental rules, and occurrence grouping. Prefer Claude's model-visible batch result for tool-output authority when validated. Add individual failure events only where they supply missing coverage.
 
-Add safe adapter setup and removal. Merge only Leakret's owned hook entries, preserve unrelated configuration, write changes atomically, and verify a synthetic event before reporting connected. Resolve executable paths explicitly and invoke source commands with argument arrays, never source-derived shell text.
+Add safe adapter setup and removal. Merge only Spillcheck's owned hook entries, preserve unrelated configuration, write changes atomically, and verify a synthetic event before reporting connected. Resolve executable paths explicitly and invoke source commands with argument arrays, never source-derived shell text.
 
 Exit gate: a synthetic secret flows from each supported content type into one encrypted inventory record with correct occurrences and evidence. A repeated value in a new session creates the specified alert decision; a replay adds nothing. Scanner failure produces visible partial coverage and bounded retries.
 
@@ -208,8 +208,26 @@ These are proposed starting limits, not measurements or release promises. Change
 
 No inventory entry expires automatically. Pending-event expiry and the source audit window are separate from retained-secret lifetime. Track metadata overhead, storage growth, and actual memory usage; set release limits after profiling. A scanner must finish an accepted event within the processing budget or report failure and partial coverage.
 
-## Next implementation work
+## Deviations recorded after the implementation review
 
-Start milestone 0 with one synthetic successful tool output, one failed tool output, one prompt, and one intermediate/final response per agent interface. In parallel, build the signed vault experiment and the scanner fixture runner. Their reports should decide the final adapter support matrix, precise encryption format, pinned scanner/configuration, and resource limits.
+The inventory ledger is one sealed snapshot row, replaced on every commit under a revision check, rather than per-occurrence SQLite rows. Occurrence, receipt and alert uniqueness are ledger invariants validated on load, not SQLite unique constraints. Ledger growth is bounded: the pipeline never analyzes content older than the seven-day window plus the one-day queue expiry, and processed-source receipts are compacted a day beyond that while the worker is idle. The 64 MiB state limit therefore applies to retained inventory, not to analyzed history.
 
-Keep the original confirmed ADRs unchanged. Accept or revise the proposed stack and semantic defaults after the prototype reports. Then proceed through the milestones; defer automatic remediation, secret validity checks, cloud sync, OpenCode, and full-history auditing.
+Other bookkeeping is bounded too. Capture receipts are kept for 48 hours, as they only deduplicate retried deliveries of pending captures. Coverage-gap rows are kept for 30 days. The menu bar reports partial coverage for gaps recorded in the last 24 hours and for unread content in each profile's latest audit.
+
+Codex public history is polled only while a thread is active: every second for two minutes, then backing off, and stopping after an hour until the next hook. Every hook capture still reads its thread. An audit skips a Codex thread whose metadata shows no change since an earlier audit fully read it, provided its last update preceded that audit's end. Claude audits reread only rows that the previous audit left to live collection.
+
+Retained excerpts replace other detected values in their window, so deleting or acknowledging one value cannot leave it revealable through a neighbour's context. An alert withdrawn before delivery releases its value/conversation eligibility, so the next strong occurrence in that conversation notifies.
+
+App integration is checked by compiled controller probes and scripted signed-app runs rather than an XCTest target. Release builds ignore the test-only launch arguments. Direct source opening stays disabled until a route is validated.
+
+## Completion and remaining release work
+
+The local development implementation and native workflow are complete under the recorded deferrals. [Execution status](implementation/milestones.json) retains the original release gate as open. Use `make scanner-dependencies`, `make test`, and `make app` for the production build and core checks. Live-provider and signed-app acceptance commands remain with their implementation reports and test runners. Published evidence uses the [sanitization conventions](implementation/README.md). Open the development bundle at `.build/app/Build/Products/Debug/Spillcheck.app` after building.
+
+Genuine standalone CLI latency is measured for [Claude 2.1.293](implementation/m6-claude-observation-latency.json) and [Codex 0.161.0](implementation/m6-codex-observation-latency.json). Their read-start-to-commit-observation p95 values were 340.2 ms across 12 live revisions and 785.1 ms across eight live revisions. These small fixtures exclude replay and final catch-up; provider timestamps do not prove first-byte publication, and T3 and historical latency remain unmeasured. Codex native child prompt coverage remains unverified.
+
+The selected collection authorities and scanner are documented in the reports. The vault uses a persisted LocalAuthentication right, per-payload AES-GCM keys wrapped by its public key, and separate queue encryption. The production history reader has measured bounded cold, unchanged and append passes; unstable/replaced sources expose gaps. macOS 14 runtime and hardware without Touch ID remain required open checks. No release baseline or authentication requirement has been narrowed.
+
+The [signed restart/cooperative offline sequence](implementation/m6-signed-restart-offline.json) passed 27 checks across four normal app runs, covering deletion, obsolete-marker persistence, new appearances, replacement, forgetting, native review and masked notification navigation. Its trusted scanner-bootstrap exception is a generic escape, so no secure all-descendant or system-wide network-denial claim is made. All measurement categories required by SPEC criterion 10 have results; unmeasured workload/interface distributions and physical first-byte publication remain documented limits.
+
+Before release, provision Developer ID distribution and notarization, validate install/update and vault access across that upgrade, and test the two deferred platform environments and actual login launch. Broader resource and offline matrix checks can expand the recorded evidence without changing its current scope. Claude 2.1.294 remains unsupported until validated. The confirmed ADR decisions remain in force. Automatic remediation, secret validity checks, cloud sync, OpenCode, and full-history auditing remain outside the MVP.

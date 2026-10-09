@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "updatedAt": "2026-10-08T06:01:07.380141+00:00",
+  "command": "swift test --filter 'HistoryQueueTests|HistoricalSummaryTests|CoverageGapTests|HistoryProgressBoundsTests|ProtectionCleanupTests'",
+  "exitCode": 0,
+  "testsPassed": 14,
+  "suitesPassed": 5,
+  "elapsedSeconds": 0.137,
+  "buildSeconds": 0.52,
+  "latestStrictMaximumProgressBytes": 104857600,
+  "outOfWindowAndReversedBoundsRejected": true,
+  "coverageIntervalStateEncrypted": true,
+  "continuationCheckpointProgressAtomic": true,
+  "historicalAuditPreservedAcrossRestart": true,
+  "liveHistoryQueueFairnessTested": true,
+  "scope": "Focused shared history/persistence contracts; not provider, signed-app or full-package acceptance"
+}

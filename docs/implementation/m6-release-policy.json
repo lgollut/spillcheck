@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "command": "python3 scripts/check-release-policy.py",
+  "passed": true,
+  "tests": 14,
+  "syntheticOnly": true,
+  "releaseAcceptance": "not-checked",
+  "appProcessesLaunched": 0,
+  "signingOperations": 0,
+  "notarizationUploads": 0
+}

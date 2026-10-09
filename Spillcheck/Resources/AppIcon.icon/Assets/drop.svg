@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- The drop from AppIcon.svg, in the same coordinates. -->
+  <defs>
+    <linearGradient id="drop-fill" x1="0" y1="357.605" x2="0" y2="640" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#a7f2a9"/>
+      <stop offset="0.64" stop-color="#6ee09c"/>
+      <stop offset="1" stop-color="#41d698"/>
+    </linearGradient>
+  </defs>
+  <path d="M512 357.605L602.51 448.114A128 128 0 1 1 421.49 448.114Z" fill="url(#drop-fill)"/>
+</svg>

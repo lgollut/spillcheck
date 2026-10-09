@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "sourceIsSynthetic": true,
+  "signedAppExitCode": 0,
+  "timedOut": false,
+  "stdoutBytes": 0,
+  "diagnosticBytes": 0,
+  "ciphertextMarkerInspectionPassed": true,
+  "result": {
+    "acceptancePhase": "shutdown-complete",
+    "alertCount": 1,
+    "alertsByDeliveryState": {
+      "permissionDenied": 1
+    },
+    "collectionConfigured": true,
+    "gapReasons": [],
+    "launchAtLogin": false,
+    "monitoringEnabled": true,
+    "newVaultCleanupPassed": true,
+    "notificationState": "Disabled in macOS",
+    "observedAgentVersions": [
+      "2.1.293"
+    ],
+    "occurrenceCount": 6,
+    "occurrencesByContentType": {
+      "finalResponse": 2,
+      "intermediateResponse": 1,
+      "toolError": 1,
+      "toolOutput": 1,
+      "userPrompt": 1
+    },
+    "processID": 51462,
+    "queueCount": 0,
+    "revealedExcerptCount": 0,
+    "revealedSourceMetadataCount": 0,
+    "revealedValueCount": 0,
+    "schemaVersion": 1,
+    "storageReady": true,
+    "syntheticOccurrenceCount": 5,
+    "syntheticOccurrencesByContentType": {
+      "finalResponse": 1,
+      "intermediateResponse": 1,
+      "toolError": 1,
+      "toolOutput": 1,
+      "userPrompt": 1
+    },
+    "syntheticSessionCount": 1,
+    "syntheticValuePresent": true,
+    "valueCount": 2,
+    "viewingAuthorized": false,
+    "windowVisible": true,
+    "workflowEvents": {
+      "mask-userMask": 3,
+      "review-confirmedSecret": 1,
+      "viewing-authenticating": 1,
+      "viewing-masked": 1,
+      "viewing-revealed": 1
+    }
+  },
+  "ciphertextSyntheticMarkersChecked": 3,
+  "passed": true,
+  "passScope": "Normal native app termination, empty queue, ciphertext inspection and new-vault cleanup; manual workflow events require separate review.",
+  "cleanupPending": false
+}

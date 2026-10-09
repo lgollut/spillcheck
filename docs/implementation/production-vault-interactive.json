@@ -1,0 +1,22 @@
+{
+  "checks" : {
+    "SecKey-wrapped-key-LA-authenticated-exact-unwrap" : true,
+    "bootstrap-with-real-keychain-and-persisted-right" : true,
+    "direct-private-operation-denied-while-locked" : true,
+    "disk-has-no-synthetic-plaintext" : true,
+    "disposable-source-removed-before-reveal" : true,
+    "exported-LA-public-key-SecKey-wrap-while-locked" : true,
+    "immediate-production-mask" : true,
+    "missing-identity-key-fails-without-replacement" : true,
+    "missing-inventory-right-fails-without-replacement" : true,
+    "missing-manifest-preserves-protected-state" : true,
+    "missing-queue-key-fails-without-replacement" : true,
+    "private-operation-denied-after-production-mask" : true,
+    "production-private-operation-denied-while-locked" : true,
+    "real-identity-key-stable-and-domain-separated" : true,
+    "real-key-reload-opens-queue" : true,
+    "real-queue-key-round-trip" : true
+  },
+  "interactiveAuthorizationPassed" : true,
+  "interactiveAuthorizationRequested" : true
+}

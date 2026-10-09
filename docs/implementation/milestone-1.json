@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "updatedAt": "2026-10-07T22:06:59.893540+00:00",
+  "state": "passed",
+  "appBuild": {
+    "command": "scripts/build-app.sh -allowProvisioningUpdates",
+    "exitCode": 0,
+    "path": ".build/app/Build/Products/Debug/Leakret.app",
+    "bundleID": "com.leakret.app",
+    "architecture": "arm64",
+    "deploymentTarget": "14.0",
+    "developmentSigned": true,
+    "notarized": false
+  },
+  "nativeUIObservations": {
+    "syntheticInventoryRowsMasked": true,
+    "syntheticDetailMasked": true,
+    "pauseStatus": "Monitoring paused \u00b7 Idle \u00b7 Coverage incomplete",
+    "resumeStatus": "Monitoring enabled \u00b7 Idle \u00b7 Coverage incomplete",
+    "processBeforeWindowClose": 57237,
+    "sameProcessAfterCloseAndReopen": 57237,
+    "quitOriginalProcessAbsent": true,
+    "noLeakretProcessAfterQuit": true,
+    "scope": "CUA interactions and actual process inspection of milestone-1 shell; no real adapter or inventory persistence yet"
+  },
+  "helperChecks": {
+    "syntheticTransportTestsPassed": 13,
+    "embeddedArtifactSmokeTestsPassed": 2,
+    "rawEventJSONParsingRemovedFromHelper": true,
+    "deadlineMilliseconds": 180,
+    "typicalLargeEventWallMillisecondsRange": [
+      84.4,
+      103.4
+    ],
+    "observedColdOrSchedulingOutlierMilliseconds": 567.7,
+    "outlierStartupAttribution": "unverified"
+  },
+  "signatureChecks": {
+    "appStrictVerificationPassed": true,
+    "embeddedHelperStrictVerificationPassed": true
+  },
+  "requiredPending": [],
+  "environmentTestDeferral": "docs/implementation/release-checks.json",
+  "coreChecks": {
+    "command": "swift test",
+    "testsPassed": 34,
+    "exitCode": 0,
+    "noInstalledAgentRequired": true,
+    "versionedSnapshotRestartContractsPassed": true
+  },
+  "review": "docs/implementation/milestone-1-review.md"
+}

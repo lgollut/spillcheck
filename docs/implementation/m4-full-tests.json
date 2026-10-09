@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "command": "swift test",
+  "exitCode": 0,
+  "buildSeconds": 15.2,
+  "testsPassed": 189,
+  "suitesPassed": 27,
+  "elapsedSeconds": 10.321,
+  "scope": "Full core package suite; native authentication, opt-in original-store provider reads and signed scanner are separate checks."
+}

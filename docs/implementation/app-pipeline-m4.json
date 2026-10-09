@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "signedAppExitCode": 0,
+  "timedOut": false,
+  "stdoutBytes": 0,
+  "diagnosticBytes": 0,
+  "ciphertextMarkerInspectionPassed": true,
+  "sourceIsSynthetic": true,
+  "scannerIsSignedBundleChild": true,
+  "result": {
+    "acceptancePhase": "shutdown-complete",
+    "alertCount": 0,
+    "collectionConfigured": true,
+    "gapReasons": [],
+    "newVaultCleanupPassed": true,
+    "observedAgentVersions": [
+      "2.1.293"
+    ],
+    "occurrenceCount": 5,
+    "occurrencesByContentType": {
+      "finalResponse": 1,
+      "intermediateResponse": 1,
+      "toolError": 1,
+      "toolOutput": 1,
+      "userPrompt": 1
+    },
+    "processID": 65997,
+    "queueCount": 0,
+    "schemaVersion": 1,
+    "storageReady": true,
+    "syntheticOccurrenceCount": 5,
+    "syntheticOccurrencesByContentType": {
+      "finalResponse": 1,
+      "intermediateResponse": 1,
+      "toolError": 1,
+      "toolOutput": 1,
+      "userPrompt": 1
+    },
+    "syntheticSessionCount": 1,
+    "syntheticValuePresent": true,
+    "valueCount": 1
+  },
+  "passed": true,
+  "cleanupPending": false
+}

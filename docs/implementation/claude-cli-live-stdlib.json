@@ -1,0 +1,84 @@
+{
+  "schemaVersion": 1,
+  "agentVersion": "2.1.293",
+  "providerRuns": [
+    {
+      "exitCode": 0,
+      "outputBytes": 20169,
+      "diagnosticBytes": 0
+    },
+    {
+      "exitCode": 0,
+      "outputBytes": 75241,
+      "diagnosticBytes": 0
+    },
+    {
+      "exitCode": 0,
+      "outputBytes": 12111,
+      "diagnosticBytes": 0
+    }
+  ],
+  "driverExitCode": 0,
+  "driverDiagnosticBytes": 0,
+  "result": {
+    "alertCount": 2,
+    "ciphertextMarkerInspectionPassed": true,
+    "durableDeliveries": 44,
+    "finalCatchUpNewOccurrences": 0,
+    "finished": true,
+    "firstObservedAt": {
+      "CHILD_FINAL": "2026-10-07T23:25:36.707Z",
+      "CHILD_PROMPT": "2026-10-07T23:25:35.467Z",
+      "FINAL": "2026-10-07T23:25:38.966Z",
+      "INTERMEDIATE": "2026-10-07T23:25:24.988Z",
+      "MCP_ERROR": "2026-10-07T23:25:32.981Z",
+      "MCP_OK": "2026-10-07T23:25:31.766Z",
+      "PROMPT": "2026-10-07T23:25:22.435Z",
+      "SHELL_ERROR": "2026-10-07T23:25:31.766Z",
+      "SHELL_OK": "2026-10-07T23:25:29.712Z"
+    },
+    "gapReasons": [
+      "unsupportedContent"
+    ],
+    "lastPending": 0,
+    "occurrenceCount": 20,
+    "occurrencesByContentType": {
+      "finalResponse": 4,
+      "intermediateResponse": 1,
+      "toolError": 2,
+      "toolOutput": 3,
+      "userPrompt": 10
+    },
+    "otherCandidates": [],
+    "queueCount": 0,
+    "replayStable": true,
+    "sessionCount": 2,
+    "setupState": "connected",
+    "syntheticAlertCount": 2,
+    "syntheticValuePresent": true,
+    "typedCommitted": {
+      "CHILD_FINAL": 1,
+      "CHILD_PROMPT": 1,
+      "FINAL": 2,
+      "INTERMEDIATE": 1,
+      "MCP_ERROR": 1,
+      "MCP_OK": 1,
+      "PROMPT": 1,
+      "SHELL_ERROR": 1,
+      "SHELL_OK": 1
+    },
+    "typedObserved": {
+      "CHILD_FINAL": 1,
+      "CHILD_PROMPT": 1,
+      "FINAL": 2,
+      "INTERMEDIATE": 1,
+      "MCP_ERROR": 1,
+      "MCP_OK": 1,
+      "PROMPT": 1,
+      "SHELL_ERROR": 1,
+      "SHELL_OK": 1
+    },
+    "valueCount": 1
+  },
+  "passed": true
+}

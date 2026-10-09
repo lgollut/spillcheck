@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "signedAppExitCode": 0,
+  "timedOut": false,
+  "stdoutBytes": 0,
+  "diagnosticBytes": 0,
+  "ciphertextMarkerInspectionPassed": false,
+  "sourceIsSynthetic": true,
+  "scannerIsSignedBundleChild": true,
+  "result": {
+    "collectionConfigured": false,
+    "phase": "key-unavailable-queue--25308",
+    "processID": 20978,
+    "schemaVersion": 1,
+    "storageReady": false
+  },
+  "passed": false
+}

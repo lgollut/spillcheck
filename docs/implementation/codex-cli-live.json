@@ -1,0 +1,135 @@
+{
+  "configuredReaderVersion": "0.161.0",
+  "createdThreadCount": 1,
+  "existingConfigurationModified": false,
+  "hookTrustBypassed": false,
+  "interface": "standalone-cli",
+  "passed": true,
+  "pipeline": {
+    "ciphertextMarkerInspectionPassed": true,
+    "durableDeliveries": 8,
+    "finished": true,
+    "gapReasons": [],
+    "occurrenceCount": 14,
+    "occurrencesByContentType": {
+      "finalResponse": 2,
+      "intermediateResponse": 1,
+      "toolError": 2,
+      "toolOutput": 2,
+      "userPrompt": 7
+    },
+    "queueCount": 0,
+    "replayStable": true,
+    "sessionCount": 2,
+    "setupState": "selected-source",
+    "syntheticAlertCount": 0,
+    "syntheticValuePresent": true,
+    "typedCommitted": {
+      "CHILD_FINAL": 1,
+      "FINAL": 1,
+      "INTERMEDIATE": 1,
+      "MCP_ERROR": 1,
+      "MCP_OK": 1,
+      "PROMPT": 1,
+      "SHELL_ERROR": 1,
+      "SHELL_OK": 1
+    },
+    "typedObserved": {
+      "CHILD_FINAL": 1,
+      "FINAL": 1,
+      "INTERMEDIATE": 1,
+      "MCP_ERROR": 1,
+      "MCP_OK": 1,
+      "PROMPT": 1,
+      "SHELL_ERROR": 1,
+      "SHELL_OK": 1
+    },
+    "valueCount": 1
+  },
+  "pipelineDiagnosticBytes": 0,
+  "pipelineExitCode": 0,
+  "producerExitCode": 0,
+  "producerMilliseconds": 28924.2,
+  "publicRead": {
+    "byteAccounting": "JSON-RPC wire bytes including cold initialize; version CLI control output excluded",
+    "forkDenied": true,
+    "networkDenied": true,
+    "passive": true,
+    "readerVersion": "0.161.0",
+    "resumeCalls": 0,
+    "schemaVersion": 2,
+    "startCalls": 0,
+    "threads": [
+      {
+        "cliVersion": "0.161.0",
+        "contentTypeCounts": {
+          "finalResponse": 1,
+          "intermediateResponse": 1,
+          "toolError": 2,
+          "toolOutput": 2,
+          "userPrompt": 1
+        },
+        "cursorProbeAscendingIDs": [],
+        "cursorProbeBackwardsCursorPresent": false,
+        "cursorProbeDescendingIDs": [],
+        "cursorProbeFromNextIDs": [],
+        "datedItems": 10,
+        "datedTurns": 1,
+        "itemBytes": 5770,
+        "itemTypes": {
+          "agentMessage": 2,
+          "collabAgentToolCall": 1,
+          "commandExecution": 2,
+          "mcpToolCall": 2,
+          "subAgentActivity": 2,
+          "userMessage": 1
+        },
+        "mappedGapReasons": [],
+        "markerCounts": {
+          "CHILD_FINAL": 1,
+          "CHILD_PROMPT": 1,
+          "FINAL": 2,
+          "INTERMEDIATE": 2,
+          "MCP_ERROR": 1,
+          "MCP_OK": 1,
+          "PROMPT": 1,
+          "SHELL_ERROR": 4,
+          "SHELL_OK": 4
+        },
+        "metadataBytes": 2480,
+        "metadataMatches": true,
+        "nativeItemIDs": [
+          "01a11a2d-44b9-76e0-94d9-3bee3827d4cf",
+          "msg_0d042ac7f2a1abe7016ac7369a935c8191920b8c78f0d4ec85",
+          "exec-73f80b6e-13ca-415c-a4a2-4d2a161cc977",
+          "exec-b2781143-f8b6-4985-9bd6-5b0428b45d5e",
+          "exec-c1bd3488-f0af-4d75-b284-8c5f765e52af",
+          "exec-df8b3a4e-1e07-4564-a1e3-adb5fceb1eeb",
+          "call_77c3b18d1974417c971f0cd47bb217bd",
+          "subagent-completed-01a11a2d-8131-7a80-a476-1fb2372903ad",
+          "call_74ada245762848da8504cca201549d0a",
+          "msg_0d042ac7f2a1abe7016ac736b0f4588191a22ea80a39c95667"
+        ],
+        "status": "read-complete",
+        "threadID": "01a11a2d-3997-7a80-99a4-bde7806fee8f",
+        "turnBytes": 4778,
+        "turnCount": 1,
+        "typedMarkerCounts": {
+          "CHILD_FINAL": 0,
+          "FINAL": 1,
+          "INTERMEDIATE": 1,
+          "MCP_ERROR": 1,
+          "MCP_OK": 1,
+          "PROMPT": 1,
+          "SHELL_ERROR": 1,
+          "SHELL_OK": 1
+        },
+        "undatedItems": 0
+      }
+    ]
+  },
+  "publicReadExitCode": 0,
+  "schemaVersion": 1,
+  "status": "public-read-complete",
+  "threadID": "01a11a2d-3997-7a80-99a4-bde7806fee8f"
+}

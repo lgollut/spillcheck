@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 1,
+  "agentVersion": "2.1.293",
+  "taskId": "node:delegated-task:command%3Amcp%3Ae8202153-88e4-43bd-af7f-1091e02689e2%3Adelegate-task%3Aleakret-m3-t3-claude-live-20261008-r2",
+  "nativeSessionId": "3c1c49bc-389f-4fe1-b32e-2473f448dda5",
+  "driverExitCode": 0,
+  "driverDiagnosticBytes": 0,
+  "parentFinalSourceTimestamp": "2026-10-07T23:01:17.632Z",
+  "observedBeforeParentFinal": {
+    "INTERMEDIATE": true,
+    "SHELL_OK": true,
+    "SHELL_ERROR": true,
+    "MCP_OK": true,
+    "MCP_ERROR": true,
+    "CHILD_PROMPT": true,
+    "CHILD_FINAL": true
+  },
+  "result": {
+    "alertCount": 0,
+    "ciphertextMarkerInspectionPassed": true,
+    "durableDeliveries": 11,
+    "finished": true,
+    "firstObservedAt": {
+      "CHILD_FINAL": "2026-10-07T23:00:44.256Z",
+      "CHILD_PROMPT": "2026-10-07T23:00:39.051Z",
+      "FINAL": "2026-10-07T23:01:17.910Z",
+      "INTERMEDIATE": "2026-10-07T23:00:32.451Z",
+      "MCP_ERROR": "2026-10-07T23:00:39.506Z",
+      "MCP_OK": "2026-10-07T23:00:39.506Z",
+      "PROMPT": "2026-10-07T23:00:32.451Z",
+      "SHELL_ERROR": "2026-10-07T23:00:33.419Z",
+      "SHELL_OK": "2026-10-07T23:00:33.419Z"
+    },
+    "gapReasons": [
+      "unsupportedContent"
+    ],
+    "lastPending": 0,
+    "occurrenceCount": 20,
+    "occurrencesByContentType": {
+      "finalResponse": 2,
+      "intermediateResponse": 1,
+      "toolError": 2,
+      "toolOutput": 3,
+      "userPrompt": 12
+    },
+    "queueCount": 0,
+    "replayStable": true,
+    "sessionCount": 1,
+    "setupState": "selected-source",
+    "syntheticAlertCount": 0,
+    "syntheticValuePresent": true,
+    "typedCommitted": {
+      "CHILD_FINAL": 1,
+      "CHILD_PROMPT": 1,
+      "FINAL": 1,
+      "INTERMEDIATE": 1,
+      "MCP_ERROR": 1,
+      "MCP_OK": 1,
+      "PROMPT": 1,
+      "SHELL_ERROR": 1,
+      "SHELL_OK": 1
+    },
+    "typedObserved": {
+      "CHILD_FINAL": 1,
+      "CHILD_PROMPT": 1,
+      "FINAL": 1,
+      "INTERMEDIATE": 1,
+      "MCP_ERROR": 1,
+      "MCP_OK": 1,
+      "PROMPT": 1,
+      "SHELL_ERROR": 1,
+      "SHELL_OK": 1
+    },
+    "valueCount": 2
+  },
+  "syntheticFingerprintRecordCount": 1,
+  "additionalAmbiguousCandidateCount": 1,
+  "additionalCandidateClassification": "generic-api-key captured the synthetic token plus sentence punctuation; separate ambiguous value, no alert",
+  "liveAlertScope": "Historical attachment after first prompt; live new-session alert decisions verified separately with standalone CLI",
+  "passedApplicableChecks": true
+}

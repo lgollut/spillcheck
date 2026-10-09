@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "updatedAt": "2026-10-07T22:31:51.417241+00:00",
+  "state": "passed",
+  "productionCaptureEvidence": "docs/implementation/production-ingestion.json",
+  "productionVaultEvidence": "docs/implementation/production-vault-interactive.json",
+  "signedApp": {
+    "path": ".build/app/Build/Products/Debug/Leakret.app",
+    "bundleID": "com.leakret.app",
+    "accessGroup": "<TEAM_ID>.com.leakret.app",
+    "strictVerificationPassed": true,
+    "developmentSigned": true,
+    "notarized": false
+  },
+  "transportTests": {
+    "command": "swift test --filter CaptureTransportTests",
+    "passed": 7
+  },
+  "pending": [],
+  "environmentTestDeferral": "docs/implementation/release-checks.json",
+  "coreChecks": {
+    "command": "swift test",
+    "testsPassed": 77,
+    "suites": 6,
+    "exitCode": 0
+  },
+  "storageChecks": {
+    "command": "swift test --filter StorageTests",
+    "testFunctionsPassed": 15,
+    "executedCases": 18,
+    "actualSIGKILLFailpoints": 4,
+    "exitCode": 0,
+    "acceptanceDriver": "Sources/LeakretAcceptance/StorageAcceptance.swift"
+  },
+  "protectionChecks": {
+    "command": "swift test --filter ProtectionTests",
+    "testsPassed": 21,
+    "actualSignedProbeChecksPassed": 16
+  },
+  "review": "docs/implementation/milestone-2-review.md"
+}

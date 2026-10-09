@@ -1,0 +1,15 @@
+{
+  "command": "CODEX_HOME=<TMPDIR>/<RUN_001>/codex <HOME>/.local/bin/codex --no-daemon -a never -s read-only -C <TMPDIR>/<RUN_001>/work",
+  "commandExpired": true,
+  "directory": "<TMPDIR>/<RUN_001>",
+  "expiredAtUTC": "2026-10-08T06:38:09.737258+00:00",
+  "finishFile": "<TMPDIR>/<RUN_001>/provider-finished",
+  "fixturePrompt": "Synthetic Leakret acceptance. Never authenticate with the test token. LEAKRET_M4_PROMPT ghp_8nR4vY2qL7sD9mF3xK6cP1aB5hJ0uE4wT9zS.\nSend commentary LEAKRET_M4_INTERMEDIATE ghp_8nR4vY2qL7sD9mF3xK6cP1aB5hJ0uE4wT9zS.\nRun printf 'LEAKRET_M4_SHELL_OK ghp_8nR4vY2qL7sD9mF3xK6cP1aB5hJ0uE4wT9zS\\n' in shell.\nRun printf 'LEAKRET_M4_SHELL_ERROR ghp_8nR4vY2qL7sD9mF3xK6cP1aB5hJ0uE4wT9zS\\n'; exit 7 in shell, keeping the intentional failure.\nCall leakret_synthetic.synthetic_output with fail=false, then fail=true.\nFinish with LEAKRET_M4_FINAL ghp_8nR4vY2qL7sD9mF3xK6cP1aB5hJ0uE4wT9zS. Do not read files or browse. Keep responses short.",
+  "hooksPath": "<TMPDIR>/<RUN_001>/codex/hooks.json",
+  "leaseExpired": true,
+  "mode": "standalone-cli",
+  "ownedRegistrationID": "47CCA6F4-1966-43E9-B33A-2B45F2A990A0",
+  "ready": false,
+  "trustInstruction": "Run /hooks and explicitly review/trust the installed Leakret definition; then submit verificationPrompt exactly.",
+  "verificationPrompt": "LEAKRET_SETUP_SYNTHETIC_2ECAE318-A646-433E-AE9B-114DE3A322BF"
+}

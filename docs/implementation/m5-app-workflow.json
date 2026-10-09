@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "sourceIsSynthetic": true,
+  "signedAppExitCode": 0,
+  "timedOut": false,
+  "stdoutBytes": 0,
+  "diagnosticBytes": 0,
+  "ciphertextMarkerInspectionPassed": true,
+  "result": {
+    "acceptancePhase": "shutdown-complete",
+    "alertCount": 2,
+    "collectionConfigured": true,
+    "gapReasons": [
+      "sourceChanged",
+      "sourceUnavailable"
+    ],
+    "launchAtLogin": false,
+    "monitoringEnabled": true,
+    "newVaultCleanupPassed": true,
+    "notificationState": "Allowed",
+    "observedAgentVersions": [],
+    "occurrenceCount": 2,
+    "occurrencesByContentType": {
+      "userPrompt": 2
+    },
+    "processID": 44187,
+    "queueCount": 0,
+    "revealedExcerptCount": 0,
+    "revealedSourceMetadataCount": 0,
+    "revealedValueCount": 0,
+    "schemaVersion": 1,
+    "storageReady": true,
+    "syntheticOccurrenceCount": 0,
+    "syntheticOccurrencesByContentType": {},
+    "syntheticSessionCount": 0,
+    "syntheticValuePresent": false,
+    "valueCount": 2,
+    "viewingAuthorized": false,
+    "windowVisible": true,
+    "workflowEvents": {
+      "acknowledge-rotated": 1,
+      "content-removed": 1,
+      "marker-forgotten": 1,
+      "mask-authorizationFailure": 2,
+      "mask-userMask": 11,
+      "mask-windowClose": 1,
+      "review-confirmedSecret": 1,
+      "review-falsePositive": 1,
+      "viewing-authenticating": 5,
+      "viewing-cancelled": 1,
+      "viewing-masked": 6,
+      "viewing-revealed": 4
+    }
+  },
+  "passed": true,
+  "passScope": "Normal native app termination, empty queue, ciphertext inspection and new-vault cleanup; manual workflow events require separate review.",
+  "cleanupPending": false
+}

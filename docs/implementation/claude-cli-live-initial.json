@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 1,
+  "agentVersion": "2.1.293",
+  "providerRuns": [
+    {
+      "exitCode": 0,
+      "outputBytes": 20677,
+      "diagnosticBytes": 0
+    },
+    {
+      "exitCode": 0,
+      "outputBytes": 80667,
+      "diagnosticBytes": 0
+    },
+    {
+      "exitCode": 0,
+      "outputBytes": 12156,
+      "diagnosticBytes": 0
+    }
+  ],
+  "driverExitCode": 0,
+  "driverDiagnosticBytes": 0,
+  "result": {
+    "alertCount": 2,
+    "ciphertextMarkerInspectionPassed": true,
+    "durableDeliveries": 25,
+    "finished": true,
+    "firstObservedAt": {
+      "CHILD_FINAL": "2026-10-07T22:59:33.610Z",
+      "CHILD_PROMPT": "2026-10-07T22:59:25.215Z",
+      "FINAL": "2026-10-07T22:59:28.273Z",
+      "INTERMEDIATE": "2026-10-07T22:59:18.489Z",
+      "MCP_ERROR": "2026-10-07T22:59:21.532Z",
+      "MCP_OK": "2026-10-07T22:59:19.917Z",
+      "PROMPT": "2026-10-07T22:59:11.190Z",
+      "SHELL_ERROR": "2026-10-07T22:59:18.489Z",
+      "SHELL_OK": "2026-10-07T22:59:18.489Z"
+    },
+    "gapReasons": [
+      "unsupportedContent"
+    ],
+    "lastPending": 0,
+    "occurrenceCount": 20,
+    "occurrencesByContentType": {
+      "finalResponse": 4,
+      "intermediateResponse": 1,
+      "toolError": 2,
+      "toolOutput": 3,
+      "userPrompt": 10
+    },
+    "queueCount": 0,
+    "replayStable": false,
+    "sessionCount": 2,
+    "setupState": "connected",
+    "syntheticAlertCount": 2,
+    "syntheticValuePresent": true,
+    "typedCommitted": {
+      "CHILD_FINAL": 1,
+      "CHILD_PROMPT": 1,
+      "FINAL": 2,
+      "INTERMEDIATE": 1,
+      "MCP_ERROR": 1,
+      "MCP_OK": 1,
+      "PROMPT": 1,
+      "SHELL_ERROR": 1,
+      "SHELL_OK": 1
+    },
+    "typedObserved": {
+      "CHILD_FINAL": 1,
+      "CHILD_PROMPT": 1,
+      "FINAL": 2,
+      "INTERMEDIATE": 1,
+      "MCP_ERROR": 1,
+      "MCP_OK": 1,
+      "PROMPT": 1,
+      "SHELL_ERROR": 1,
+      "SHELL_OK": 1
+    },
+    "valueCount": 1
+  },
+  "passed": false
+}

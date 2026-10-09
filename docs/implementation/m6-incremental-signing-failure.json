@@ -1,0 +1,8 @@
+{
+  "command": "codesign --verify --deep --strict --verbose=4 .build/app/Build/Products/Debug/Leakret.app",
+  "failureLog": ".build/implementation/m6-incremental-signing-failure.log",
+  "passed": false,
+  "patchedIncrementalAppBuild": "not-run",
+  "processExitCode": 1,
+  "scope": "Existing product after parent reported incremental resource-seal failure; before patched rebuild."
+}

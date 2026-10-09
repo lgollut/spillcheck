@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- The drop's highlight from AppIcon.svg, in the same coordinates. -->
+  <ellipse cx="448" cy="532.48" rx="20.48" ry="33.28" transform="rotate(25 448 532.48)" fill="#fff" fill-opacity="0.55"/>
+</svg>

@@ -1,0 +1,124 @@
+{
+  "agentVersion": "2.1.293",
+  "alertInterpretation": "Historical attachment has no live alerts; fresh standalone CLI separately verifies alerts. Final marker belongs to the later native-child notification turn.",
+  "checks": {
+    "allFiveContentTypesCommitted": true,
+    "allNineTypedMarkersCommitted": true,
+    "encryptedMarkerInspectionPassed": true,
+    "intermediateBeforeOriginalTaskTerminal": true,
+    "observerExitedCleanly": true,
+    "ownChildBeforeOriginalTaskTerminal": true,
+    "queueDrained": true,
+    "unchangedSourceReplayStable": true
+  },
+  "metadata": {
+    "mappingDiscoveryOnlyNotShippingAPI": true,
+    "nativeSessionId": "a2f24341-84d0-4209-9d3b-a7c9c5da129c",
+    "observerStartedAt": "2026-10-08T05:49:21.826622+00:00",
+    "schemaVersion": 1,
+    "sourceIsOwnDisposableTask": true,
+    "taskId": "node:delegated-task:command%3Amcp%3Ae8202153-88e4-43bd-af7f-1091e02689e2%3Adelegate-task%3Aleakret-m4-t3-claude-live-20261008-collection-r2",
+    "threadId": "thread:delegated-task:command%3Amcp%3Ae8202153-88e4-43bd-af7f-1091e02689e2%3Adelegate-task%3Aleakret-m4-t3-claude-live-20261008-collection-r2"
+  },
+  "observer": {
+    "exactOwnSourceOnly": true,
+    "observerDiagnosticBytes": 0,
+    "observerExitCode": 0,
+    "observerGroupCleaned": true
+  },
+  "passed": true,
+  "publicTiming": {
+    "evidenceSource": "public T3 thread metadata for exact owned disposable task",
+    "messages": [
+      {
+        "itemId": "turn-item:provider:claudeAgent:native-item:da970e16-b1b2-4b67-9c15-def2bbf32f20",
+        "updatedAt": "2026-10-08T05:49:09.705Z"
+      },
+      {
+        "itemId": "turn-item:provider:claudeAgent:native-item:22f1888d-0053-4985-be6c-2608076b4b7d",
+        "updatedAt": "2026-10-08T05:50:32.189Z"
+      },
+      {
+        "itemId": "turn-item:provider:claudeAgent:native-item:c74f5a99-c00b-4437-81a3-d02ac3c998c5",
+        "updatedAt": "2026-10-08T05:51:05.977Z"
+      }
+    ],
+    "runs": [
+      {
+        "completedAt": "2026-10-08T05:51:06.002Z",
+        "runId": "run:thread:thread%3Adelegated-task%3Acommand%253Amcp%253Ae8202153-88e4-43bd-af7f-1091e02689e2%253Adelegate-task%253Aleakret-m4-t3-claude-live-20261008-collection-r2:ordinal:2",
+        "startedAt": "2026-10-08T05:51:01.053Z",
+        "status": "completed"
+      },
+      {
+        "completedAt": "2026-10-08T05:50:32.224Z",
+        "runId": "run:thread:thread%3Adelegated-task%3Acommand%253Amcp%253Ae8202153-88e4-43bd-af7f-1091e02689e2%253Adelegate-task%253Aleakret-m4-t3-claude-live-20261008-collection-r2:ordinal:1",
+        "startedAt": "2026-10-08T05:49:02.859Z",
+        "status": "completed"
+      }
+    ],
+    "schemaVersion": 1,
+    "status": "completed"
+  },
+  "result": {
+    "alertCount": 0,
+    "ciphertextMarkerInspectionPassed": true,
+    "durableDeliveries": 14,
+    "finalCatchUpNewOccurrences": 0,
+    "finished": true,
+    "firstObservedAt": {
+      "CHILD_FINAL": "2026-10-08T05:50:26.510Z",
+      "CHILD_PROMPT": "2026-10-08T05:50:23.178Z",
+      "FINAL": "2026-10-08T05:51:06.228Z",
+      "INTERMEDIATE": "2026-10-08T05:49:21.866Z",
+      "MCP_ERROR": "2026-10-08T05:50:19.970Z",
+      "MCP_OK": "2026-10-08T05:50:19.970Z",
+      "PROMPT": "2026-10-08T05:49:21.866Z",
+      "SHELL_ERROR": "2026-10-08T05:50:16.885Z",
+      "SHELL_OK": "2026-10-08T05:50:14.022Z"
+    },
+    "gapReasons": [
+      "unsupportedContent"
+    ],
+    "lastPending": 0,
+    "occurrenceCount": 20,
+    "occurrencesByContentType": {
+      "finalResponse": 3,
+      "intermediateResponse": 1,
+      "toolError": 2,
+      "toolOutput": 3,
+      "userPrompt": 11
+    },
+    "otherCandidates": [],
+    "queueCount": 0,
+    "replayStable": true,
+    "sessionCount": 1,
+    "setupState": "selected-source",
+    "syntheticAlertCount": 0,
+    "syntheticValuePresent": true,
+    "typedCommitted": {
+      "CHILD_FINAL": 1,
+      "CHILD_PROMPT": 1,
+      "FINAL": 1,
+      "INTERMEDIATE": 1,
+      "MCP_ERROR": 1,
+      "MCP_OK": 1,
+      "PROMPT": 1,
+      "SHELL_ERROR": 1,
+      "SHELL_OK": 1
+    },
+    "typedObserved": {
+      "CHILD_FINAL": 1,
+      "CHILD_PROMPT": 1,
+      "FINAL": 1,
+      "INTERMEDIATE": 1,
+      "MCP_ERROR": 1,
+      "MCP_OK": 1,
+      "PROMPT": 1,
+      "SHELL_ERROR": 1,
+      "SHELL_OK": 1
+    },
+    "valueCount": 1
+  },
+  "schemaVersion": 1
+}

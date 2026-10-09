@@ -1,0 +1,12 @@
+{
+  "benchmarkReport": "claude-m4-history-benchmark.json",
+  "buildSeconds": 0.38,
+  "checkedAt": "2026-10-08T05:56:38.608986+00:00",
+  "command": "swift test --filter Claude",
+  "elapsedSeconds": 0.474,
+  "exitCode": 0,
+  "includesRollingAuditBoundRegression": true,
+  "schemaVersion": 1,
+  "suitesPassed": 4,
+  "testsPassed": 35
+}

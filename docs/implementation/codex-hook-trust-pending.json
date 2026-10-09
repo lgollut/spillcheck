@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "hookTrustBypassed": false,
+  "existingConfigurationModified": false,
+  "driverExitCode": 0,
+  "diagnosticBytes": 0,
+  "result": {
+    "ciphertextMarkerInspectionPassed": true,
+    "durableDeliveries": 0,
+    "finished": true,
+    "gapReasons": [],
+    "occurrenceCount": 0,
+    "occurrencesByContentType": {},
+    "queueCount": 0,
+    "replayStable": true,
+    "sessionCount": 0,
+    "setupState": "installedUnverified",
+    "syntheticAlertCount": 0,
+    "syntheticValuePresent": false,
+    "typedCommitted": {},
+    "typedObserved": {},
+    "valueCount": 0
+  },
+  "passed": false,
+  "status": "lease-expired-awaiting-user",
+  "nativeHookTrustVerified": false,
+  "copiedAuthenticationRemoved": true,
+  "ownedDirectoryRemoved": true
+}

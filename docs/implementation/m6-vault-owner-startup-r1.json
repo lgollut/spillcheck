@@ -1,0 +1,24 @@
+{
+  "appReports": [],
+  "cleanupAuthority": "Only original services created by this live owner; never loaded-manifest services",
+  "cleanupPending": true,
+  "createdNewManifest": false,
+  "existingUserHooksOrHistoriesModified": false,
+  "normalExitedRunCount": 0,
+  "ownedChildStillRunning": false,
+  "passed": false,
+  "privateValueDecryptions": 0,
+  "runCount": 0,
+  "schemaVersion": 1,
+  "snapshots": [],
+  "stage": "owner-failed-preserved",
+  "startupFailureAnalysis": {
+    "basis": "The failing guard precedes requests/responses creation and ProtectionBootstrap.prepare. The owned directory contained only two empty driver logs and the matching failure report, with no requests, responses, manifest or store.",
+    "bootstrapWasNotReached": true,
+    "cause": "Foundation standardizedFileURL mapped /private/tmp to /tmp, which failed the owned-root prefix guard.",
+    "existingKeyCleanupAttempted": false,
+    "failureArtifactsRemoved": true,
+    "fixedBy": "Preserve the original URL pathname and check canonical equality with Darwin realpath. Add bootstrapAttempted and failureStage telemetry.",
+    "newVaultKeyCleanupAttempted": false
+  }
+}

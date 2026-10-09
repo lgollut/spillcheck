@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "signedAppExitCode": 0,
+  "timedOut": false,
+  "stdoutBytes": 0,
+  "diagnosticBytes": 0,
+  "ciphertextMarkerInspectionPassed": true,
+  "sourceIsSynthetic": true,
+  "scannerIsSignedBundleChild": true,
+  "processElapsedSeconds": 8.972,
+  "appMemory": {
+    "sampleCount": 71,
+    "sampledPeakRSSBytes": 159973376,
+    "lastSampleRSSBytes": 157761536,
+    "scope": "Signed GUI process startup, five-content synthetic ingestion and idle; excludes scanner/helper children, large inventory and authenticated rendering. Actual sample spacing includes ps execution overhead; sampling is not an exact high-water mark.",
+    "nominalSamplingDelaySeconds": 0.1
+  },
+  "protectedStoreBytesAfterQuit": 192512,
+  "result": {
+    "acceptancePhase": "shutdown-complete",
+    "alertCount": 0,
+    "alertsByDeliveryState": {},
+    "collectionConfigured": true,
+    "gapReasons": [],
+    "launchAtLogin": false,
+    "monitoringEnabled": true,
+    "newVaultCleanupPassed": true,
+    "notificationState": "Disabled in macOS",
+    "observedAgentVersions": [
+      "2.1.293"
+    ],
+    "occurrenceCount": 5,
+    "occurrencesByContentType": {
+      "finalResponse": 1,
+      "intermediateResponse": 1,
+      "toolError": 1,
+      "toolOutput": 1,
+      "userPrompt": 1
+    },
+    "processID": 71111,
+    "queueCount": 0,
+    "revealedExcerptCount": 0,
+    "revealedSourceMetadataCount": 0,
+    "revealedValueCount": 0,
+    "schemaVersion": 1,
+    "storageReady": true,
+    "syntheticOccurrenceCount": 5,
+    "syntheticOccurrencesByContentType": {
+      "finalResponse": 1,
+      "intermediateResponse": 1,
+      "toolError": 1,
+      "toolOutput": 1,
+      "userPrompt": 1
+    },
+    "syntheticSessionCount": 1,
+    "syntheticValuePresent": true,
+    "valueCount": 1,
+    "viewingAuthorized": false,
+    "windowVisible": true,
+    "workflowEvents": {}
+  },
+  "passed": true,
+  "cleanupPending": false
+}

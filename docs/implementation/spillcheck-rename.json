@@ -1,0 +1,36 @@
+{
+  "date": "2026-10-09",
+  "productName": "Spillcheck",
+  "repositoryDirectory": "<PROJECT_ROOT>",
+  "gitRemoteConfigured": false,
+  "t3ProjectTitle": "Spillcheck",
+  "t3WorkspaceRoot": "<PROJECT_ROOT>",
+  "signedApplicationBuildsPassed": 2,
+  "tests": {
+    "core": {
+      "passed": 235,
+      "suites": 31
+    },
+    "signedScannerIntegration": 1,
+    "hookDelivery": 13,
+    "releasePolicy": 14,
+    "scannerBundling": 5,
+    "prototypeCollection": 30,
+    "scannerContracts": 13,
+    "independentPrototypeCryptography": 16,
+    "recordedT3Fixtures": "passed"
+  },
+  "installedApplication": "<HOME>/Applications/Spillcheck.app",
+  "installedApplicationStorageReady": true,
+  "installedApplicationShutdownComplete": true,
+  "existingVaultManifestPreserved": true,
+  "prototypeMigration": {
+    "prototypePreparationExitCode": 0,
+    "prototypeDirectoryRenamed": true,
+    "prototypeStoreBytesPreserved": true,
+    "filesChecked": 6
+  },
+  "recordedEvidenceFilesPreserved": 127,
+  "compatibilityContracts": "See docs/RENAME.md. Provisioned bundle/Keychain identities, ciphertext domains, persisted IDs, and recorded fixtures retain their original values.",
+  "previousBuildsAndInstalledAppArchive": "<HOME>/Library/Caches/Spillcheck/<ARCHIVE_ID>"
+}

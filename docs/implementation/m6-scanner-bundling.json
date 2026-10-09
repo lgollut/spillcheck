@@ -1,0 +1,13 @@
+{
+  "actualIncrementalBuildsAfterPrefixFix": "not-run",
+  "actualSigningOperations": 0,
+  "appProcessesLaunched": 0,
+  "command": "python3 scripts/check-scanner-bundling.py",
+  "elapsedSeconds": 0.264068,
+  "incrementalAppSigning": "not-checked",
+  "literalCertificateRequirementPrefix": "=",
+  "passed": true,
+  "processExitCode": 0,
+  "syntheticOnly": true,
+  "tests": 5
+}

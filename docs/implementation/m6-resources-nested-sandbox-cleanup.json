@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "passed": true,
+  "ownedFailedEphemeralArtifactRemoved": true,
+  "testingManifestVerified": true,
+  "productionKeychainItemsCreated": 0,
+  "keychainDeletionOperations": 0,
+  "originalFailedPublicEvidencePreserved": true,
+  "failureEvidence": ".build/implementation/m6-resources-nested-sandbox-failed-r1.json",
+  "scope": "Only the exact disposable resource run whose private report and testing-only manifest were verified; no production vault was touched"
+}

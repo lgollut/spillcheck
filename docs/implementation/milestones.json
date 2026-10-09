@@ -1,0 +1,115 @@
+{
+  "schemaVersion": 1,
+  "updatedAt": "2026-10-08T11:22:13.018818+00:00",
+  "milestones": [
+    {
+      "number": 0,
+      "state": "development-feasibility-passed-with-user-authorized-deferral",
+      "releaseChecks": "docs/implementation/release-checks.json",
+      "exploratoryArtifactsRemoved": true,
+      "deferredReleaseChecks": [
+        "macOS 14 runtime",
+        "Hardware without Touch ID"
+      ]
+    },
+    {
+      "number": 1,
+      "state": "passed",
+      "name": "App and core contracts",
+      "evidence": "docs/implementation/milestone-1.json"
+    },
+    {
+      "number": 2,
+      "state": "passed",
+      "name": "Protected ingestion and persistence",
+      "evidence": "docs/implementation/milestone-2.json"
+    },
+    {
+      "number": 3,
+      "state": "passed",
+      "name": "Complete Claude Code path",
+      "evidence": "docs/implementation/milestone-3.json",
+      "pendingGateChecks": [],
+      "gatePassed": true
+    },
+    {
+      "number": 4,
+      "state": "passed",
+      "name": "Codex and bounded catch-up",
+      "evidence": "docs/implementation/milestone-4.json",
+      "gatePassed": true,
+      "pendingGateChecks": []
+    },
+    {
+      "number": 5,
+      "state": "passed",
+      "name": "User workflow",
+      "evidence": "docs/implementation/milestone-5.json",
+      "gatePassed": true,
+      "pendingGateChecks": []
+    },
+    {
+      "number": 6,
+      "state": "local-acceptance-passed-release-gate-open",
+      "name": "Acceptance and packaging",
+      "evidence": "docs/implementation/milestone-6.json",
+      "gatePassed": false,
+      "localDevelopmentChecksPassed": true,
+      "pendingGateChecks": [
+        "Personal Developer ID distribution and notarization",
+        "Gatekeeper install/update and production-vault access across upgrades",
+        "macOS 14 runtime",
+        "Hardware without Touch ID",
+        "Actual login launch"
+      ],
+      "sourceLatencyEvidence": {
+        "claudeCLI": {
+          "evidence": "docs/implementation/m6-claude-observation-latency.json",
+          "version": "2.1.293",
+          "liveRevisions": 12
+        },
+        "codexCLI": {
+          "evidence": "docs/implementation/m6-codex-observation-latency.json",
+          "producerAndReaderVersion": "0.161.0",
+          "liveRevisions": 8
+        },
+        "limits": "Disposable standalone CLI source read-start to commit-observation measurements; T3, historical latency and physical first-byte publication remain unmeasured. Codex child prompt remains unverified."
+      },
+      "largeHistoryPeriodEvidence": {
+        "evidence": "docs/implementation/m6-resource-history-period.json",
+        "passed": true,
+        "freshIndependentRepeat": true,
+        "originalResourceMetricsUnchanged": true,
+        "completeWindowCoverage": false
+      },
+      "localAcceptanceCriteriaCompleteWithinRecordedScopes": true,
+      "signedRestartAndCooperativeOfflineEvidence": {
+        "evidence": "docs/implementation/m6-signed-restart-offline.json",
+        "passed": true,
+        "checksPassed": 27,
+        "normalAppRuns": 4,
+        "cooperativeTestOnlyPolicy": true,
+        "allDescendantsNetworkDenied": false,
+        "postTestPreferences": {
+          "launchAtLoginLeftOff": true,
+          "notificationSettingVerifiedWithNativeUI": true,
+          "notificationsRestoredToDisabled": true
+        }
+      },
+      "publishedMeasurementLimits": [
+        "T3/history latency distributions",
+        "Larger authenticated GUI memory workloads",
+        "Physical first-byte/publication delay"
+      ]
+    }
+  ],
+  "releaseReady": false,
+  "localDevelopmentMVPImplemented": true,
+  "userAuthorizedDeferrals": {
+    "platformChecks": [
+      "macOS 14 runtime",
+      "Hardware without Touch ID"
+    ],
+    "distribution": "Deferred by user on 2026-10-08; original notarized release requirements remain in force"
+  }
+}

@@ -1,0 +1,97 @@
+{
+  "schemaVersion": 1,
+  "milestone": 5,
+  "state": "passed",
+  "gatePassed": true,
+  "updatedAt": "2026-10-08T10:01:45.652947+00:00",
+  "implemented": [
+    "Masked inventory filtering and occurrence details",
+    "Reversible per-occurrence review",
+    "Rotation/revocation acknowledgement, content removal and explicit recognition-marker forgetting",
+    "Authenticated value/context/reference viewing with lifecycle and pre-start generation guards",
+    "Source fallback and separate explicitly prepared terminal command",
+    "Masked native notifications, durable live/audit receipts, navigation and deletion/count-revision barriers",
+    "Encrypted profile preferences and owned hook installation/repair/removal/verification",
+    "Optional disabled-by-default login preference"
+  ],
+  "checks": {
+    "fullCore": {
+      "state": "passed",
+      "evidence": "docs/implementation/m6-full-tests.json",
+      "testsPassed": 212,
+      "suitesPassed": 30,
+      "signedScannerBundleExercised": true
+    },
+    "nativeControllerContracts": {
+      "state": "passed-synthetic-backend",
+      "evidence": "docs/implementation/m5-native-workflow-probe.json",
+      "checksPassed": 21
+    },
+    "agentSetupContracts": {
+      "state": "passed-disposable-version-fixtures",
+      "evidence": "docs/implementation/m5-agent-setup-probe.json",
+      "checksPassed": 7
+    },
+    "signedAppBuild": {
+      "state": "passed",
+      "command": "scripts/build-app.sh",
+      "log": ".build/implementation/m5-app-build.log"
+    },
+    "actualNativeWorkflow": {
+      "state": "passed",
+      "driver": "Tests/AppAcceptance/run-app-workflow.py",
+      "evidence": "docs/implementation/m5-app-workflow.json",
+      "observed": [
+        "Masked inventory and all five content types",
+        "Actual production-vault authenticated synthetic reveal",
+        "Immediate mask returned value to hidden state",
+        "Real authentication cancellation reported cancelled with value/context masked",
+        "Retained encrypted excerpt and source identifier reveal after source deletion",
+        "Direct source opening explicit unverified fallback",
+        "Terminal resume command prepared visibly without execution",
+        "Per-occurrence false-positive then confirmed review persisted",
+        "False-positive filter excluded entry and restoring all filters restored it",
+        "Rotation acknowledgement persisted",
+        "Pause/resume native state; five paused helper attempts empty JSON, zero stored payloads",
+        "Native content removal left only rotated keyed recognition marker",
+        "Explicit native forgetting removed marker-only row",
+        "Actual OS denial continued collection and showed disabled indicator",
+        "Actual OS allowed masked notification clicked by user selected correct masked entry",
+        "Window close masked authorized content while app remained active",
+        "Normal Quit drained worker queue and cleaned exact newly created vault keys and disposable files"
+      ],
+      "pending": [],
+      "finalRegressionEvidence": "docs/implementation/m5-final-app-workflow.json",
+      "finalRegressionObserved": [
+        "Retained synthetic context revealed with production vault; selecting another occurrence immediately masked it",
+        "Unique occurrence review control persisted only the selected review",
+        "Denied OS notification state preserved and a new synthetic detection stayed visible with disabled indicator",
+        "Normal native Quit: empty queue, no raw caches, no diagnostics, clean ciphertext, scoped new-vault cleanup"
+      ]
+    },
+    "pausedHelper": {
+      "state": "passed",
+      "evidence": "docs/implementation/m5-paused-hook.json"
+    },
+    "afterQuitHelper": {
+      "state": "passed",
+      "evidence": "docs/implementation/m5-after-quit-hook.json"
+    },
+    "developmentInstallation": {
+      "state": "passed-scoped-development-check",
+      "evidence": "docs/implementation/m6-development-install.json",
+      "loginRegistrationAndUnregistration": "passed",
+      "loginLaunch": "not-tested",
+      "existingHookSettingsEdited": false
+    }
+  },
+  "limits": [
+    "Injected authorizers and notification backends do not establish actual macOS permissions/authentication",
+    "Direct Desktop source dispatch remains unverified; retained-context fallback and separately prepared terminal routes are explicit",
+    "Historical notification settlement is bounded at 1000 recorded progress rows; over-limit summaries withheld",
+    "macOS 14 and hardware without Touch ID remain deferred required release checks",
+    "Developer ID signing/notarization remain unverified",
+    "User explicitly deferred distribution; actual Developer ID install/update and login-launch behavior remain unverified"
+  ],
+  "releaseReady": false
+}

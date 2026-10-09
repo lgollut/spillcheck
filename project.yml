@@ -1,0 +1,93 @@
+name: Spillcheck
+options:
+  deploymentTarget:
+    macOS: "14.0"
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    ARCHS: arm64
+    ONLY_ACTIVE_ARCH: YES
+    DEVELOPMENT_TEAM: KBLA5ALX62
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_HARDENED_RUNTIME: YES
+packages:
+  SpillcheckCore:
+    path: .
+targets:
+  SpillcheckHook:
+    type: tool
+    productName: spillcheck-hook
+    platform: macOS
+    sources:
+      - Sources/SpillcheckHook
+    settings:
+      base:
+        PRODUCT_NAME: spillcheck-hook
+        CODE_SIGN_IDENTITY: Apple Development
+      configs:
+        Release:
+          CODE_SIGN_IDENTITY: Developer ID Application
+          CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
+          OTHER_CODE_SIGN_FLAGS: --timestamp
+  Spillcheck:
+    type: application
+    platform: macOS
+    sources:
+      - Spillcheck/App
+      - path: Spillcheck/Resources/AppIcon.icon
+        type: file
+        buildPhase: resources
+      - path: Spillcheck/Resources/ThirdPartyLicenses
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - package: SpillcheckCore
+        product: SpillcheckCore
+      - target: SpillcheckHook
+        embed: false
+        link: false
+    settings:
+      base:
+        # Preserve the installed app's identity, Keychain access, notifications, and login registration.
+        PRODUCT_BUNDLE_IDENTIFIER: com.leakret.app
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        INFOPLIST_FILE: Spillcheck/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        CODE_SIGN_IDENTITY: Apple Development
+        COMBINE_HIDPI_IMAGES: YES
+        CODE_SIGN_ENTITLEMENTS: Spillcheck/Spillcheck.entitlements
+        CODE_SIGN_INJECT_BASE_ENTITLEMENTS: YES
+      configs:
+        Release:
+          CODE_SIGN_IDENTITY: Developer ID Application
+          CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
+          OTHER_CODE_SIGN_FLAGS: --timestamp
+          ENABLE_DEBUG_DYLIB: NO
+    postBuildScripts:
+      - name: Bundle compiled hook helper
+        script: |
+          mkdir -p "$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH/Helpers"
+          cp "$BUILT_PRODUCTS_DIR/spillcheck-hook" "$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH/Helpers/spillcheck-hook"
+        inputFiles:
+          - $(BUILT_PRODUCTS_DIR)/spillcheck-hook
+        outputFiles:
+          - $(TARGET_BUILD_DIR)/$(CONTENTS_FOLDER_PATH)/Helpers/spillcheck-hook
+      - name: Bundle pinned and signed scanner
+        script: /usr/bin/python3 "$SRCROOT/scripts/bundle-scanner.py"
+        basedOnDependencyAnalysis: false
+        inputFiles:
+          - $(SRCROOT)/scripts/bundle-scanner.py
+          - $(SRCROOT)/scripts/prepare-scanner.py
+          - $(SRCROOT)/Dependencies/Scanner/dependencies.json
+          - $(SRCROOT)/.build/dependencies/scanner/betterleaks/betterleaks
+          - $(SRCROOT)/.build/dependencies/scanner/betterleaks/betterleaks.toml
+          - $(SRCROOT)/.build/dependencies/scanner/betterleaks/LICENSE
+        outputFiles:
+          - $(TARGET_BUILD_DIR)/$(CONTENTS_FOLDER_PATH)/Helpers/betterleaks
+          - $(TARGET_BUILD_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/Scanner/betterleaks.toml
+          - $(TARGET_BUILD_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/Scanner/LICENSE
+          - $(TARGET_BUILD_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/Scanner/dependencies.json
+    scheme:
+      gatherCoverageData: false

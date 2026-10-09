@@ -1,0 +1,762 @@
+{
+  "additionalLifecycleObservation": {
+    "authenticatedRevealInvalidationEstablished": false,
+    "cachesMaskedAtObservation": true,
+    "joinedToOfflineRun": true,
+    "present": true,
+    "scope": "This workflow remained masked. Recorded lifecycle events do not establish invalidation of authenticated revealed content.",
+    "sessionLockInvalidationRecorded": true,
+    "sleepInvalidationRecorded": true
+  },
+  "appReports": [
+    {
+      "acceptancePhase": "shutdown-complete",
+      "alertCount": 0,
+      "alertsByDeliveryState": {},
+      "collectionConfigured": true,
+      "coverageGapCount": 0,
+      "monitoringEnabled": true,
+      "occurrenceCount": 1,
+      "processID": 42817,
+      "queueCount": 0,
+      "revealedExcerptCount": 0,
+      "revealedSourceMetadataCount": 0,
+      "revealedValueCount": 0,
+      "storageReady": true,
+      "syntheticOccurrenceCount": 1,
+      "syntheticSessionCount": 1,
+      "syntheticValuePresent": true,
+      "valueCount": 1,
+      "viewingAuthorized": false,
+      "windowVisible": true,
+      "workflowEvents": {}
+    },
+    {
+      "acceptancePhase": "shutdown-complete",
+      "alertCount": 0,
+      "alertsByDeliveryState": {},
+      "collectionConfigured": true,
+      "coverageGapCount": 0,
+      "monitoringEnabled": true,
+      "occurrenceCount": 0,
+      "processID": 43575,
+      "queueCount": 0,
+      "revealedExcerptCount": 0,
+      "revealedSourceMetadataCount": 0,
+      "revealedValueCount": 0,
+      "storageReady": true,
+      "syntheticOccurrenceCount": 0,
+      "syntheticSessionCount": 0,
+      "syntheticValuePresent": false,
+      "valueCount": 0,
+      "viewingAuthorized": false,
+      "windowVisible": true,
+      "workflowEvents": {
+        "content-removed": 1,
+        "mask-userMask": 3
+      }
+    },
+    {
+      "acceptancePhase": "shutdown-complete",
+      "alertCount": 0,
+      "alertsByDeliveryState": {},
+      "collectionConfigured": true,
+      "coverageGapCount": 0,
+      "monitoringEnabled": true,
+      "occurrenceCount": 0,
+      "processID": 47668,
+      "queueCount": 0,
+      "revealedExcerptCount": 0,
+      "revealedSourceMetadataCount": 0,
+      "revealedValueCount": 0,
+      "storageReady": true,
+      "syntheticOccurrenceCount": 0,
+      "syntheticSessionCount": 0,
+      "syntheticValuePresent": false,
+      "valueCount": 0,
+      "viewingAuthorized": false,
+      "windowVisible": true,
+      "workflowEvents": {
+        "acknowledge-rotated": 1,
+        "content-removed": 1,
+        "mask-userMask": 3
+      }
+    },
+    {
+      "acceptancePhase": "shutdown-complete",
+      "alertCount": 2,
+      "alertsByDeliveryState": {
+        "delivered": 2
+      },
+      "collectionConfigured": true,
+      "coverageGapCount": 0,
+      "monitoringEnabled": true,
+      "occurrenceCount": 2,
+      "processID": 49221,
+      "queueCount": 0,
+      "revealedExcerptCount": 0,
+      "revealedSourceMetadataCount": 0,
+      "revealedValueCount": 0,
+      "storageReady": true,
+      "syntheticOccurrenceCount": 1,
+      "syntheticSessionCount": 1,
+      "syntheticValuePresent": true,
+      "valueCount": 2,
+      "viewingAuthorized": false,
+      "windowVisible": true,
+      "workflowEvents": {
+        "marker-forgotten": 1,
+        "mask-sessionLock": 2,
+        "mask-sleep": 1,
+        "mask-userMask": 7,
+        "notification-navigation": 2,
+        "review-confirmedSecret": 1
+      }
+    }
+  ],
+  "checks": {
+    "acknowledgementAndRemovalPersist": true,
+    "allAppRunsNormalAndMasked": true,
+    "baselineProtectedContentRemembered": true,
+    "ciphertextInspectionsClean": true,
+    "differentReplacementNormallyDetectedAndAlerted": true,
+    "explicitForgettingRemovesOnlyMarker": true,
+    "laterAppearanceAfterForgettingOrdinary": true,
+    "launchReceiptAndProcessJoins": true,
+    "nativeTransitionOrderRecorded": true,
+    "newAppearanceAfterPlainDeletionDetectable": true,
+    "newObsoleteAppearanceMetadataOnlyAndSilent": true,
+    "observationsUnambiguous": true,
+    "obsoleteMarkerReplayAddsNothing": true,
+    "offlineCollectionScanningInventoryComplete": true,
+    "offlineNativeReview": true,
+    "offlineOSNotificationClickedToMaskedInventory": true,
+    "offlineOSNotificationRequestAccepted": true,
+    "offlineOSNotificationVisibleAndMasked": true,
+    "offlinePolicyJoinedToSignedGUIRun": true,
+    "originalCreationAuthorityRetained": true,
+    "ownerCleanupCompleted": true,
+    "plainDeletionHasNoAcknowledgement": true,
+    "plainDeletionRemovesActiveProtectedContent": true,
+    "plainDeletionReplayAddsNothing": true,
+    "replacementInSameConversation": true,
+    "sameManifestAcrossRestartInspections": true,
+    "syntheticOnlyWithoutPrivateDecryption": true
+  },
+  "command": "python3 scripts/finalize-vault-owner-evidence.py finalize --owner-report .build/implementation/vault-owner-report-r2.json --observations .build/implementation/vault-owner-native-observations-r2.json --launch-receipts .build/implementation/vault-owner-launch-receipts-r2.json --output docs/implementation/m6-signed-restart-offline.json",
+  "criteria": {
+    "11": {
+      "checks": [
+        "acknowledgementAndRemovalPersist",
+        "obsoleteMarkerReplayAddsNothing",
+        "newObsoleteAppearanceMetadataOnlyAndSilent",
+        "differentReplacementNormallyDetectedAndAlerted",
+        "replacementInSameConversation",
+        "explicitForgettingRemovesOnlyMarker",
+        "laterAppearanceAfterForgettingOrdinary"
+      ],
+      "scopedChecksPassed": true
+    },
+    "8": {
+      "checks": [
+        "plainDeletionHasNoAcknowledgement",
+        "baselineProtectedContentRemembered",
+        "plainDeletionRemovesActiveProtectedContent",
+        "plainDeletionReplayAddsNothing",
+        "newAppearanceAfterPlainDeletionDetectable",
+        "sameManifestAcrossRestartInspections"
+      ],
+      "scopedChecksPassed": true
+    },
+    "9": {
+      "checks": [
+        "offlinePolicyJoinedToSignedGUIRun",
+        "offlineCollectionScanningInventoryComplete",
+        "offlineNativeReview",
+        "offlineOSNotificationRequestAccepted",
+        "offlineOSNotificationVisibleAndMasked",
+        "offlineOSNotificationClickedToMaskedInventory"
+      ],
+      "scopedChecksPassed": true
+    }
+  },
+  "launches": [
+    {
+      "processID": 42817,
+      "runIndex": 1,
+      "sandboxMode": "unsandboxed"
+    },
+    {
+      "processID": 43575,
+      "runIndex": 2,
+      "sandboxMode": "unsandboxed"
+    },
+    {
+      "processID": 47668,
+      "runIndex": 3,
+      "sandboxMode": "unsandboxed"
+    },
+    {
+      "processID": 49221,
+      "runIndex": 4,
+      "sandboxMode": "network-denied-trusted-scanner-bootstrap"
+    }
+  ],
+  "limits": [
+    "This is a cooperative test-only parent policy. The bootstrap executable exception does not constrain argv and is not a secure all-descendant policy.",
+    "Local OS notification services run outside the app process; system-wide networking was not disabled.",
+    "The source transcript is synthetic. No real provider generation, T3 or Codex offline workflow ran in this check.",
+    "Metadata-only retention and visible OS delivery include explicit native observations. Counts alone do not prove either claim."
+  ],
+  "nativeObservations": {
+    "forget-obsolete-marker": {
+      "app": {
+        "alertCount": 1,
+        "alertsByDeliveryState": {
+          "delivered": 1
+        },
+        "collectionConfigured": true,
+        "coverageGapCount": 0,
+        "monitoringEnabled": true,
+        "occurrenceCount": 1,
+        "processID": 49221,
+        "queueCount": 0,
+        "revealedExcerptCount": 0,
+        "revealedSourceMetadataCount": 0,
+        "revealedValueCount": 0,
+        "storageReady": true,
+        "syntheticOccurrenceCount": 0,
+        "syntheticSessionCount": 0,
+        "syntheticValuePresent": true,
+        "valueCount": 2,
+        "viewingAuthorized": false,
+        "windowVisible": true,
+        "workflowEvents": {
+          "marker-forgotten": 1,
+          "mask-sessionLock": 1,
+          "mask-sleep": 1,
+          "mask-userMask": 4,
+          "review-confirmedSecret": 1
+        }
+      },
+      "native": {
+        "acknowledgementAbsent": true,
+        "markerAbsent": true,
+        "revealControlAbsent": true
+      },
+      "runIndex": 4
+    },
+    "later-original-after-forgetting": {
+      "app": {
+        "alertCount": 2,
+        "alertsByDeliveryState": {
+          "delivered": 2
+        },
+        "collectionConfigured": true,
+        "coverageGapCount": 0,
+        "monitoringEnabled": true,
+        "occurrenceCount": 2,
+        "processID": 49221,
+        "queueCount": 0,
+        "revealedExcerptCount": 0,
+        "revealedSourceMetadataCount": 0,
+        "revealedValueCount": 0,
+        "storageReady": true,
+        "syntheticOccurrenceCount": 1,
+        "syntheticSessionCount": 1,
+        "syntheticValuePresent": true,
+        "valueCount": 2,
+        "viewingAuthorized": false,
+        "windowVisible": true,
+        "workflowEvents": {
+          "marker-forgotten": 1,
+          "mask-sessionLock": 1,
+          "mask-sleep": 1,
+          "mask-userMask": 4,
+          "review-confirmedSecret": 1
+        }
+      },
+      "native": {
+        "acknowledgementAbsent": true,
+        "maskedRetainedValue": true,
+        "occurrenceCount": 2,
+        "review": "unreviewed"
+      },
+      "runIndex": 4
+    },
+    "new-original-after-plain-removal": {
+      "native": {
+        "maskedRetainedValue": true,
+        "notificationIndicatorCount": 1,
+        "occurrenceCount": 1,
+        "review": "unreviewed"
+      },
+      "runIndex": 3
+    },
+    "obsolete-marker-reopen": {
+      "native": {
+        "acknowledgement": "rotated",
+        "markerRow": true,
+        "noRetainedValue": true,
+        "occurrenceCount": 0
+      },
+      "runIndex": 4
+    },
+    "offline-lifecycle": {
+      "app": {
+        "alertCount": 1,
+        "alertsByDeliveryState": {
+          "delivered": 1
+        },
+        "collectionConfigured": true,
+        "coverageGapCount": 0,
+        "monitoringEnabled": true,
+        "occurrenceCount": 1,
+        "processID": 49221,
+        "queueCount": 0,
+        "revealedExcerptCount": 0,
+        "revealedSourceMetadataCount": 0,
+        "revealedValueCount": 0,
+        "storageReady": true,
+        "syntheticOccurrenceCount": 0,
+        "syntheticSessionCount": 0,
+        "syntheticValuePresent": true,
+        "valueCount": 2,
+        "viewingAuthorized": false,
+        "windowVisible": true,
+        "workflowEvents": {
+          "mask-sessionLock": 1,
+          "mask-sleep": 1,
+          "mask-userMask": 1
+        }
+      },
+      "native": {},
+      "runIndex": 4
+    },
+    "offline-native-review": {
+      "app": {
+        "alertCount": 1,
+        "alertsByDeliveryState": {
+          "delivered": 1
+        },
+        "collectionConfigured": true,
+        "coverageGapCount": 0,
+        "monitoringEnabled": true,
+        "occurrenceCount": 1,
+        "processID": 49221,
+        "queueCount": 0,
+        "revealedExcerptCount": 0,
+        "revealedSourceMetadataCount": 0,
+        "revealedValueCount": 0,
+        "storageReady": true,
+        "syntheticOccurrenceCount": 0,
+        "syntheticSessionCount": 0,
+        "syntheticValuePresent": true,
+        "valueCount": 2,
+        "viewingAuthorized": false,
+        "windowVisible": true,
+        "workflowEvents": {
+          "mask-sessionLock": 1,
+          "mask-sleep": 1,
+          "mask-userMask": 2,
+          "review-confirmedSecret": 1
+        }
+      },
+      "native": {
+        "maskedRetainedValue": true,
+        "occurrenceScoped": true,
+        "review": "confirmedSecret",
+        "reviewChanged": true
+      },
+      "runIndex": 4
+    },
+    "offline-os-notification": {
+      "app": {
+        "alertCount": 2,
+        "alertsByDeliveryState": {
+          "delivered": 2
+        },
+        "collectionConfigured": true,
+        "coverageGapCount": 0,
+        "monitoringEnabled": true,
+        "occurrenceCount": 2,
+        "processID": 49221,
+        "queueCount": 0,
+        "revealedExcerptCount": 0,
+        "revealedSourceMetadataCount": 0,
+        "revealedValueCount": 0,
+        "storageReady": true,
+        "syntheticOccurrenceCount": 1,
+        "syntheticSessionCount": 1,
+        "syntheticValuePresent": true,
+        "valueCount": 2,
+        "viewingAuthorized": false,
+        "windowVisible": true,
+        "workflowEvents": {
+          "marker-forgotten": 1,
+          "mask-sessionLock": 2,
+          "mask-sleep": 1,
+          "mask-userMask": 7,
+          "notification-navigation": 2,
+          "review-confirmedSecret": 1
+        }
+      },
+      "native": {
+        "navigationRemainedMasked": true,
+        "notificationClicked": true,
+        "notificationTextMasked": true,
+        "selectedReplacementOccurrence": true,
+        "visibleOSNotification": true
+      },
+      "runIndex": 4
+    },
+    "plain-content-removal": {
+      "native": {
+        "noObsoleteAcknowledgementBeforeRemoval": true,
+        "removedValueAndOccurrenceAbsent": true
+      },
+      "runIndex": 2
+    },
+    "plain-removal-reopen": {
+      "native": {
+        "noDetections": true,
+        "oldSourceDidNotRestoreRemovedEntry": true
+      },
+      "runIndex": 3
+    },
+    "reopened-marker-new-original-metadata-only": {
+      "app": {
+        "alertCount": 0,
+        "alertsByDeliveryState": {},
+        "collectionConfigured": true,
+        "coverageGapCount": 0,
+        "monitoringEnabled": true,
+        "occurrenceCount": 0,
+        "processID": 49221,
+        "queueCount": 0,
+        "revealedExcerptCount": 0,
+        "revealedSourceMetadataCount": 0,
+        "revealedValueCount": 0,
+        "storageReady": true,
+        "syntheticOccurrenceCount": 0,
+        "syntheticSessionCount": 0,
+        "syntheticValuePresent": true,
+        "valueCount": 1,
+        "viewingAuthorized": false,
+        "windowVisible": true,
+        "workflowEvents": {
+          "mask-userMask": 1
+        }
+      },
+      "native": {
+        "acknowledgement": "rotated",
+        "noRetainedValueOrExcerpt": true,
+        "notificationIndicatorAbsent": true,
+        "obsoleteAppearanceLabel": true,
+        "occurrenceCount": 1,
+        "revealControlAbsent": true
+      },
+      "runIndex": 4
+    },
+    "replacement-normal-alert": {
+      "app": {
+        "alertCount": 1,
+        "alertsByDeliveryState": {
+          "delivered": 1
+        },
+        "collectionConfigured": true,
+        "coverageGapCount": 0,
+        "monitoringEnabled": true,
+        "occurrenceCount": 1,
+        "processID": 49221,
+        "queueCount": 0,
+        "revealedExcerptCount": 0,
+        "revealedSourceMetadataCount": 0,
+        "revealedValueCount": 0,
+        "storageReady": true,
+        "syntheticOccurrenceCount": 0,
+        "syntheticSessionCount": 0,
+        "syntheticValuePresent": true,
+        "valueCount": 2,
+        "viewingAuthorized": false,
+        "windowVisible": true,
+        "workflowEvents": {
+          "mask-userMask": 1
+        }
+      },
+      "native": {
+        "maskedRetainedValue": true,
+        "occurrenceCount": 1,
+        "review": "unreviewed",
+        "sameConversationLabel": true
+      },
+      "runIndex": 4
+    },
+    "rotated-acknowledgement-content-removal": {
+      "native": {
+        "acknowledgement": "rotated",
+        "markerRow": true,
+        "noRetainedValue": true,
+        "occurrenceCount": 0
+      },
+      "runIndex": 3
+    }
+  },
+  "notificationEvidenceProvenance": {
+    "appNotificationNavigationEventCount": 2,
+    "bannerTextIndependentlyReadThroughAccessibility": false,
+    "clickSummary": "The user confirmed clicking the notification and opening a masked Token entry.",
+    "matchingReviewedReplacementSelectedAndMasked": true,
+    "navigationSummary": "Native accessibility showed the reviewed replacement occurrence selected with value and context masked. The production app recorded notification navigation.",
+    "textMaskEvidenceValidated": true,
+    "textSummary": "Masked notification text is established by controlled production notification construction and the user's response to the masked-notification test.",
+    "userConfirmedVisibleNotificationClick": true
+  },
+  "offlinePolicy": {
+    "bootstrapException": "Literal /usr/bin/sandbox-exec may run without the inherited sandbox, then apply the unchanged production scanner policy.",
+    "exercisedRunVerified": true,
+    "genericBootstrapEscapeExists": true,
+    "mode": "network-denied-trusted-scanner-bootstrap",
+    "ownedUnixException": "Exact canonical owned-store/capture.sock only.",
+    "policyControlsReport": "docs/implementation/m6-parent-sandbox-bootstrap.json",
+    "policyDefinesExternalAppAndOrdinaryChildNetworkDenial": true
+  },
+  "owner": {
+    "cleanupPassed": true,
+    "normalExitedRunCount": 4,
+    "privateValueDecryptions": 0,
+    "runCount": 4
+  },
+  "passed": true,
+  "pendingOrFailedChecks": [],
+  "postForgetAlerts": {
+    "decisionCount": 1,
+    "deliveryStates": {
+      "delivered": 1
+    },
+    "meaning": "Forgetting restores ordinary evaluation and normal alert eligibility. A pre-existing per-session strong-signal receipt may suppress another alert; this check does not require an extra notification."
+  },
+  "postTestPreferences": {
+    "launchAtLoginLeftOff": true,
+    "notificationSettingVerifiedWithNativeUI": true,
+    "notificationsRestoredToDisabled": true
+  },
+  "schemaVersion": 1,
+  "scope": {
+    "acknowledgementTested": "rotated",
+    "activeStorageDeletionMeaning": "Remembered payload lookups are absent after removal; this is not forensic erasure from SQLite pages, snapshots or backups.",
+    "actualProviderSessionInvoked": false,
+    "allDescendantsNetworkDenied": false,
+    "allSupportedInterfacesOfflineTested": false,
+    "application": "Existing installed development-signed Leakret.app; unchanged production scanner and vault.",
+    "nativeObservationMethod": "Root-recorded accessibility and OS notification observations.",
+    "notificationReceiptMeaning": "Delivered is UserNotifications request acceptance or an existing OS request; visible notification and click require separate native observations.",
+    "source": "One disposable synthetic Claude 2.1.293 transcript, user-prompt content, same conversation.",
+    "systemWideOfflinePolicy": false
+  },
+  "snapshots": [
+    {
+      "alertCount": 0,
+      "alertsByDeliveryState": {},
+      "analysisReceiptCount": 1,
+      "ciphertextInspectedBytes": 151552,
+      "ciphertextMarkerInspectionPassed": true,
+      "inaccessibleRememberedPayloadReferences": 0,
+      "markerCount": 0,
+      "obsoleteAppearanceCount": 0,
+      "occurrenceCount": 1,
+      "original": {
+        "acknowledgement": null,
+        "alertCount": 0,
+        "alertsByDeliveryState": {},
+        "obsoleteAppearanceCount": 0,
+        "occurrenceCount": 1,
+        "recordPresent": true,
+        "retainedExcerptCount": 1,
+        "retainedValueCount": 1,
+        "workflowEvents": {}
+      },
+      "queueCount": 0,
+      "rememberedPayloadReferences": 3,
+      "replacement": {
+        "acknowledgement": null,
+        "alertCount": 0,
+        "alertsByDeliveryState": {},
+        "obsoleteAppearanceCount": 0,
+        "occurrenceCount": 0,
+        "recordPresent": false,
+        "retainedExcerptCount": 0,
+        "retainedValueCount": 0,
+        "workflowEvents": {}
+      },
+      "runCount": 1,
+      "sameManifest": true,
+      "valueCount": 1,
+      "workflowEvents": {}
+    },
+    {
+      "alertCount": 0,
+      "alertsByDeliveryState": {},
+      "analysisReceiptCount": 1,
+      "ciphertextInspectedBytes": 151552,
+      "ciphertextMarkerInspectionPassed": true,
+      "inaccessibleRememberedPayloadReferences": 3,
+      "markerCount": 0,
+      "obsoleteAppearanceCount": 0,
+      "occurrenceCount": 0,
+      "original": {
+        "acknowledgement": null,
+        "alertCount": 0,
+        "alertsByDeliveryState": {},
+        "obsoleteAppearanceCount": 0,
+        "occurrenceCount": 0,
+        "recordPresent": false,
+        "retainedExcerptCount": 0,
+        "retainedValueCount": 0,
+        "workflowEvents": {}
+      },
+      "queueCount": 0,
+      "rememberedPayloadReferences": 3,
+      "replacement": {
+        "acknowledgement": null,
+        "alertCount": 0,
+        "alertsByDeliveryState": {},
+        "obsoleteAppearanceCount": 0,
+        "occurrenceCount": 0,
+        "recordPresent": false,
+        "retainedExcerptCount": 0,
+        "retainedValueCount": 0,
+        "workflowEvents": {}
+      },
+      "runCount": 2,
+      "sameManifest": true,
+      "valueCount": 0,
+      "workflowEvents": {}
+    },
+    {
+      "alertCount": 0,
+      "alertsByDeliveryState": {},
+      "analysisReceiptCount": 2,
+      "ciphertextInspectedBytes": 155648,
+      "ciphertextMarkerInspectionPassed": true,
+      "inaccessibleRememberedPayloadReferences": 3,
+      "markerCount": 1,
+      "obsoleteAppearanceCount": 0,
+      "occurrenceCount": 0,
+      "original": {
+        "acknowledgement": "rotated",
+        "alertCount": 0,
+        "alertsByDeliveryState": {},
+        "obsoleteAppearanceCount": 0,
+        "occurrenceCount": 0,
+        "recordPresent": false,
+        "retainedExcerptCount": 0,
+        "retainedValueCount": 0,
+        "workflowEvents": {}
+      },
+      "queueCount": 0,
+      "rememberedPayloadReferences": 3,
+      "replacement": {
+        "acknowledgement": null,
+        "alertCount": 0,
+        "alertsByDeliveryState": {},
+        "obsoleteAppearanceCount": 0,
+        "occurrenceCount": 0,
+        "recordPresent": false,
+        "retainedExcerptCount": 0,
+        "retainedValueCount": 0,
+        "workflowEvents": {}
+      },
+      "runCount": 3,
+      "sameManifest": true,
+      "valueCount": 0,
+      "workflowEvents": {}
+    },
+    {
+      "alertCount": 2,
+      "alertsByDeliveryState": {},
+      "analysisReceiptCount": 5,
+      "ciphertextInspectedBytes": 180224,
+      "ciphertextMarkerInspectionPassed": true,
+      "inaccessibleRememberedPayloadReferences": 3,
+      "markerCount": 0,
+      "obsoleteAppearanceCount": 1,
+      "occurrenceCount": 2,
+      "original": {
+        "acknowledgement": null,
+        "alertCount": 1,
+        "alertsByDeliveryState": {
+          "delivered": 1
+        },
+        "obsoleteAppearanceCount": 1,
+        "occurrenceCount": 1,
+        "recordPresent": true,
+        "retainedExcerptCount": 1,
+        "retainedValueCount": 1,
+        "workflowEvents": {}
+      },
+      "queueCount": 0,
+      "rememberedPayloadReferences": 9,
+      "replacement": {
+        "acknowledgement": null,
+        "alertCount": 1,
+        "alertsByDeliveryState": {
+          "delivered": 1
+        },
+        "obsoleteAppearanceCount": 0,
+        "occurrenceCount": 1,
+        "recordPresent": true,
+        "retainedExcerptCount": 1,
+        "retainedValueCount": 1,
+        "workflowEvents": {}
+      },
+      "runCount": 4,
+      "sameManifest": true,
+      "valueCount": 2,
+      "workflowEvents": {}
+    },
+    {
+      "alertCount": 2,
+      "alertsByDeliveryState": {},
+      "analysisReceiptCount": 5,
+      "ciphertextInspectedBytes": 180224,
+      "ciphertextMarkerInspectionPassed": true,
+      "inaccessibleRememberedPayloadReferences": 3,
+      "markerCount": 0,
+      "obsoleteAppearanceCount": 1,
+      "occurrenceCount": 2,
+      "original": {
+        "acknowledgement": null,
+        "alertCount": 1,
+        "alertsByDeliveryState": {
+          "delivered": 1
+        },
+        "obsoleteAppearanceCount": 1,
+        "occurrenceCount": 1,
+        "recordPresent": true,
+        "retainedExcerptCount": 1,
+        "retainedValueCount": 1,
+        "workflowEvents": {}
+      },
+      "queueCount": 0,
+      "rememberedPayloadReferences": 9,
+      "replacement": {
+        "acknowledgement": null,
+        "alertCount": 1,
+        "alertsByDeliveryState": {
+          "delivered": 1
+        },
+        "obsoleteAppearanceCount": 0,
+        "occurrenceCount": 1,
+        "recordPresent": true,
+        "retainedExcerptCount": 1,
+        "retainedValueCount": 1,
+        "workflowEvents": {}
+      },
+      "runCount": 4,
+      "sameManifest": true,
+      "valueCount": 2,
+      "workflowEvents": {}
+    }
+  ]
+}

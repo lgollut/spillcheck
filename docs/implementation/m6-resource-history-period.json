@@ -1,0 +1,126 @@
+{
+  "schemaVersion": 1,
+  "passed": true,
+  "command": "python3 scripts/check-mvp-resources.py --skip-build --history-period-only",
+  "syntheticOnly": true,
+  "productionKeychainItemsCreated": 0,
+  "networkPolicy": "Production scanner network/fork denial; synthetic acceptance parent is not network-isolated",
+  "integratedAcceptanceParentNetworkIsolated": false,
+  "priorNestedSandboxFailure": ".build/implementation/m6-resources-nested-sandbox-failed-r1.json",
+  "scannerSHA256": "70d2103c2915aababa0e1eea121bd3db0ff0da86bee40ddc6f5982181acaf6d0",
+  "rulesSHA256": "a8f553eb634ac3c5c1ca3f0dc95e2b8abdea7d14b622604c5af07f30ce7926ef",
+  "corpusSHA256": "5db74ea844aa5fda037d592fb9580ed9a1aa6c472db8759e56248392efa9a83c",
+  "scope": "Fresh isolated synthetic large-history period check; original resource measurements are not rerun or backfilled",
+  "historyPeriod": {
+    "passed": true,
+    "result": {
+      "acceptanceParentNetworkIsolated": false,
+      "ciphertextMarkerInspectionPassed": true,
+      "detectorVersion": "betterleaks-1.9.0+stdlib-1+leakret-native-1+mapping-1",
+      "ephemeralTestingKeysOnly": true,
+      "gapReasons": [
+        "unresolvedCorrelation"
+      ],
+      "history": {
+        "agentVersion": "2.1.293",
+        "append": {
+          "boundedPasses": 1,
+          "newOccurrences": 2,
+          "period": {
+            "adapterNewestContentCheckpointTime": "2026-10-08T10:59:30.935Z",
+            "adapterOldestEmittedContentTime": "2026-10-08T10:59:30.935Z",
+            "auditEndInclusive": "2026-10-08T10:59:31.936Z",
+            "auditReason": "resume",
+            "auditStartInclusive": "2026-10-01T10:59:31.936Z",
+            "hasUnreadContent": true,
+            "lookbackSeconds": 604800,
+            "newRetainedNewestContentTime": "2026-10-08T10:59:30.935Z",
+            "newRetainedOldestContentTime": "2026-10-08T10:59:30.935Z",
+            "progressRecordCount": 1
+          },
+          "queueToInventoryMilliseconds": 348.4398750006221,
+          "sourceBytesReadIncludingBoundaryVerification": 6698
+        },
+        "appendLogicalBytes": 554,
+        "cold": {
+          "boundedPasses": 1,
+          "period": {
+            "adapterNewestContentCheckpointTime": "2026-10-08T10:59:20.000Z",
+            "adapterOldestEmittedContentTime": "2026-10-01T10:59:30.000Z",
+            "auditEndInclusive": "2026-10-08T10:59:30.000Z",
+            "auditReason": "firstLaunch",
+            "auditStartInclusive": "2026-10-01T10:59:30.000Z",
+            "hasUnreadContent": true,
+            "lookbackSeconds": 604800,
+            "newRetainedNewestContentTime": "2026-10-08T10:59:20.000Z",
+            "newRetainedOldestContentTime": "2026-10-01T10:59:30.000Z",
+            "progressRecordCount": 1
+          },
+          "queueToInventoryMilliseconds": 1571.467041665528,
+          "retainedOccurrences": 9,
+          "sourceBytesReadIncludingBoundaryVerification": 2097152
+        },
+        "differentReplacementValueEvaluated": true,
+        "notes": "Old monotonic prefix is deliberately unread. A visible unresolved-correlation gap and partial progress remain; this is not an exhaustive historical audit or a Codex benchmark.",
+        "periodReporting": {
+          "completeWindowCoverage": false,
+          "fixtureBaseTime": "2026-10-08T10:59:30.000Z",
+          "measuredDuringThisRun": true,
+          "notes": "Audit endpoints select an inclusive seven-day content-time window. Adapter bounds describe emitted sources and the newest checkpoint watermark, not all timestamps in unread bytes. Retained bounds describe only new detections in that pass. Warm reuse reads zero payload bytes; an old prefix remains unread and visibly partial.",
+          "oldRepeatedPrefixTime": "2026-09-08T10:59:30.000Z",
+          "onCutoffTime": "2026-10-01T10:59:30.000Z",
+          "outsideCutoffTime": "2026-10-01T10:59:29.000Z",
+          "recentRowsTime": "2026-10-08T10:59:20.000Z"
+        },
+        "provider": "Claude Code versioned synthetic transcript",
+        "sevenDayContentTimeCutoffPassed": true,
+        "sourceLogicalBytesBeforeAppend": 134253008,
+        "unchangedHistoryNotReprocessed": true,
+        "unreadPrefixVisibleAsPartialCoverage": true,
+        "warm": {
+          "boundedPasses": 1,
+          "newOccurrences": 0,
+          "period": {
+            "adapterNewestContentCheckpointTime": "2026-10-08T10:59:20.000Z",
+            "adapterOldestEmittedContentTime": null,
+            "auditEndInclusive": "2026-10-08T10:59:31.000Z",
+            "auditReason": "restart",
+            "auditStartInclusive": "2026-10-01T10:59:31.000Z",
+            "hasUnreadContent": true,
+            "lookbackSeconds": 604800,
+            "newRetainedNewestContentTime": null,
+            "newRetainedOldestContentTime": null,
+            "progressRecordCount": 1
+          },
+          "queueToInventoryMilliseconds": 3.5770416652667336,
+          "sourceBytesReadIncludingBoundaryVerification": 0
+        }
+      },
+      "passed": true,
+      "productionKeychainItemsCreated": 0,
+      "productionScannerNetworkAndForkDenyProfile": true,
+      "queueCount": 0,
+      "scope": "Fresh isolated synthetic large-history period measurement only; not a rerun of the original resource measurements"
+    },
+    "processExitCode": 0,
+    "timedOut": false,
+    "startedAt": "2026-10-08T10:59:29.569842+00:00",
+    "finishedAt": "2026-10-08T10:59:32.428704+00:00",
+    "elapsedSeconds": 2.85889675,
+    "memorySampling": {
+      "ownedProcessTreePeakRSSBytes": 79069184,
+      "sampleCount": 19,
+      "maximumObservedProcessCount": 2,
+      "nominalIntervalMilliseconds": 100,
+      "notes": "Sampled simultaneous RSS for this owned acceptance/scanner process tree; short peaks can fall between samples."
+    }
+  },
+  "result": {
+    "newVaultCleanupPassed": true,
+    "scope": "No persistent Keychain item was created; only ephemeral testing keys used"
+  },
+  "elapsedSeconds": 2.859343542,
+  "temporaryDirectoryMarkerInspectionPassed": true,
+  "cleanupScope": "Only this disposable history-period directory",
+  "cleanupPending": false
+}

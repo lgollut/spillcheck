@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "newDevelopmentInstallation": true,
+  "app": "<HOME>/Applications/Leakret.app",
+  "signatureVerified": true,
+  "replacedExistingApp": false,
+  "releaseDistribution": false,
+  "updatedAt": "2026-10-08T10:01:45.651928+00:00",
+  "appWorkflowPassed": true,
+  "workflowEvidence": "docs/implementation/m5-final-app-workflow.json",
+  "observations": {
+    "authenticatedContextRevealed": true,
+    "changingOccurrenceMaskedContextImmediately": true,
+    "scopedReviewControlSaved": true,
+    "codexDiscoveryVersion": "0.161.0",
+    "codexConnected": false,
+    "installedClaudeDiscoveryVersion": "2.1.294",
+    "installedClaudeStatus": "unsupported-unvalidated",
+    "existingHookSettingsEdited": false,
+    "launchAtLoginRegisterSucceeded": true,
+    "launchAtLoginUnregisterSucceeded": true,
+    "launchAtLoginFinalEnabled": false,
+    "actualLoginLaunchTested": false,
+    "notificationPermissionRestored": "denied",
+    "newDetectionWhileDeniedVisible": true,
+    "normalQuitCompleted": true,
+    "ownedDisposableStoreAndNewVaultRightsCleaned": true
+  },
+  "userAuthorizedDistributionDeferral": true,
+  "passScope": "Signed development copy and native local workflow, login registration/unregistration and unsupported-version discovery. Not a Gatekeeper, notarized distribution, OS login-launch or upgrade check."
+}

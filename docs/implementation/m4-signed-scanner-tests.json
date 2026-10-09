@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "command": "LEAKRET_SIGNED_SCANNER_APP=<PROJECT_ROOT>/.build/app/Build/Products/Debug/Leakret.app swift test --filter SignedScannerBundleTests",
+  "exitCode": 0,
+  "testsPassed": 1,
+  "suitesPassed": 1,
+  "elapsedSeconds": 0.989,
+  "scope": "Current provisioned app bundle, signed stdlib scanner, sealed post-signing executable hash and pinned rules"
+}

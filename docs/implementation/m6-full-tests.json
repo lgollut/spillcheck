@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "command": "LEAKRET_SIGNED_SCANNER_APP=<PROJECT_ROOT>/.build/app/Build/Products/Debug/Leakret.app swift test",
+  "passed": true,
+  "testsPassed": 212,
+  "suitesPassed": 30,
+  "elapsedSeconds": 10.308,
+  "buildSeconds": 5.2,
+  "signedScannerBundleExercised": true,
+  "log": ".build/implementation/m6-full-tests.log",
+  "initialTelemetryCompileFailureCorrected": true
+}

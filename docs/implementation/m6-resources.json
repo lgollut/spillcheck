@@ -1,0 +1,320 @@
+{
+  "schemaVersion": 1,
+  "passed": true,
+  "command": "python3 scripts/check-mvp-resources.py --skip-build",
+  "syntheticOnly": true,
+  "productionKeychainItemsCreated": 0,
+  "networkPolicy": "Split component proof: production scanner network/fork denial, separate inherited deny-network local workflow with annotated fixture detections",
+  "integratedAcceptanceParentNetworkIsolated": false,
+  "priorNestedSandboxFailure": ".build/implementation/m6-resources-nested-sandbox-failed-r1.json",
+  "scannerSHA256": "70d2103c2915aababa0e1eea121bd3db0ff0da86bee40ddc6f5982181acaf6d0",
+  "rulesSHA256": "a8f553eb634ac3c5c1ca3f0dc95e2b8abdea7d14b622604c5af07f30ce7926ef",
+  "corpusSHA256": "5db74ea844aa5fda037d592fb9580ed9a1aa6c472db8759e56248392efa9a83c",
+  "result": {
+    "newVaultCleanupPassed": true,
+    "scope": "No persistent Keychain item was created by either ephemeral testing mode"
+  },
+  "productionResources": {
+    "passed": true,
+    "result": {
+      "acceptanceParentNetworkIsolated": false,
+      "checks": {
+        "allFiveContentTypes": true,
+        "canonicalReplayStable": true,
+        "ciphertextMarkerInspectionPassed": true,
+        "controlledMaskedNotificationsPreparedOffline": true,
+        "malformedJSONVisibleGap": true,
+        "multilineKeyExactRange": true,
+        "queueExpiryPreservedInventory": true,
+        "repeatedAppearancesPreserved": true,
+        "reviewReversible": true,
+        "unicodeExactRanges": true
+      },
+      "detectorVersion": "betterleaks-1.9.0+stdlib-1+leakret-native-1+mapping-1",
+      "ephemeralTestingKeysOnly": true,
+      "gapReasons": [
+        "malformedSource",
+        "queueExpired",
+        "queueSaturated",
+        "unresolvedCorrelation"
+      ],
+      "history": {
+        "agentVersion": "2.1.293",
+        "append": {
+          "boundedPasses": 1,
+          "newOccurrences": 2,
+          "queueToInventoryMilliseconds": 2135.5046666667477,
+          "sourceBytesReadIncludingBoundaryVerification": 6698
+        },
+        "appendLogicalBytes": 554,
+        "cold": {
+          "boundedPasses": 1,
+          "queueToInventoryMilliseconds": 2232.442833334062,
+          "retainedOccurrences": 9,
+          "sourceBytesReadIncludingBoundaryVerification": 2097152
+        },
+        "differentReplacementValueEvaluated": true,
+        "notes": "Old monotonic prefix is deliberately unread. A visible unresolved-correlation gap and partial progress remain; this is not an exhaustive historical audit or a Codex benchmark.",
+        "provider": "Claude Code versioned synthetic transcript",
+        "sevenDayContentTimeCutoffPassed": true,
+        "sourceLogicalBytesBeforeAppend": 134253008,
+        "unchangedHistoryNotReprocessed": true,
+        "unreadPrefixVisibleAsPartialCoverage": true,
+        "warm": {
+          "boundedPasses": 1,
+          "newOccurrences": 0,
+          "queueToInventoryMilliseconds": 8.776041666351375,
+          "sourceBytesReadIncludingBoundaryVerification": 0
+        }
+      },
+      "hookDeliveryBudget": {
+        "measuredHere": false,
+        "reason": "The separate real helper/IPC acceptance measures helper startup and acknowledgement"
+      },
+      "inventory": {
+        "liveMaskedNotificationsPrepared": 2,
+        "occurrenceCount": 149,
+        "valueCount": 3
+      },
+      "latency": {
+        "cases": [
+          {
+            "case": "github-error",
+            "p50Milliseconds": 336.06908333331376,
+            "p95Milliseconds": 526.3547916674725,
+            "sampleCount": 5
+          },
+          {
+            "case": "negative-prose",
+            "p50Milliseconds": 176.99658333367552,
+            "p95Milliseconds": 291.1696250002933,
+            "sampleCount": 4
+          },
+          {
+            "case": "one-mib-output",
+            "p50Milliseconds": 548.3249166672977,
+            "p95Milliseconds": 814.7386666660168,
+            "sampleCount": 4
+          },
+          {
+            "case": "past-4k",
+            "p50Milliseconds": 196.01979166691308,
+            "p95Milliseconds": 208.3468750006432,
+            "sampleCount": 4
+          },
+          {
+            "case": "pem-multiline",
+            "p50Milliseconds": 206.96562500052096,
+            "p95Milliseconds": 264.0895000004093,
+            "sampleCount": 4
+          },
+          {
+            "case": "repeated-lines",
+            "p50Milliseconds": 250.65929166703427,
+            "p95Milliseconds": 290.0958750005884,
+            "sampleCount": 5
+          },
+          {
+            "case": "repeated-output-24",
+            "p50Milliseconds": 236.7580000000089,
+            "p95Milliseconds": 352.4757083332588,
+            "sampleCount": 4
+          },
+          {
+            "case": "repeated-same-line",
+            "p50Milliseconds": 237.2612916669823,
+            "p95Milliseconds": 259.66349999998783,
+            "sampleCount": 5
+          },
+          {
+            "case": "unicode-prefix",
+            "p50Milliseconds": 252.7567083334361,
+            "p95Milliseconds": 279.6564166665121,
+            "sampleCount": 5
+          }
+        ],
+        "excludes": "Provider observation delay, helper process startup, IPC transport, worker idle polling, UI and OS notification display",
+        "includes": "Durable queue encryption/insert, normalization, actual scanner process, value/context encryption, inventory commit",
+        "inputBytes": 4229351,
+        "maximumMilliseconds": 814.7386666660168,
+        "p50Milliseconds": 240.70250000022497,
+        "p95Milliseconds": 548.3249166672977,
+        "sampleCount": 40,
+        "targetP95Milliseconds": 120000
+      },
+      "memory": {
+        "notes": "Current resident bytes use mach_task_basic_info. Darwin getrusage high-water marks accumulate across phases and are separate process/child maxima, not simultaneous total RSS; parent wrapper samples the owned process tree.",
+        "phaseMemory": [
+          {
+            "cumulativePeakRSSBytes": 18677760,
+            "currentResidentBytes": 18677760,
+            "currentResidentMeasurementSucceeded": true,
+            "phase": "fixture-and-store-ready"
+          },
+          {
+            "cumulativePeakRSSBytes": 89587712,
+            "currentResidentBytes": 84574208,
+            "currentResidentMeasurementSucceeded": true,
+            "phase": "processing-and-replay-complete"
+          },
+          {
+            "cumulativePeakRSSBytes": 89735168,
+            "currentResidentBytes": 81477632,
+            "currentResidentMeasurementSucceeded": true,
+            "phase": "history-cold-warm-append-complete"
+          },
+          {
+            "cumulativePeakRSSBytes": 187170816,
+            "currentResidentBytes": 187154432,
+            "currentResidentMeasurementSucceeded": true,
+            "phase": "saturation-inspection-and-expiry-complete"
+          },
+          {
+            "cumulativePeakRSSBytes": 259915776,
+            "currentResidentBytes": 254656512,
+            "currentResidentMeasurementSucceeded": true,
+            "phase": "final-ciphertext-inspection-complete"
+          },
+          {
+            "cumulativePeakRSSBytes": 340525056,
+            "currentResidentBytes": 340525056,
+            "currentResidentMeasurementSucceeded": true,
+            "phase": "store-closed-and-inspected"
+          }
+        ],
+        "processPeakRSSBytes": 340590592,
+        "scannerChildrenPeakRSSBytes": 30965760,
+        "scope": "This synthetic Swift acceptance executable, not the signed GUI app"
+      },
+      "networkScope": "Production scanner subprocesses use deny network* and deny process-fork; this measurement parent is not sandboxed because macOS rejects nesting sandbox-exec.",
+      "passed": true,
+      "productionKeychainItemsCreated": 0,
+      "productionScannerNetworkAndForkDenyProfile": true,
+      "queue": {
+        "acceptedBeforeSaturation": 10,
+        "configuredAgeBudgetSeconds": 86400,
+        "configuredEncryptedPayloadBudgetBytes": 104857600,
+        "configuredSingleEventBudgetBytes": 8388608,
+        "elapsedMilliseconds": 9748.786874999496,
+        "expiredWhilePausedCount": 10,
+        "expiryVisibleGap": true,
+        "finalQueuedBytes": 0,
+        "oversizeRejectedWithoutChangingQueue": true,
+        "peakEncryptedQueuedBytes": 99398249,
+        "phaseMemory": [
+          {
+            "cumulativePeakRSSBytes": 94978048,
+            "currentResidentBytes": 94978048,
+            "currentResidentMeasurementSucceeded": true,
+            "phase": "before-queue-saturation"
+          },
+          {
+            "cumulativePeakRSSBytes": 155156480,
+            "currentResidentBytes": 143540224,
+            "currentResidentMeasurementSucceeded": true,
+            "phase": "queue-saturated-before-inspection"
+          },
+          {
+            "cumulativePeakRSSBytes": 175751168,
+            "currentResidentBytes": 175751168,
+            "currentResidentMeasurementSucceeded": true,
+            "phase": "saturated-queue-inspection-complete"
+          },
+          {
+            "cumulativePeakRSSBytes": 187154432,
+            "currentResidentBytes": 187154432,
+            "currentResidentMeasurementSucceeded": true,
+            "phase": "oversize-rejected"
+          },
+          {
+            "cumulativePeakRSSBytes": 187170816,
+            "currentResidentBytes": 187154432,
+            "currentResidentMeasurementSucceeded": true,
+            "phase": "expired-queue-empty"
+          }
+        ],
+        "saturationRejectedWithVisibleGap": true,
+        "singleSyntheticPayloadBytes": 7340032
+      },
+      "scope": "Synthetic local queue-to-detector-to-encrypted-inventory pipeline; no running agents or GUI",
+      "storage": {
+        "notes": "Logical on-disk sizes include SQLite journals. Queue payload budget does not cap total metadata or physical database size.",
+        "peakProtectedStoreLogicalBytes": 101601280,
+        "peakSequentialPipelineEncryptedQueueBytes": 1509631,
+        "protectedStoreLogicalBytesAfterClose": 100552704,
+        "protectedStoreLogicalBytesBeforeClose": 101601280,
+        "scannerWorkingDirectoryBytes": 0
+      },
+      "upstreamObservationDelay": {
+        "measured": false,
+        "reason": "Synthetic content is directly observable; actual provider delay is reported separately"
+      }
+    },
+    "processExitCode": 0,
+    "timedOut": false,
+    "elapsedSeconds": 29.946285709,
+    "memorySampling": {
+      "ownedProcessTreePeakRSSBytes": 319700992,
+      "sampleCount": 117,
+      "maximumObservedProcessCount": 2,
+      "nominalIntervalMilliseconds": 100,
+      "notes": "Sampled simultaneous RSS for this owned acceptance/scanner process tree; short peaks can fall between samples."
+    }
+  },
+  "offlineLocalWorkflow": {
+    "passed": true,
+    "result": {
+      "acceptanceParentNetworkIsolated": true,
+      "checks": {
+        "acknowledgedDeletionPreservedMarker": true,
+        "actualClaudeNormalizerAllFiveContentTypes": true,
+        "canonicalReplayStable": true,
+        "ciphertextMarkerInspectionPassed": true,
+        "differentReplacementEvaluated": true,
+        "durableEncryptedCaptureAndInventory": true,
+        "forgottenMarkerNewAppearanceDetected": true,
+        "malformedJSONVisibleGap": true,
+        "maskedNotificationDecision": true,
+        "newObsoleteAppearanceMetadataOnlyAndSilent": true,
+        "pauseRejectedWithoutQueuedPayload": true,
+        "replayDidNotResurrectDeletedContent": true,
+        "resumeProcessedNewCapture": true,
+        "retainedValueSurvivedSourceDeletion": true,
+        "reviewReversible": true,
+        "shutdownQueueEmpty": true
+      },
+      "detector": "annotated-synthetic-offline-workflow-1",
+      "ephemeralTestingKeysOnly": true,
+      "limits": "No production scanner, running provider, LocalAuthentication prompt, OS notification display, or GUI ran in this mode. Actual scanner measurement is a separate production-isolation component proof.",
+      "networkDenyConfirmedBeforeAndAfterWorkflow": true,
+      "passed": true,
+      "productionKeychainItemsCreated": 0,
+      "scannerInvocations": 0,
+      "scope": "Actual Claude transcript normalizer, encrypted queue, encrypted inventory, review, alert decisions and lifecycle under deny network*. Detector results are explicitly annotated synthetic fixtures."
+    },
+    "processExitCode": 0,
+    "timedOut": false,
+    "elapsedSeconds": 0.6603181249999999,
+    "memorySampling": {
+      "ownedProcessTreePeakRSSBytes": 18644992,
+      "sampleCount": 2,
+      "maximumObservedProcessCount": 1,
+      "nominalIntervalMilliseconds": 100,
+      "notes": "Sampled simultaneous RSS for this owned acceptance/scanner process tree; short peaks can fall between samples."
+    }
+  },
+  "elapsedSeconds": 30.610302292,
+  "temporaryDirectoryMarkerInspectionPassed": true,
+  "cleanupScope": "Only this disposable resource-probe directory; all cryptography used ephemeral testing keys",
+  "cleanupPending": false,
+  "historyPeriodSupplement": {
+    "evidence": "docs/implementation/m6-resource-history-period.json",
+    "passed": true,
+    "freshIsolatedRun": true,
+    "originalRunTimestampsRecoverable": false,
+    "originalResourceMeasurementsPreserved": true,
+    "originalReportSHA256BeforeSupplement": "7d8ef5e886e5a6c71d39caa40526ef3e73ab2824980fc6130a685845e637c074",
+    "scope": "New audit endpoints and adapter/retained content bounds from the same 128-MiB cold/warm/append fixture algorithm and pinned scanner/rules/corpus. Original measurements were not rerun or backfilled; these timestamps belong only to the separate repeat.",
+    "completeWindowCoverage": false
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "passed": false,
+  "command": "python3 scripts/check-mvp-resources.py --skip-build",
+  "syntheticOnly": true,
+  "productionKeychainItemsCreated": 0,
+  "networkPolicy": "sandbox-exec deny network* inherited by acceptance and scanner descendants",
+  "scannerSHA256": "70d2103c2915aababa0e1eea121bd3db0ff0da86bee40ddc6f5982181acaf6d0",
+  "rulesSHA256": "a8f553eb634ac3c5c1ca3f0dc95e2b8abdea7d14b622604c5af07f30ce7926ef",
+  "corpusSHA256": "5db74ea844aa5fda037d592fb9580ed9a1aa6c472db8759e56248392efa9a83c",
+  "result": {
+    "ephemeralTestingKeysOnly": true,
+    "failure": "pipeline",
+    "passed": false,
+    "productionKeychainItemsCreated": 0,
+    "newVaultCleanupPassed": true
+  },
+  "processExitCode": 1,
+  "timedOut": false,
+  "elapsedSeconds": 0.702098125,
+  "temporaryDirectoryMarkerInspectionPassed": true,
+  "memorySampling": {
+    "ownedProcessTreePeakRSSBytes": 45236224,
+    "sampleCount": 5,
+    "maximumObservedProcessCount": 1,
+    "nominalIntervalMilliseconds": 100,
+    "notes": "Sampled simultaneous RSS for the owned acceptance/scanner process tree; short peaks can fall between samples."
+  },
+  "cleanupScope": "Only this disposable resource-probe directory; all cryptography used ephemeral testing keys",
+  "cleanupPending": true
+}

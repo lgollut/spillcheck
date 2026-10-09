@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "agentVersion": "2.1.293",
+  "providerRuns": [
+    {
+      "exitCode": 1,
+      "outputBytes": 7206,
+      "diagnosticBytes": 0
+    },
+    {
+      "exitCode": 1,
+      "outputBytes": 7206,
+      "diagnosticBytes": 0
+    },
+    {
+      "exitCode": 1,
+      "outputBytes": 7206,
+      "diagnosticBytes": 0
+    }
+  ],
+  "driverExitCode": 0,
+  "driverDiagnosticBytes": 0,
+  "result": {
+    "alertCount": 2,
+    "ciphertextMarkerInspectionPassed": true,
+    "durableDeliveries": 16,
+    "finalCatchUpNewOccurrences": 0,
+    "finished": true,
+    "firstObservedAt": {
+      "PROMPT": "2026-10-07T23:20:01.188Z"
+    },
+    "gapReasons": [
+      "unsupportedContent"
+    ],
+    "lastPending": 0,
+    "occurrenceCount": 8,
+    "occurrencesByContentType": {
+      "userPrompt": 8
+    },
+    "otherCandidates": [],
+    "queueCount": 0,
+    "replayStable": true,
+    "sessionCount": 2,
+    "setupState": "connected",
+    "syntheticAlertCount": 2,
+    "syntheticValuePresent": true,
+    "typedCommitted": {
+      "PROMPT": 1
+    },
+    "typedObserved": {
+      "PROMPT": 1
+    },
+    "valueCount": 1
+  },
+  "passed": false
+}

@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "state": "paused",
+  "processExitCode": 0,
+  "wallMilliseconds": 167.1945,
+  "stdoutBytes": 3,
+  "stderrBytes": 0,
+  "monitoringEnabled": false,
+  "queueCount": 0,
+  "occurrenceCount": 5,
+  "passed": false,
+  "assertionError": "The helper intentionally returns an empty JSON object; zero stdout was an incorrect test expectation."
+}

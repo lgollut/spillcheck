@@ -1,0 +1,33 @@
+{
+  "currentCodexTestDeclarations": 29,
+  "liveStandaloneReport": "codex-cli-live.json",
+  "nativeHookReport": "codex-interactive-live.json",
+  "nativeHookTrustVerification": "unverified-lease-expired",
+  "realProcessChecks": [
+    "network-denied",
+    "fork-denied",
+    "sanitized-environment",
+    "timeout-cancellation-reaped",
+    "strict-response-byte-limit"
+  ],
+  "recordedAt": "2026-10-08T06:27:01.279558+00:00",
+  "runs": [
+    {
+      "buildSeconds": 21.88,
+      "command": "swift test --filter Codex",
+      "exitCode": 0,
+      "suitesPassed": 7,
+      "testSeconds": 3.762,
+      "testsPassed": 28
+    },
+    {
+      "buildSeconds": 3.56,
+      "command": "swift test --filter actualStandaloneProducerFixtureMapsSuccessAndFailedShellAndMCPSeparately",
+      "exitCode": 0,
+      "suitesPassed": 1,
+      "testSeconds": 0.015,
+      "testsPassed": 1
+    }
+  ],
+  "schemaVersion": 1
+}

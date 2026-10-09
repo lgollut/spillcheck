@@ -1,0 +1,21 @@
+{
+  "checkCount": 7,
+  "checks": [
+    "missing-T3-version-rejects-install-and-verification",
+    "unsupported-T3-version-rejects-install-and-verification",
+    "unsupported-saved-Codex-and-Claude-registrations-remove-only-owned-hooks",
+    "codex-failed-install-retains-removal-and-blocks-root-change",
+    "claude-code-failed-install-retains-removal-and-blocks-root-change",
+    "changed-executable-invalidates-connected-state-and-verification",
+    "executable-change-during-challenge-cannot-promote-stale-delivery"
+  ],
+  "command": "python3 scripts/check-agent-setup.py",
+  "credentialsRead": false,
+  "hookHelperExecutions": 0,
+  "passed": true,
+  "profiles": "owned-disposable",
+  "providerSessionsStarted": 0,
+  "systemAuthentication": "not-exercised-ephemeral-testing-keys",
+  "verificationEvidence": "synthetic-controller-contract-with-durable-enqueue",
+  "updatedAt": "2026-10-08T09:00:38.919928+00:00"
+}

@@ -1,0 +1,168 @@
+{
+  "schemaVersion": 1,
+  "updatedAt": "2026-10-08T05:09:40.784472+00:00",
+  "milestone": 3,
+  "state": "passed",
+  "gatePassed": true,
+  "summary": "Complete Claude path passed its scoped real CLI/T3, signed-scanner, encrypted inventory and actual signed-app production-Keychain gates on this Mac. Milestone 4 is in progress; release checks remain incomplete.",
+  "report": "docs/implementation/milestone-3.md",
+  "review": "docs/implementation/milestone-3-review.md",
+  "testedEnvironment": {
+    "macOS": "26.6.2",
+    "architecture": "arm64",
+    "xcode": "27.0",
+    "swift": "6.4",
+    "claudeCode": "2.1.293",
+    "t3": "0.0.46-nightly.20261007.2761"
+  },
+  "checks": {
+    "signedAppBuild": {
+      "command": "make app",
+      "exitCode": 0,
+      "artifact": ".build/app/Build/Products/Debug/Leakret.app",
+      "project": "Leakret.xcodeproj",
+      "bundleID": "com.leakret.app",
+      "developmentSigned": true,
+      "notarized": false
+    },
+    "packageAndSignedScanner": {
+      "command": "LEAKRET_SIGNED_SCANNER_APP=\"$PWD/.build/app/Build/Products/Debug/Leakret.app\" swift test",
+      "exitCode": 0,
+      "testsPassed": 132,
+      "suites": 14,
+      "elapsedSeconds": 10.153,
+      "signedScannerTestSeconds": 1.319,
+      "log": ".build/implementation/m3-final-tests.log",
+      "deepStrictSignatureVerified": true,
+      "signedChildRuntimeScanPassed": true,
+      "signedChildHasNoRuntimeExceptionEntitlements": true
+    },
+    "stdlibAnnotatedCorpus": {
+      "cases": 47,
+      "expectedExactOccurrences": 36,
+      "recoveredExactOccurrences": 36,
+      "extraFindings": 0,
+      "unlocatedFindings": 0,
+      "coverageGaps": 0,
+      "focusedElapsedSeconds": 9.961,
+      "finalPackageElapsedSeconds": 9.985,
+      "scope": "Synthetic corpus through production network-denied scanner, not production latency quantiles"
+    },
+    "standaloneClaudeCLI": {
+      "command": "python3 Tests/ClaudeLive/run.py --output .build/implementation/claude-live-stdlib-r2.json",
+      "exitCode": 0,
+      "passed": true,
+      "regexEngine": "stdlib",
+      "evidence": "docs/implementation/claude-cli-live-stdlib.json",
+      "providerRunsSucceeded": 3,
+      "durableDeliveries": 44,
+      "syntheticValueCount": 1,
+      "syntheticOccurrenceCount": 20,
+      "requiredTypedCasesCommitted": 9,
+      "requiredContentTypesCommitted": 5,
+      "sessionCount": 2,
+      "syntheticAlertDecisions": 2,
+      "queueCount": 0,
+      "finalCatchUpNewOccurrences": 0,
+      "replayStable": true,
+      "ciphertextInspectionPassed": true,
+      "gapReasons": [
+        "unsupportedContent"
+      ],
+      "scope": "Actual provider/helper/adapter/detector/store; ephemeral testing keys and original verified scanner bytes with stdlib selected"
+    },
+    "t3Claude": {
+      "passedApplicableChecks": true,
+      "evidence": "docs/implementation/claude-t3-live.json",
+      "requiredTypedCasesCommitted": 9,
+      "requiredContentTypesCommitted": 5,
+      "ownChildContentVerified": true,
+      "syntheticOccurrenceCount": 20,
+      "replayStable": true,
+      "ciphertextInspectionPassed": true,
+      "scope": "Actual T3 delegated Claude session observed while active; original staged default-regex scanner and ephemeral testing keys. Attachment after first prompt does not prove a new live alert.",
+      "additionalAmbiguousCandidate": "Known synthetic token plus terminal sentence punctuation, separately classified; no value normalization or extra alert"
+    },
+    "nativeSignedAppProductionKeys": {
+      "command": "python3 scripts/run-app-pipeline.py --output docs/implementation/app-pipeline.json",
+      "state": "passed",
+      "passed": true,
+      "evidence": "docs/implementation/app-pipeline.json",
+      "signedAppExitCode": 0,
+      "timedOut": false,
+      "stdoutBytes": 0,
+      "diagnosticBytes": 0,
+      "storageReady": true,
+      "collectionConfigured": true,
+      "syntheticValueCount": 1,
+      "syntheticOccurrenceCount": 5,
+      "requiredContentTypesCommitted": 5,
+      "occurrencesByContentType": {
+        "finalResponse": 1,
+        "intermediateResponse": 1,
+        "toolError": 1,
+        "toolOutput": 1,
+        "userPrompt": 1
+      },
+      "queueCount": 0,
+      "gapReasons": [],
+      "alertCount": 0,
+      "ciphertextInspectionPassed": true,
+      "sourceIsSynthetic": true,
+      "scannerIsSignedBundleChild": true,
+      "scope": "Actual signed native app, production Keychain keys, signed bundled stdlib scanner and disposable historical synthetic transcript. Zero alert decisions are expected for historical provenance."
+    },
+    "experimentCleanup": {
+      "passed": true,
+      "evidence": "docs/implementation/claude-cli-live-cleanup.json",
+      "existingHookSettingsModified": false,
+      "existingHistoriesModified": false,
+      "authenticationItemsModifiedOrRefreshed": false
+    }
+  },
+  "scanner": {
+    "version": "betterleaks-1.9.0+stdlib-1+leakret-native-1+mapping-1",
+    "sealedManifest": {
+      "schemaVersion": 1,
+      "engine": "betterleaks",
+      "version": "1.9.0",
+      "verifiedBeforeSigning": {
+        "betterleaks": "70d2103c2915aababa0e1eea121bd3db0ff0da86bee40ddc6f5982181acaf6d0",
+        "betterleaks.toml": "a8f553eb634ac3c5c1ca3f0dc95e2b8abdea7d14b622604c5af07f30ce7926ef",
+        "LICENSE": "caea114592a8f8e5e05a116d63a99e0ccd79a3ff74f4ddf270bcf4c929eb021e"
+      },
+      "license": "MIT",
+      "bundledExecutableSHA256": "6436aafef1b9bb23c67caf42b8346a1b517c60976504e311f838ec2a9e6f5d77",
+      "regexEngine": "stdlib"
+    },
+    "runtimeArgumentsFixedByApp": true,
+    "sandboxDeniesNetworkAndProcessFork": true,
+    "defaultEngineHardenedScanFailure": "SIGKILL 9; lazy WebAssembly regex compilation incompatible with tested hardened runtime without executable-memory exception",
+    "chosenCorrection": "Stock --regex-engine=stdlib; no runtime exception entitlement"
+  },
+  "preservedFailedEvidence": [
+    {
+      "evidence": "docs/implementation/claude-cli-live-initial.json",
+      "reason": "Native child final row arrived after initial completion; corrected completion/read monitoring and replay checks"
+    },
+    {
+      "evidence": "docs/implementation/claude-cli-live-stdlib-initial.json",
+      "reason": "All three provider invocations exited 1; cause undiagnosed. Safe disposable auth, flags, and hook probes and one full retry subsequently succeeded without authentication changes"
+    },
+    {
+      "evidence": "docs/implementation/app-pipeline-locked.json",
+      "reason": "Earlier locked-Mac production queue-key bootstrap returned -25308; no fallback protection was introduced. The later actual unlocked run passed."
+    }
+  ],
+  "pendingGateChecks": [],
+  "laterMilestones": [
+    "4: Codex and fair bounded seven-day catch-up (in progress)",
+    "5: User workflow and notification delivery",
+    "6: Acceptance matrix and signed/notarized distribution"
+  ],
+  "deferredReleaseChecks": [
+    "macOS 14 runtime",
+    "Hardware without Touch ID"
+  ],
+  "releaseReady": false
+}

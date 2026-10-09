@@ -1,0 +1,175 @@
+{
+  "actualProducerVersion": "0.161.0",
+  "actualReaderVersion": "0.161.0",
+  "cleanup": {
+    "disposableRootRemoved": true,
+    "observerProcessGroup": {
+      "groupKillPermissionDenied": false,
+      "launched": true,
+      "leaderExited": true,
+      "ownedGroupTerminationRequested": true
+    },
+    "ownedProcessGroupsStopped": true,
+    "producerProcessGroup": {
+      "groupKillPermissionDenied": false,
+      "leaderExited": true,
+      "ownedGroupTerminationRequested": true
+    },
+    "temporaryAuthenticationRemoved": true,
+    "versionProbeProcessGroup": {
+      "groupKillPermissionDenied": false,
+      "leaderExited": true,
+      "ownedGroupTerminationRequested": true
+    }
+  },
+  "collectionPath": "exact-selected-public-native-items",
+  "configuredProducerVersion": "0.161.0",
+  "configuredReaderVersion": "0.161.0",
+  "existingConfigurationModified": false,
+  "existingHistoriesModified": false,
+  "existingHookSettingsModified": false,
+  "finishedAt": "2026-10-08T10:34:56.872267+00:00",
+  "historicalLatencyMeasured": false,
+  "hookDeliveryLatencyMeasured": false,
+  "hookTrustBypassed": false,
+  "interface": "standalone-cli",
+  "latencyMeasurementPassed": false,
+  "liveCanonicalReadStartP95WithinProposed120SecondTarget": true,
+  "liveLatencyMeasured": true,
+  "observerLaunchRequestedAt": "2026-10-08T10:34:24.800103+00:00",
+  "observerReadStartedWhileProducerRunning": true,
+  "observerReady": true,
+  "passed": false,
+  "pipeline": {
+    "ciphertextMarkerInspectionPassed": true,
+    "durableDeliveries": 33,
+    "finalCatchUpNewOccurrences": 0,
+    "finished": true,
+    "gapReasons": [],
+    "occurrenceCount": 14,
+    "occurrencesByContentType": {
+      "finalResponse": 2,
+      "intermediateResponse": 1,
+      "toolError": 2,
+      "toolOutput": 2,
+      "userPrompt": 7
+    },
+    "queueCount": 0,
+    "replayStable": true,
+    "sessionCount": 2,
+    "setupState": "selected-source",
+    "sourceLatency": {
+      "committedSourceRevisionCount": 8,
+      "firstCanonicalReadStartedAt": "2026-10-08T10:34:27.890Z",
+      "historical": {
+        "canonicalReadStartToCommitObservation": {
+          "count": 0,
+          "excludedNegativeOrNonfiniteCount": 0,
+          "max": null,
+          "p50": null,
+          "p95": null
+        },
+        "committedSourceRevisionCount": 0,
+        "providerTimestampToCanonicalReadStart": {
+          "count": 0,
+          "excludedNegativeOrNonfiniteCount": 0,
+          "max": null,
+          "p50": null,
+          "p95": null
+        },
+        "queueCaptureToCommitObservation": {
+          "count": 0,
+          "excludedNegativeOrNonfiniteCount": 0,
+          "max": null,
+          "p50": null,
+          "p95": null
+        }
+      },
+      "lastCommitObservedAt": "2026-10-08T10:34:53.049Z",
+      "limits": [
+        "Samples are unique public canonical source revisions carrying the disposable synthetic value, with an exact full detector receipt and a retained occurrence for that source and content time.",
+        "Read start is measured immediately before awaiting CodexAdapter.normalize. Product metadata.observedAt remains the queue capturedAt timestamp and is not used as read start.",
+        "Provider contentTime is completedAtMs when available, otherwise startedAtMs or a turn timestamp. It does not measure first-byte publication or when public history made that item available.",
+        "A public read may include an item published after its start. Each latency leg excludes and counts negative or nonfinite wall-clock deltas; clock adjustments can affect positive durations too.",
+        "Queue capture belongs to the enclosing public poll, not the source's first available byte.",
+        "Commit observation follows completion of the enclosing pipeline capture. It upper-bounds the source's exact durable commit and includes remaining batch and checkpoint work.",
+        "Live or historical classification comes from the retained occurrence after the production pipeline applies its start boundary. Final catch-up and replay are excluded from timing.",
+        "This measures standalone CLI exact-ID public-history polling, not hook delivery, T3 latency, hosted tools, or long-running output fragment publication."
+      ],
+      "live": {
+        "canonicalReadStartToCommitObservation": {
+          "count": 8,
+          "excludedNegativeOrNonfiniteCount": 0,
+          "max": 785.0569486618042,
+          "p50": 322.343111038208,
+          "p95": 785.0569486618042
+        },
+        "committedSourceRevisionCount": 8,
+        "providerTimestampToCanonicalReadStart": {
+          "count": 8,
+          "excludedNegativeOrNonfiniteCount": 0,
+          "max": 999.143123626709,
+          "p50": 606.0370206832886,
+          "p95": 999.143123626709
+        },
+        "queueCaptureToCommitObservation": {
+          "count": 8,
+          "excludedNegativeOrNonfiniteCount": 0,
+          "max": 2605.1520109176636,
+          "p50": 401.9138813018799,
+          "p95": 2605.1520109176636
+        }
+      },
+      "observedSourceRevisionCount": 8,
+      "percentileMethod": "nearest-rank",
+      "schemaVersion": 1,
+      "units": "milliseconds",
+      "unmeasuredSourceRevisionCount": 0
+    },
+    "syntheticAlertCount": 2,
+    "syntheticValuePresent": true,
+    "typedCommitted": {
+      "CHILD_FINAL": 1,
+      "FINAL": 1,
+      "INTERMEDIATE": 1,
+      "MCP_ERROR": 1,
+      "MCP_OK": 1,
+      "PROMPT": 1,
+      "SHELL_ERROR": 1,
+      "SHELL_OK": 1
+    },
+    "typedCommittedBeforeCatchUp": {
+      "CHILD_FINAL": 1,
+      "FINAL": 1,
+      "INTERMEDIATE": 1,
+      "MCP_ERROR": 1,
+      "MCP_OK": 1,
+      "PROMPT": 1,
+      "SHELL_ERROR": 1,
+      "SHELL_OK": 1
+    },
+    "typedObserved": {
+      "CHILD_FINAL": 1,
+      "FINAL": 1,
+      "INTERMEDIATE": 1,
+      "MCP_ERROR": 1,
+      "MCP_OK": 1,
+      "PROMPT": 1,
+      "SHELL_ERROR": 1,
+      "SHELL_OK": 1
+    },
+    "valueCount": 1
+  },
+  "pipelineDiagnosticBytes": 0,
+  "pipelineExitCode": 0,
+  "producerExitCode": 0,
+  "producerFinishedAt": "2026-10-08T10:34:51.991160+00:00",
+  "producerMilliseconds": 28150.2,
+  "producerOutputBytes": 3185,
+  "producerStartedAt": "2026-10-08T10:34:23.838976+00:00",
+  "schemaVersion": 1,
+  "startedAt": "2026-10-08T10:34:23.815759+00:00",
+  "status": "public-observation-complete",
+  "t3LatencyMeasured": false,
+  "threadID": "01a11b14-1735-7741-b732-d3ef9e1938ff"
+}

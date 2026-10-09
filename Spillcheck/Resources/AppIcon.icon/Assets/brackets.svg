@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- The detection frame from AppIcon.svg, in the same coordinates. -->
+  <g fill="none" stroke="#222222" stroke-width="57.344">
+    <path d="M389.12 243.712H302.08A58.368 58.368 0 0 0 243.712 302.08V389.12"/>
+    <path d="M634.88 243.712H721.92A58.368 58.368 0 0 1 780.288 302.08V389.12"/>
+    <path d="M243.712 634.88V721.92A58.368 58.368 0 0 0 302.08 780.288H389.12"/>
+    <path d="M634.88 780.288H721.92A58.368 58.368 0 0 0 780.288 721.92V634.88"/>
+  </g>
+</svg>

@@ -1,0 +1,313 @@
+{
+  "schemaVersion": 4,
+  "agentVersion": "2.1.295",
+  "executablePath": "<HOME>/.local/share/claude/versions/2.1.295",
+  "expectedVersion": "2.1.295",
+  "interface": "standaloneCLI",
+  "startedAt": "2026-10-09T11:31:15.061704+00:00",
+  "passed": true,
+  "historicalProducerVersion": "2.1.293",
+  "historicalExecutablePath": "<HOME>/Library/Application Support/Claude/claude-code/2.1.293/<ARCHIVE_ID>/claude.app/Contents/MacOS/claude",
+  "expectedHistoricalVersion": "2.1.293",
+  "historicalProducerRuns": [
+    {
+      "exitCode": 0,
+      "outputBytes": 61964,
+      "diagnosticBytes": 0,
+      "processGroupCleanup": {
+        "grace_ms": 200,
+        "term_permission_denied": false,
+        "kill_permission_denied": false
+      }
+    }
+  ],
+  "historicalNativeSourceEvidence": {
+    "producerVersions": [
+      "2.1.293"
+    ],
+    "nativeTranscriptCount": 2,
+    "contentRowCount": 17,
+    "completeJSONLFraming": true,
+    "requiredNativeFieldsValid": true,
+    "contentTypesByProducer": {
+      "2.1.293": [
+        "finalResponse",
+        "intermediateResponse",
+        "toolError",
+        "toolOutput",
+        "userPrompt"
+      ]
+    },
+    "typedMarkersByProducer": {
+      "2.1.293": [
+        "CHILD_FINAL",
+        "CHILD_PROMPT",
+        "FINAL",
+        "INTERMEDIATE",
+        "MCP_ERROR",
+        "MCP_OK",
+        "PROMPT",
+        "SHELL_ERROR",
+        "SHELL_OK"
+      ]
+    }
+  },
+  "historicalProducerWasInvokedAsCLI": true,
+  "guiHostCollectionEstablished": false,
+  "historicalCaptureDelivery": {
+    "exitCode": 0,
+    "stdoutBytes": 3,
+    "diagnosticBytes": 0,
+    "route": "productionSevenDayHistory",
+    "producerWasRunBeforeDriver": true
+  },
+  "versionAfterRun": "2.1.295",
+  "executableVersionStable": true,
+  "providerRuns": [
+    {
+      "exitCode": 0,
+      "outputBytes": 17740,
+      "diagnosticBytes": 0,
+      "processGroupCleanup": {
+        "grace_ms": 200,
+        "term_permission_denied": false,
+        "kill_permission_denied": false
+      }
+    },
+    {
+      "exitCode": 0,
+      "outputBytes": 87549,
+      "diagnosticBytes": 0,
+      "processGroupCleanup": {
+        "grace_ms": 200,
+        "term_permission_denied": false,
+        "kill_permission_denied": false
+      }
+    },
+    {
+      "exitCode": 0,
+      "outputBytes": 13107,
+      "diagnosticBytes": 0,
+      "processGroupCleanup": {
+        "grace_ms": 200,
+        "term_permission_denied": false,
+        "kill_permission_denied": false
+      }
+    }
+  ],
+  "driverExitCode": 0,
+  "driverDiagnosticBytes": 0,
+  "result": {
+    "alertCount": 2,
+    "ciphertextMarkerInspectionPassed": true,
+    "durableDeliveries": 46,
+    "finalCatchUpNewOccurrences": 0,
+    "finished": true,
+    "firstObservedAt": {
+      "CHILD_FINAL": "2026-10-09T11:31:36.425Z",
+      "CHILD_PROMPT": "2026-10-09T11:31:36.425Z",
+      "FINAL": "2026-10-09T11:31:36.375Z",
+      "INTERMEDIATE": "2026-10-09T11:31:36.375Z",
+      "MCP_ERROR": "2026-10-09T11:31:36.375Z",
+      "MCP_OK": "2026-10-09T11:31:36.375Z",
+      "PROMPT": "2026-10-09T11:31:36.375Z",
+      "SHELL_ERROR": "2026-10-09T11:31:36.375Z",
+      "SHELL_OK": "2026-10-09T11:31:36.375Z"
+    },
+    "gapReasons": [
+      "captureRejected",
+      "unsupportedContent"
+    ],
+    "lastPending": 0,
+    "observedExecutableVersion": "2.1.295",
+    "occurrenceCount": 38,
+    "occurrencesByContentType": {
+      "finalResponse": 7,
+      "intermediateResponse": 2,
+      "toolError": 4,
+      "toolOutput": 6,
+      "userPrompt": 19
+    },
+    "otherCandidates": [],
+    "producerVersions": [
+      "2.1.293",
+      "2.1.295"
+    ],
+    "queueCount": 0,
+    "replayStable": true,
+    "sessionCount": 3,
+    "setupState": "connected",
+    "sourceLatency": {
+      "committedSourceRevisionCount": 22,
+      "historical": {
+        "canonicalObservationToCommitObservation": {
+          "count": 10,
+          "excludedNegativeOrNonfiniteCount": 0,
+          "max": 2013.4251117706299,
+          "p50": 2013.4251117706299,
+          "p95": 2013.4251117706299
+        },
+        "committedSourceRevisionCount": 10,
+        "providerTimestampToCanonicalObservation": {
+          "count": 10,
+          "excludedNegativeOrNonfiniteCount": 0,
+          "max": 19484.784841537476,
+          "p50": 8199.784994125366,
+          "p95": 19484.784841537476
+        },
+        "queueCaptureToCommitObservation": {
+          "count": 10,
+          "excludedNegativeOrNonfiniteCount": 0,
+          "max": 2195.1310634613037,
+          "p50": 2195.1310634613037,
+          "p95": 2195.1310634613037
+        }
+      },
+      "limits": [
+        "Samples are unique canonical source revisions carrying the disposable synthetic value and a retained detection, with an exact full detector receipt.",
+        "Provider contentTime is its transcript timestamp, not a measurement of physical first output byte or agent publication; provider buffering and clock differences cannot be separated.",
+        "Canonical observedAt is the adapter read-start timestamp, set before asynchronous transcript reads; a later append can produce a negative provider delta without clock skew.",
+        "Each latency leg excludes and counts negative or nonfinite wall-clock deltas independently; clock adjustments can also affect positive durations.",
+        "Queue capture time belongs to the enclosing durable hook or poll and can precede publication of a source row; it is not the source's first available byte.",
+        "Commit observation is taken after the enclosing capture's pipeline activity completes, so it upper-bounds per-source durable commit and includes remaining batch/checkpoint work.",
+        "Final catch-up and replay are excluded. An empty historical population is unmeasured. Standalone CLI results do not measure T3 latency."
+      ],
+      "live": {
+        "canonicalObservationToCommitObservation": {
+          "count": 12,
+          "excludedNegativeOrNonfiniteCount": 0,
+          "max": 212.4009132385254,
+          "p50": 185.90402603149414,
+          "p95": 212.4009132385254
+        },
+        "committedSourceRevisionCount": 12,
+        "providerTimestampToCanonicalObservation": {
+          "count": 12,
+          "excludedNegativeOrNonfiniteCount": 0,
+          "max": 1095.2240228652954,
+          "p50": 338.5728597640991,
+          "p95": 1095.2240228652954
+        },
+        "queueCaptureToCommitObservation": {
+          "count": 12,
+          "excludedNegativeOrNonfiniteCount": 0,
+          "max": 2634.009003639221,
+          "p50": 501.1169910430908,
+          "p95": 2634.009003639221
+        }
+      },
+      "observedSourceRevisionCount": 22,
+      "percentileMethod": "nearest-rank",
+      "schemaVersion": 1,
+      "units": "milliseconds",
+      "unmeasuredSourceRevisionCount": 0
+    },
+    "syntheticAlertCount": 2,
+    "syntheticValuePresent": true,
+    "typedCommitted": {
+      "CHILD_FINAL": 2,
+      "CHILD_PROMPT": 2,
+      "FINAL": 3,
+      "INTERMEDIATE": 2,
+      "MCP_ERROR": 2,
+      "MCP_OK": 2,
+      "PROMPT": 2,
+      "SHELL_ERROR": 2,
+      "SHELL_OK": 2
+    },
+    "typedObserved": {
+      "CHILD_FINAL": 2,
+      "CHILD_PROMPT": 2,
+      "FINAL": 3,
+      "INTERMEDIATE": 2,
+      "MCP_ERROR": 2,
+      "MCP_OK": 2,
+      "PROMPT": 2,
+      "SHELL_ERROR": 2,
+      "SHELL_OK": 2
+    },
+    "valueCount": 1
+  },
+  "driverLaunched": true,
+  "t3LatencyMeasured": false,
+  "historicalLatencyMeasured": true,
+  "latencyMeasurementPassed": true,
+  "liveCanonicalObservationP95WithinProposed120SecondTarget": true,
+  "nativeHistoryIdentityAndContentStable": true,
+  "combinedNativeSourceEvidence": {
+    "producerVersions": [
+      "2.1.293",
+      "2.1.295"
+    ],
+    "nativeTranscriptCount": 6,
+    "contentRowCount": 40,
+    "completeJSONLFraming": true,
+    "requiredNativeFieldsValid": true,
+    "contentTypesByProducer": {
+      "2.1.293": [
+        "finalResponse",
+        "intermediateResponse",
+        "toolError",
+        "toolOutput",
+        "userPrompt"
+      ],
+      "2.1.295": [
+        "finalResponse",
+        "intermediateResponse",
+        "toolError",
+        "toolOutput",
+        "userPrompt"
+      ]
+    },
+    "typedMarkersByProducer": {
+      "2.1.293": [
+        "CHILD_FINAL",
+        "CHILD_PROMPT",
+        "FINAL",
+        "INTERMEDIATE",
+        "MCP_ERROR",
+        "MCP_OK",
+        "PROMPT",
+        "SHELL_ERROR",
+        "SHELL_OK"
+      ],
+      "2.1.295": [
+        "CHILD_FINAL",
+        "CHILD_PROMPT",
+        "FINAL",
+        "INTERMEDIATE",
+        "MCP_ERROR",
+        "MCP_OK",
+        "PROMPT",
+        "SHELL_ERROR",
+        "SHELL_OK"
+      ]
+    }
+  },
+  "mixedProducerVersionsEstablished": true,
+  "typedCommittedCountsCoverBothProducerCorpora": true,
+  "historicalCaptureWasSyntheticDelivery": true,
+  "historicalProducerVersionAfterRun": "2.1.293",
+  "historicalExecutableVersionStable": true,
+  "finishedAt": "2026-10-09T11:32:06.397457+00:00",
+  "cleanup": {
+    "disposableRootRemoved": true,
+    "temporaryAuthenticationRemoved": true,
+    "ownedProcessGroupsStopped": true,
+    "driverProcessGroupCleanup": {
+      "grace_ms": 200,
+      "term_permission_denied": false,
+      "kill_permission_denied": false
+    },
+    "existingHookSettingsModified": false,
+    "existingHistoriesModified": false
+  },
+  "publicationNotes": [
+    "Genuine disposable mixed-producer acceptance. The older 2.1.293 executable was bundled with the official GUI but was invoked as a CLI for this experiment. This does not establish the GUI host collection route.",
+    "The older full-content session was created before the driver started, using the same disposable authorized provider home and copied authentication. All live provider runs used the separately probed 2.1.295 executable.",
+    "The production seven-day history request was constructed and delivered by the acceptance runner. Source rows were genuine provider output; history delivery was synthetic acceptance instrumentation.",
+    "Both actual per-row producer versions were observed by the normalizer. Private comparisons verified unchanged historical native identities and file content. Native identity values, content hashes, personal paths, and source text are not published.",
+    "captureRejected and unsupportedContent remained visible. The report does not localize the rejected capture, establish coverage of unknown records, or prove zero capture loss. All required controlled typed markers committed, with stable replay and an empty queue.",
+    "This core acceptance does not establish signed-app, current T3, GUI, restart, upgrade, or six-host concurrency acceptance."
+  ]
+}

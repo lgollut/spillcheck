@@ -19,6 +19,8 @@ actor CodexTestHistory: CodexHistoryReading {
     var turns: [String: CodexHistoryPage] = [:]
     var listings: [Bool: [CodexHistoryPage]] = [:]
     var calls: [String] = []
+    var failures: [String: CodexHistoryError] = [:]
+    func configureFailure(_ method: String, error: CodexHistoryError?) { failures[method] = error }
     func configure(_ id: String, thread: CodexJSON, pages: [CodexHistoryPage], turns: CodexHistoryPage = .init(data: [])) {
         metadata[id] = thread; items[id] = pages; self.turns[id] = turns
     }
@@ -26,18 +28,23 @@ actor CodexTestHistory: CodexHistoryReading {
     func configureDescending(_ id: String, page: CodexHistoryPage) { descending[id] = page }
     func readThread(_ threadID: String) throws -> CodexThreadRead {
         calls.append("read:\(threadID)")
+        if let failure = failures["read:\(threadID)"] { throw failure }
         guard let thread = metadata[threadID] else { throw CodexHistoryError.unavailable }
         return .init(thread: thread, bytesRead: 64)
     }
-    func listThreads(cursor: String?, limit: Int, archived: Bool) -> CodexHistoryPage {
+    func listThreads(cursor: String?, limit: Int, archived: Bool) throws -> CodexHistoryPage {
         calls.append("list:\(archived)")
+        if let failure = failures["list"] { throw failure }
         return listings[archived]?[Int(cursor ?? "0") ?? 0] ?? .init(data: [])
     }
-    func listTurns(threadID: String, cursor: String?, limit: Int, direction: CodexHistoryDirection) -> CodexHistoryPage {
-        calls.append("turns:\(threadID)"); return turns[threadID] ?? .init(data: [])
+    func listTurns(threadID: String, cursor: String?, limit: Int, direction: CodexHistoryDirection) throws -> CodexHistoryPage {
+        calls.append("turns:\(threadID)")
+        if let failure = failures["turns:\(threadID)"] { throw failure }
+        return turns[threadID] ?? .init(data: [])
     }
     func listItems(threadID: String, turnID: String?, cursor: String?, limit: Int,
-                   direction: CodexHistoryDirection) -> CodexHistoryPage {
+                   direction: CodexHistoryDirection) throws -> CodexHistoryPage {
+        if let failure = failures["items:\(threadID)"] { throw failure }
         calls.append("direction:\(direction.rawValue)")
         calls.append("items:\(threadID):\(cursor ?? "nil")")
         if direction == .descending, let page = descending[threadID] { return page }
@@ -140,20 +147,58 @@ struct CodexAdapterTests {
         #expect(try await crypto.fingerprint(exactBytes: extraction.valueUTF8) == fingerprint)
     }
 
-    @Test func producerVersionsAndT3TupleAreExclusiveRatherThanMinimumVersionClaims() async throws {
+    @Test func unfamiliarVersionsRemainEligibleAndProducerMetadataIsIndependent() async throws {
         let crypto = try BackgroundCryptography.ephemeralForTesting(), page = CodexHistoryPage(data: [try codexItem()])
-        for adapter in [try codexTestAdapter(version: "0.161.1"), try codexTestAdapter(t3Version: nil),
-                        try codexTestAdapter(t3Version: "other"), try codexTestAdapter(interface: .desktopCode)] {
-            #expect(adapter.capabilities().allSatisfy { $0.validation == .unsupported })
-            let result = try await adapter.normalize(codexPacket(thread: "parent", interface: adapter.interface), capturedAt: Date(), cryptography: crypto)
-            #expect(result.coverageGaps == [.init(reason: .unsupportedVersion)])
+        for adapter in [try codexTestAdapter(version: "0.161.1"), try codexTestAdapter(version: "3.0.0", t3Version: nil),
+                        try codexTestAdapter(t3Version: "other")] {
+            #expect(adapter.capabilities().allSatisfy { $0.validation == .unverified && $0.canObserveActiveSession })
+            let result = try await adapter.importPublicItems(page, thread: codexThread(producer: "0.160.1"), observedAt: Date(), cryptography: crypto)
+            #expect(result.sources.count == 1 && result.coverageGaps.isEmpty)
+            #expect(result.sources[0].record.metadata.origin.agentVersion == "0.160.1")
         }
+        let desktop = try codexTestAdapter(interface: .desktopCode)
+        #expect(desktop.capabilities().allSatisfy { $0.validation == .unsupported })
+        let result = try await desktop.normalize(codexPacket(thread: "parent", interface: .desktopCode), capturedAt: Date(), cryptography: crypto)
+        #expect(result.coverageGaps == [.init(reason: .unsupportedVersion)])
         let standalone = try codexTestAdapter(interface: .standaloneCLI)
-        #expect(try await standalone.importPublicItems(page, thread: codexThread(producer: "0.160.1"), observedAt: Date(), cryptography: crypto).sources.isEmpty)
-        let valid = try await standalone.importPublicItems(page, thread: codexThread(producer: "0.161.0"), observedAt: Date(), cryptography: crypto)
-        #expect(valid.sources.count == 1 && valid.sources[0].record.metadata.origin.agentVersion == "0.161.0")
-        let t3 = try codexTestAdapter()
-        #expect(try await t3.importPublicItems(page, thread: codexThread(producer: "0.161.0"), observedAt: Date(), cryptography: crypto).sources.isEmpty)
+        let older = try await standalone.importPublicItems(page, thread: codexThread(producer: "0.160.1"), observedAt: Date(), cryptography: crypto)
+        let current = try await standalone.importPublicItems(page, thread: codexThread(producer: "0.161.0"), observedAt: Date(), cryptography: crypto)
+        let unknown = try await standalone.importPublicItems(page, thread: codexJSON(["id": "parent"]), observedAt: Date(), cryptography: crypto)
+        #expect(older.sources.count == 1 && current.sources.count == 1 && unknown.sources.count == 1)
+        #expect(unknown.sources[0].record.metadata.origin.agentVersion == CollectionCompatibility.unknownProducerVersion)
+        #expect(older.sources[0].record.metadata.identity == current.sources[0].record.metadata.identity)
+        #expect(older.sources[0].record.revision == current.sources[0].record.revision)
+    }
+
+    @Test func essentialToolFormatDegradesOnlyToolScopeAndKeepsReadableMessages() async throws {
+        let entries = [try codexItem("prompt", type: "userMessage", body: ["content": [["type": "text", "text": "é🙂 synthetic"]]]),
+            try codexItem("good"),
+            try codexItem("broken", type: "commandExecution", body: ["status": "completed", "aggregatedOutput": "output", "exitCode": "changed"]),
+            try codexItem("future", type: "futureType"),
+            try codexItem("unknown-block", type: "userMessage", body: ["content": [["type": "text", "text": "readable"], ["type": "future", "text": "unrecognized"]]])]
+        let batch = try await codexTestAdapter().importPublicItems(.init(data: entries), thread: codexThread(producer: "4.0.0"),
+            observedAt: Date(), cryptography: BackgroundCryptography.ephemeralForTesting())
+        #expect(batch.sources.map(\.record.metadata.identity.itemID) == ["prompt", "good", "unknown-block"])
+        #expect(batch.coverageGaps.filter { $0.isRequiredFormatFailure == true }.count == 1)
+        let failed = try #require(batch.coverageGaps.first { $0.isRequiredFormatFailure == true })
+        #expect(failed.scope?.profileID == "test" && failed.contentType == .toolError)
+        #expect(failed.recovery?.itemID == "broken")
+        #expect(!batch.recoveredReferences.contains { $0.itemID == "unknown-block" || $0.itemID == "broken" })
+        #expect(!batch.sources.contains { codexText($0).contains("unrecognized") })
+    }
+
+    @Test func additiveToolPayloadStringsAreContentButEnvelopeFieldsDoNotChangeRevision() async throws {
+        let crypto = try BackgroundCryptography.ephemeralForTesting(), adapter = try codexTestAdapter()
+        let original = try codexItem("tool", type: "mcpToolCall", body: ["status": "completed", "result": ["content": [["type": "text", "text": "first"]]]])
+        var envelope = try #require(original.object)
+        envelope["newEnvelopeField"] = .string("not model content")
+        let first = try await adapter.importPublicItems(.init(data: [original]), thread: codexThread(), observedAt: Date(), cryptography: crypto)
+        let same = try await adapter.importPublicItems(.init(data: [.object(envelope)]), thread: codexThread(producer: "future"), observedAt: Date(), cryptography: crypto)
+        #expect(first.sources[0].record.revision == same.sources[0].record.revision)
+        let extended = try codexItem("tool", type: "mcpToolCall", body: ["status": "completed", "result": ["content": [["type": "text", "text": "first"]], "newContentField": "new synthetic text"]])
+        let changed = try await adapter.importPublicItems(.init(data: [extended]), thread: codexThread(), observedAt: Date(), cryptography: crypto)
+        #expect(changed.sources[0].record.revision != first.sources[0].record.revision)
+        #expect(codexText(changed.sources[0]).contains("new synthetic text"))
     }
 
     @Test func durableAuthorityMustBeCommittedBeforeSourceEmissionAndCannotSwitchAfterUpgrade() async throws {
@@ -184,6 +229,18 @@ struct CodexAdapterTests {
         #expect(Set(batch.coverageGaps.map(\.reason)) == [.malformedSource, .unsupportedContent, .missingTimestamp, .incompleteMessage])
     }
 
+    @Test func missingAndOversizedNativeItemIDsLeaveRecoverableSessionOmission() async throws {
+        let entries = [try codexItem(""), try codexItem(String(repeating: "x", count: 4097)),
+            try codexItem("invalid\u{0}native"), try codexItem("readable")]
+        let batch = try await codexTestAdapter().importPublicItems(.init(data: entries), thread: codexThread(), observedAt: Date(),
+            cryptography: BackgroundCryptography.ephemeralForTesting())
+        #expect(batch.sources.map(\.record.metadata.identity.itemID) == ["readable"])
+        #expect(!batch.coverageGaps.isEmpty)
+        #expect(batch.coverageGaps.allSatisfy { $0.reason == .malformedSource && $0.isRequiredFormatFailure == true
+            && $0.recovery?.session?.sessionID == "parent" && $0.recovery?.locator == .unavailable && $0.recovery?.itemID == nil })
+        #expect(batch.recoveredReferences.allSatisfy { $0.itemID == "readable" })
+    }
+
     @Test func exactDecodedUnicodeStructuredFieldsAndBinaryExclusion() async throws {
         let item = try codexItem("mcp", type: "mcpToolCall", body: ["status": "completed", "error": NSNull(),
             "result": ["content": [["type": "text", "text": "é🙂\r\n"]],
@@ -195,6 +252,31 @@ struct CodexAdapterTests {
         #expect(source.record.segments.map(\.utf8) == [Data("é🙂\r\n".utf8), Data("synthetic".utf8)])
     }
 
+    @Test func nativeRolloutUsesRecordedProvenanceAndStableAuthorityAcrossVersionChanges() async throws {
+        let adapter = try codexTestAdapter(version: "4.0.0", t3Version: "current-host", selectedAuthority: .nativeRolloutTranscript)
+        let rows: [[String: Any]] = [
+            ["type": "session_meta", "payload": ["id": "native", "cli_version": "3.0.0"]],
+            ["type": "response_item", "timestamp": "2026-10-09T10:00:00Z", "payload": ["type": "message", "id": "user", "role": "user", "content": [["type": "input_text", "text": "prompt"]]]],
+            ["type": "response_item", "timestamp": "2026-10-09T10:00:01Z", "payload": ["type": "message", "id": "intermediate", "role": "assistant", "phase": "commentary", "content": [["type": "output_text", "text": "intermediate"]]]],
+            ["type": "response_item", "timestamp": "2026-10-09T10:00:02Z", "payload": ["type": "message", "id": "final", "role": "assistant", "phase": "final_answer", "content": [["type": "output_text", "text": "final"]]]],
+            ["type": "response_item", "timestamp": "2026-10-09T10:00:03Z", "payload": ["type": "function_call_output", "call_id": "success", "output": "{\"output\":\"ok\",\"exit_code\":0,\"additionalText\":\"extra\"}"]],
+            ["type": "response_item", "timestamp": "2026-10-09T10:00:04Z", "payload": ["type": "function_call_output", "call_id": "error", "output": "{\"output\":\"error\",\"exit_code\":7}"]]
+        ]
+        var data = Data()
+        for row in rows { data.append(try JSONSerialization.data(withJSONObject: row)); data.append(10) }
+        let document = UUID(), crypto = try BackgroundCryptography.ephemeralForTesting()
+        let batch = try await adapter.importTranscript(data, documentID: document, observedAt: Date(), expectedSessionID: "native", cryptography: crypto)
+        #expect(batch.coverageGaps.isEmpty && batch.sources.count == 5)
+        #expect(Set(batch.sources.map(\.record.metadata.contentType)) == Set(ContentType.allCases))
+        #expect(batch.sources.allSatisfy { $0.record.metadata.origin.agentVersion == "3.0.0" })
+        #expect(batch.sources.contains { codexText($0).contains("extra") })
+        #expect(batch.recoveredReferences.count == 5)
+        #expect(CodexCollectionAuthority.nativeRolloutTranscript.rawValue == "codex-t3-transcript-v1")
+        let replay = try await adapter.importTranscript(data, documentID: document, observedAt: Date(), expectedSessionID: "native", cryptography: crypto)
+        #expect(batch.sources.map(\.record.metadata.identity) == replay.sources.map(\.record.metadata.identity))
+        #expect(batch.sources.map(\.record.revision) == replay.sources.map(\.record.revision))
+    }
+
     @Test func coarseTurnTimesDoNotInventCoverageAcrossSevenDayBoundary() async throws {
         let end = Date(timeIntervalSince1970: 1_791_434_400), audit = try HistoricalAuditContext(reason: .firstLaunch, endingAt: end)
         let adapter = try codexTestAdapter(), crypto = try BackgroundCryptography.ephemeralForTesting()
@@ -202,7 +284,7 @@ struct CodexAdapterTests {
         let crossing = try await adapter.importPublicItems(.init(data: [coarse]), thread: codexThread(), observedAt: end,
             provenance: .historical(audit), turnTimes: ["turn": DateInterval(start: audit.start.addingTimeInterval(-1), end: audit.start.addingTimeInterval(1))],
             cryptography: crypto)
-        #expect(crossing.sources.isEmpty && crossing.coverageGaps == [.init(reason: .missingTimestamp)])
+        #expect(crossing.sources.isEmpty && crossing.coverageGaps.map(\.reason) == [.missingTimestamp])
         let inside = try await adapter.importPublicItems(.init(data: [coarse]), thread: codexThread(), observedAt: end,
             provenance: .historical(audit), turnTimes: ["turn": DateInterval(start: audit.start.addingTimeInterval(1), end: audit.start.addingTimeInterval(2))],
             cryptography: crypto)

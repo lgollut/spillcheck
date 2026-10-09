@@ -21,15 +21,101 @@ private actor ClaudeLiveEvidence {
     var deliveries = 0
     var paths: [String:String] = [:]
     var firstObservedAt: [String: Date] = [:]
+    private var producerVersions: Set<String> = []
     private var measuring = true
     private var sourceObservations: [ClaudeTimingSource: ClaudeSourceObservation] = [:]
     private var commitObservations: [ClaudeTimingSource: ClaudeCommitObservation] = [:]
+    private var normalizedEvents: [String: Int] = [:]
+    private var normalizerErrors: [String: Int] = [:]
+    private var receiverGaps: [String: Int] = [:]
+    private var captureHandlerErrors: [String: Int] = [:]
+    private var pipelineFailures: [String: Int] = [:]
+    private var admittedHistoricalAudits = Set<HistoricalAuditContext>()
+    private var uniqueGaps: Set<CoverageGap> = []
+    private static func eventLabel(_ packet: CapturePacket) -> String {
+        guard let value = try? JSONSerialization.jsonObject(with: packet.eventJSON) as? [String: Any] else { return "malformed" }
+        if value["kind"] as? String == "LeakretClaudeHistory" { return "history-request" }
+        let events: Set<String> = ["SessionStart", "UserPromptSubmit", "PostToolUse", "PostToolUseFailure", "PostToolBatch",
+            "MessageDisplay", "SubagentStart", "SubagentStop", "Stop", "SpillcheckTranscriptPoll", "LeakretTranscriptPoll"]
+        guard let event = value["hook_event_name"] as? String, events.contains(event) else { return "other" }
+        return event
+    }
+    private static func errorLabel(_ error: any Error) -> String {
+        if let error = error as? StorageError {
+            let name = switch error {
+            case .unsafeStorageLocation: "unsafeStorageLocation"
+            case .databaseUnavailable: "databaseUnavailable"
+            case .manifestMissing: "manifestMissing"
+            case .manifestMismatch: "manifestMismatch"
+            case .corruptProtectedState: "corruptProtectedState"
+            case .protectionUnavailable: "protectionUnavailable"
+            case .payloadMissing: "payloadMissing"
+            case .invalidPayload: "invalidPayload"
+            case .monitoringPaused: "monitoringPaused"
+            case .staleProcessingPermit: "staleProcessingPermit"
+            case .stateChanged: "stateChanged"
+            case .staleClaim: "staleClaim"
+            case .captureTooLarge: "captureTooLarge"
+            case .queueSaturated: "queueSaturated"
+            case .expiredCapture: "expiredCapture"
+            case .invalidTime: "invalidTime"
+            case .stateTooLarge: "stateTooLarge"
+            case .injectedFailure: "injectedFailure"
+            }
+            return "storage/" + name
+        }
+        if let error = error as? ClaudeCollectionError {
+            let name = switch error {
+            case .invalidConfiguration: "invalidConfiguration"
+            case .wrongProfile: "wrongProfile"
+            case .malformedCapture: "malformedCapture"
+            case .unsafeTranscriptPath: "unsafeTranscriptPath"
+            case .awaitingTranscript: "awaitingTranscript"
+            }
+            return "claude/" + name
+        }
+        if error is CancellationError { return "cancelled" }
+        return "other"
+    }
+    func normalization(_ packet: CapturePacket) { normalizedEvents[Self.eventLabel(packet), default: 0] += 1 }
+    func normalizationFailed(_ error: any Error) { normalizerErrors[Self.errorLabel(error), default: 0] += 1 }
+    func receiverGap(_ reason: CoverageGapReason) { receiverGaps[reason.rawValue, default: 0] += 1 }
+    func captureHandlerFailed(_ packet: CapturePacket, error: any Error) {
+        captureHandlerErrors[Self.eventLabel(packet) + "/" + Self.errorLabel(error), default: 0] += 1
+    }
+    func pipelineFailure(_ failure: PipelineFailureDiagnostic) {
+        let label = [failure.reason.rawValue, failure.stage.rawValue, failure.code.rawValue].joined(separator: "/")
+        pipelineFailures[label, default: 0] += 1
+    }
+    func gapDiagnosticsJSON() throws -> Data {
+        var descriptors: [String: Int] = [:]
+        for gap in uniqueGaps {
+            let locator: String = switch gap.recovery?.locator {
+            case .transcript?: "transcript-record"
+            case .transcriptByteOffset?: "transcript-position"
+            case .upstreamItem?: "native-item"
+            case .unavailable?: "native-session"
+            case nil: "none"
+            }
+            let required = gap.isRequiredFormatFailure.map { $0 ? "confirmed-required" : "unconfirmed" } ?? "unspecified"
+            let label = [gap.reason.rawValue, required, gap.contentType?.rawValue ?? "none", locator].joined(separator: "/")
+            descriptors[label, default: 0] += 1
+        }
+        return try JSONSerialization.data(withJSONObject: ["normalizedEventCounts": normalizedEvents, "normalizerErrorCounts": normalizerErrors,
+            "receiverGapCounts": receiverGaps, "captureHandlerErrorCounts": captureHandlerErrors,
+            "pipelineFailureCounts": pipelineFailures,
+            "uniqueGapDescriptorCounts": descriptors, "labelsAreControlled": true], options: [.sortedKeys])
+    }
     func delivery() { deliveries += 1 }
+    func historicalAdmission(_ audit: HistoricalAuditContext) { admittedHistoricalAudits.insert(audit) }
+    func historicalAdmissions() -> Set<HistoricalAuditContext> { admittedHistoricalAudits }
     func collect(_ batch: CollectionBatch, capturedAt: Date) {
+        uniqueGaps.formUnion(batch.coverageGaps)
         let expected: [(String,ContentType)] = [("PROMPT",.userPrompt),("INTERMEDIATE",.intermediateResponse),
             ("FINAL",.finalResponse),("SHELL_OK",.toolOutput),("SHELL_ERROR",.toolError),
             ("MCP_OK",.toolOutput),("MCP_ERROR",.toolError),("CHILD_PROMPT",.userPrompt),("CHILD_FINAL",.finalResponse)]
         for source in batch.sources {
+            producerVersions.insert(source.record.metadata.origin.agentVersion)
             if let path = source.context?.transcriptPath { paths[path] = source.record.metadata.identity.session.sessionID }
             let text = source.record.segments.map { String(decoding:$0.utf8,as:UTF8.self) }.joined(separator:"\n")
             guard text.contains(claudeLiveSecret) else { continue }
@@ -62,6 +148,7 @@ private actor ClaudeLiveEvidence {
         let formatter=ISO8601DateFormatter(); formatter.formatOptions=[.withInternetDateTime,.withFractionalSeconds]
         return firstObservedAt.mapValues { formatter.string(from:$0) }
     }
+    func observedProducerVersions() -> [String] { producerVersions.sorted() }
     func observeCommits(_ snapshot: InventorySnapshot, at completedAt: Date) {
         guard measuring else { return }
         for (key, observation) in sourceObservations where commitObservations[key] == nil {
@@ -125,17 +212,51 @@ private struct ClaudeAuditedNormalizer: CaptureNormalizer {
     let adapter:ClaudeAdapter
     let evidence:ClaudeLiveEvidence
     func normalize(_ packet:CapturePacket,capturedAt:Date,cryptography:BackgroundCryptography) async throws ->CollectionBatch {
-        let batch = try await adapter.normalize(packet,capturedAt:capturedAt,cryptography:cryptography)
-        await evidence.collect(batch, capturedAt: capturedAt); return batch
+        await evidence.normalization(packet)
+        do {
+            let batch = try await adapter.normalize(packet,capturedAt:capturedAt,cryptography:cryptography)
+            await evidence.collect(batch, capturedAt: capturedAt); return batch
+        } catch {
+            await evidence.normalizationFailed(error)
+            throw error
+        }
     }
 }
 
 enum ClaudeAcceptance {
+    /// Install/remove only one explicitly owned disposable registration using production editing.
+    /// The signed app supplies the receiver; this mode does not assert its connection proof.
+    static func configureHook(_ arguments: [String]) async throws {
+        func option(_ name: String) -> String? {
+            guard let i = arguments.firstIndex(of: name), arguments.indices.contains(i + 1) else { return nil }
+            return arguments[i + 1]
+        }
+        guard let settings = option("--settings"), let helper = option("--helper"), let socket = option("--socket"),
+              let profile = option("--profile"), let version = option("--version"),
+              let registration = option("--registration-id").flatMap(UUID.init(uuidString:)) else {
+            throw ClaudeCollectionError.invalidConfiguration
+        }
+        let configuration = try ClaudeHookConfiguration(registrationID: registration,
+            helperURL: URL(fileURLWithPath: helper), socketURL: URL(fileURLWithPath: socket),
+            profileID: profile, agentVersion: version)
+        let setup = try ClaudeHookSetup(settingsURL: URL(fileURLWithPath: settings), configuration: configuration)
+        if arguments.contains("--remove-hook") {
+            try await setup.remove()
+            emit(["removed": true, "setupState": "notInstalled"])
+        } else {
+            _ = try await setup.install()
+            let challenge = try await setup.beginVerification()
+            emit(["installed": true, "setupState": "installedUnverified", "verificationPrompt": challenge.prompt])
+        }
+    }
+
     static func run(_ arguments:[String]) async throws {
         func option(_ name:String) ->String? {
             guard let i = arguments.firstIndex(of:name), arguments.indices.contains(i+1) else { return nil }; return arguments[i+1]
         }
-        guard let path = option("--directory"), let scanner = option("--scanner"), let rules = option("--rules") else {
+        guard let path = option("--directory"), let scanner = option("--scanner"), let rules = option("--rules"),
+              let observedVersion = option("--version"),
+              CollectionCompatibility.isEligible(provider: .claudeCode, interface: .standaloneCLI, version: observedVersion) else {
             throw ClaudeCollectionError.invalidConfiguration
         }
         let root = URL(fileURLWithPath:path).resolvingSymlinksInPath()
@@ -146,7 +267,7 @@ enum ClaudeAcceptance {
         let store = try await ProtectedStore.open(at:storeDirectory,cryptography:crypto)
         let evidence = ClaudeLiveEvidence()
         let sourceRoot = URL(fileURLWithPath:option("--source-root") ?? root.path).resolvingSymlinksInPath()
-        let adapter = try ClaudeAdapter(profileID:"claude-live",agentVersion:option("--version") ?? "2.1.293",allowedTranscriptRoots:[sourceRoot],
+        let adapter = try ClaudeAdapter(profileID:"claude-live",agentVersion:observedVersion,allowedTranscriptRoots:[sourceRoot],
             checkpointLookup: { id in try await store.checkpoint(documentID: id) })
         let detector = BetterleaksSecretDetector(configuration:.init(executableURL:URL(fileURLWithPath:scanner),
             configurationURL:URL(fileURLWithPath:rules),workingDirectoryURL:work))
@@ -158,6 +279,7 @@ enum ClaudeAcceptance {
                     await evidence.observeCommits(snapshot, at: Date())
                 }
             })
+        await pipeline.observeFailuresForTesting { failure in await evidence.pipelineFailure(failure) }
         let server = LocalCaptureServer()
         var monitor:ClaudeActiveTranscriptMonitor?
         var setup:ClaudeHookSetup?
@@ -174,14 +296,17 @@ enum ClaudeAcceptance {
             guard let helper = option("--helper"), let settings = option("--settings") else { throw ClaudeCollectionError.invalidConfiguration }
             let socket = root.appendingPathComponent("capture.sock")
             let configuration = try ClaudeHookConfiguration(registrationID:UUID(),helperURL:URL(fileURLWithPath:helper),
-                socketURL:socket,profileID:"claude-live",agentVersion:option("--version") ?? "2.1.293")
+                socketURL:socket,profileID:"claude-live",agentVersion:observedVersion)
             let installed = try ClaudeHookSetup(settingsURL:URL(fileURLWithPath:settings),configuration:configuration)
             _ = try await installed.install()
             let challenge = try await installed.beginVerification()
             setup = installed
             try await server.start(at:socket,accepting:{ await store.processingPermit() != nil },onCapture:{ packet in
+                do {
                 guard let permit = await store.processingPermit() else { throw StorageError.monitoringPaused }
-                let insertion = try await store.enqueue(packet.body,capturedAt:Date(),permit:permit)
+                let audit = try ClaudeAdapter.historicalAuditForTesting(in: packet)
+                let insertion = try await store.enqueue(packet.body,capturedAt:Date(),permit:permit,historicalAudit:audit)
+                if let audit { await evidence.historicalAdmission(audit) }
                 await evidence.delivery()
                 if let hook = try? JSONSerialization.jsonObject(with:packet.eventJSON) as? [String:Any],
                    hook["hook_event_name"] as? String == "UserPromptSubmit", hook["prompt"] as? String == challenge.prompt {
@@ -189,7 +314,14 @@ enum ClaudeAcceptance {
                     switch insertion { case .inserted(let value), .alreadyQueued(let value), .alreadyProcessed(let value):id=value }
                     try await installed.acceptVerification(.init(packet:packet,durableQueueID:id))
                 }
-            },onGap:{ reason in try? await store.recordCoverageGap(reason:reason) })
+                } catch {
+                    await evidence.captureHandlerFailed(packet, error: error)
+                    throw error
+                }
+            },onGap:{ reason in
+                await evidence.receiverGap(reason)
+                try? await store.recordCoverageGap(reason:reason)
+            })
             emit(["ready":true,"mode":"standalone-cli","verificationPrompt":challenge.prompt])
             monitor = try ClaudeActiveTranscriptMonitor(profileID:"claude-live",sources:[],enqueue:{ packet,date in
                 guard let permit=await store.processingPermit() else { throw StorageError.monitoringPaused }
@@ -242,6 +374,11 @@ enum ClaudeAcceptance {
         let kindCounts = Dictionary(grouping:relevant,by:{ $0.source.contentType.rawValue }).mapValues(\.count)
         let sessions = Set(relevant.map(\.source.identity.session)).count
         let gaps = try await store.coverageGaps().map(\.reason.rawValue)
+        let historicalProgress = try await store.historicalProgress()
+        let historicalAdmissions = await evidence.historicalAdmissions()
+        let settledHistoricalAdmissions = historicalAdmissions.filter { admitted in
+            historicalProgress.contains { $0.progress.audit == admitted && !$0.progress.hasUnreadContent }
+        }.count
         let observed = await evidence.summary()
         let committed = await evidence.committedSummary(Set(relevant.map(\.source.identity)))
         let syntheticAlerts = snapshot.alertDecisions.values.filter { $0.eligibility.fingerprint == fingerprint }.count
@@ -261,10 +398,18 @@ enum ClaudeAcceptance {
         let ciphertextClean = try liveFilesClean && filesAreClean(storeDirectory,marker:Data(claudeLiveSecret.utf8))
         let latencyBytes = try await evidence.latencySummaryJSON()
         let sourceLatency = try JSONSerialization.jsonObject(with: latencyBytes)
+        let gapDiagnosticBytes = try await evidence.gapDiagnosticsJSON()
+        let gapDiagnostics = try JSONSerialization.jsonObject(with: gapDiagnosticBytes)
         emit(["finished":true,"setupState":setupState?.rawValue ?? "selected-source","durableDeliveries":await evidence.deliveryCount(),
+              "observedExecutableVersion":observedVersion,"producerVersions":await evidence.observedProducerVersions(),
               "typedObserved":observed,"typedCommitted":committed,"valueCount":snapshot.records.count,"syntheticValuePresent":valueID != nil,
               "firstObservedAt":await evidence.observationTimes(),
               "sourceLatency":sourceLatency,
+              "gapDiagnostics":gapDiagnostics,
+              "historicalQueueAdmissionCount":historicalAdmissions.count,
+              "historicalProgressCount":historicalProgress.count,
+              "historicalSettledAdmissionCount":settledHistoricalAdmissions,
+              "historicalAdmissionsSettled":settledHistoricalAdmissions == historicalAdmissions.count,
               "otherCandidates":otherCandidates,
               "occurrenceCount":relevant.count,"occurrencesByContentType":kindCounts,"sessionCount":sessions,
               "alertCount":snapshot.alertDecisions.count,"syntheticAlertCount":syntheticAlerts,"queueCount":queued,"lastPending":lastPending,

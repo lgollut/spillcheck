@@ -1,0 +1,200 @@
+{
+  "schemaVersion": 1,
+  "passed": true,
+  "sourceIsOwnedSynthetic": true,
+  "interface": "standaloneCLI",
+  "agentVersion": "2.1.295",
+  "versionAfterRun": "2.1.295",
+  "expectedVersion": "2.1.295",
+  "executableVersionStable": true,
+  "providerRuns": [
+    {
+      "exitCode": 0,
+      "outputBytes": 20126,
+      "diagnosticBytes": 0,
+      "processGroupCleanup": {
+        "grace_ms": 200,
+        "term_permission_denied": false,
+        "kill_permission_denied": false
+      }
+    },
+    {
+      "exitCode": 0,
+      "outputBytes": 83749,
+      "diagnosticBytes": 0,
+      "processGroupCleanup": {
+        "grace_ms": 200,
+        "term_permission_denied": false,
+        "kill_permission_denied": false
+      }
+    },
+    {
+      "exitCode": 0,
+      "outputBytes": 13086,
+      "diagnosticBytes": 0,
+      "processGroupCleanup": {
+        "grace_ms": 200,
+        "term_permission_denied": false,
+        "kill_permission_denied": false
+      }
+    }
+  ],
+  "nativeSourceEvidence": {
+    "producerVersions": [
+      "2.1.295"
+    ],
+    "typedMarkers": [
+      "CHILD_FINAL",
+      "CHILD_PROMPT",
+      "FINAL",
+      "INTERMEDIATE",
+      "MCP_ERROR",
+      "MCP_OK",
+      "PROMPT",
+      "SHELL_ERROR",
+      "SHELL_OK"
+    ],
+    "childTypedMarkers": [
+      "CHILD_FINAL",
+      "CHILD_PROMPT"
+    ],
+    "completeJSONLFraming": true,
+    "requiredNativeFieldsValid": true,
+    "nativeTranscriptCount": 4
+  },
+  "ownedProductionHookConfigurationUsed": true,
+  "signedNativeChildCommitEstablished": true,
+  "signedSetupConnectionVerificationEstablished": false,
+  "coreChallengeVerificationMeasuredSeparately": true,
+  "profileDiscoveryDisabled": true,
+  "scannerIsSignedBundleChild": true,
+  "syntheticReplayAcrossRoutes": true,
+  "replayRuns": [
+    {
+      "interface": "standalone-cli",
+      "exitCode": 0,
+      "stdoutBytes": 3,
+      "diagnosticBytes": 0
+    },
+    {
+      "interface": "standalone-cli",
+      "exitCode": 0,
+      "stdoutBytes": 3,
+      "diagnosticBytes": 0
+    },
+    {
+      "interface": "standalone-cli",
+      "exitCode": 0,
+      "stdoutBytes": 3,
+      "diagnosticBytes": 0
+    },
+    {
+      "interface": "standalone-cli",
+      "exitCode": 0,
+      "stdoutBytes": 3,
+      "diagnosticBytes": 0
+    },
+    {
+      "interface": "t3",
+      "exitCode": 0,
+      "stdoutBytes": 3,
+      "diagnosticBytes": 0
+    },
+    {
+      "interface": "t3",
+      "exitCode": 0,
+      "stdoutBytes": 3,
+      "diagnosticBytes": 0
+    },
+    {
+      "interface": "t3",
+      "exitCode": 0,
+      "stdoutBytes": 3,
+      "diagnosticBytes": 0
+    },
+    {
+      "interface": "t3",
+      "exitCode": 0,
+      "stdoutBytes": 3,
+      "diagnosticBytes": 0
+    }
+  ],
+  "replayStable": true,
+  "restartRecoveryEstablished": false,
+  "signedAppExitCode": 0,
+  "timedOut": false,
+  "stdoutBytes": 0,
+  "diagnosticBytes": 0,
+  "ownedHookRemovalPassed": true,
+  "providerAuthenticationRemoved": true,
+  "processGroupCleanup": {
+    "grace_ms": 200,
+    "term_permission_denied": false,
+    "kill_permission_denied": false
+  },
+  "ciphertextMarkerInspectionPassed": true,
+  "result": {
+    "acceptancePhase": "shutdown-complete",
+    "alertCount": 2,
+    "alertsByDeliveryState": {
+      "permissionDenied": 2
+    },
+    "collectionConfigured": true,
+    "gapReasons": [
+      "unsupportedContent"
+    ],
+    "launchAtLogin": false,
+    "monitoringEnabled": true,
+    "newVaultCleanupPassed": true,
+    "notificationState": "Off",
+    "observedAgentVersions": [
+      "2.1.295"
+    ],
+    "occurrenceCount": 20,
+    "occurrencesByContentType": {
+      "finalResponse": 4,
+      "intermediateResponse": 1,
+      "toolError": 2,
+      "toolOutput": 3,
+      "userPrompt": 10
+    },
+    "queueCount": 0,
+    "revealedExcerptCount": 0,
+    "revealedSourceMetadataCount": 0,
+    "revealedValueCount": 0,
+    "schemaVersion": 1,
+    "storageReady": true,
+    "syntheticNativeChildContentTypes": [
+      "finalResponse",
+      "userPrompt"
+    ],
+    "syntheticNativeChildOccurrenceCount": 3,
+    "syntheticOccurrenceCount": 20,
+    "syntheticOccurrencesByContentType": {
+      "finalResponse": 4,
+      "intermediateResponse": 1,
+      "toolError": 2,
+      "toolOutput": 3,
+      "userPrompt": 10
+    },
+    "syntheticSessionCount": 2,
+    "syntheticValuePresent": true,
+    "valueCount": 1,
+    "viewingAuthorized": false,
+    "windowVisible": true,
+    "workflowEvents": {
+      "mask-userMask": 2
+    }
+  },
+  "passScope": "Genuine signed-app ingestion, all required typed markers, native child, canonical replay across CLI/T3 routes, encrypted storage and owned cleanup. Saved setup proof, restart, upgrade and concurrent GUI acceptance remain separate gates.",
+  "cleanupPending": false,
+  "recordedOn": "2026-10-09",
+  "publicationNotes": [
+    "Genuine Claude CLI2.1.295 produced disposable native sources containing only synthetic acceptance credentials. The signed production app, owned hook configuration and bundled scanner collected them.",
+    "The existing signed binary and direct executable launch were unchanged from the earlier startup failures. Current queue-key startup passed; the cause of the intermittent earlier -25308 failures remains unknown.",
+    "All nine typed markers, all five required content types, native child prompt and final commitment, canonical CLI/T3 replay, empty queue, encrypted marker inspection, new-vault key cleanup and owned provider cleanup passed.",
+    "unsupportedContent remains a disclosed native-envelope limitation. Actual notification permission was Off; two alert decisions were permissionDenied, so no operating-system banner or health notification is established.",
+    "SyntheticReplayAcrossRoutes tests overlapping metadata on original CLI sources, not a genuine session created through T3.",
+    "Saved signed setup proof, mixed producer history, restart, upgrade, authenticated viewing, GUI contracts and six-host concurrency remain separate open gates. Historical failed reports remain unchanged."
+  ]
+}

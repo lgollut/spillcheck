@@ -1,0 +1,119 @@
+{
+  "schemaVersion": 1,
+  "passed": true,
+  "sourceHost": "T3-owned-Claude-child",
+  "providerProducerVersion": "2.1.295",
+  "sourceIsGenuineProviderOutput": true,
+  "credentialsAreSynthetic": true,
+  "selectedOriginalSourceOnly": true,
+  "unrelatedHistoryEnumerated": false,
+  "hooksModified": false,
+  "ownRuntimeIdentityConfirmed": true,
+  "producerFinished": true,
+  "liveCollectionBeforeProducerCompletionEstablished": true,
+  "distinctLiveOccurrenceCountSamples": 6,
+  "replayRuns": [
+    {
+      "interface": "standalone-cli",
+      "exitCode": 0
+    },
+    {
+      "interface": "t3",
+      "exitCode": 0
+    }
+  ],
+  "replayStable": true,
+  "signedAppExitCode": 0,
+  "processGroupCleanup": {
+    "grace_ms": 200,
+    "term_permission_denied": false,
+    "kill_permission_denied": false
+  },
+  "ciphertextMarkerInspectionPassed": true,
+  "result": {
+    "acceptancePhase": "shutdown-complete",
+    "alertCount": 0,
+    "alertsByDeliveryState": {},
+    "collectionConfigured": true,
+    "gapReasons": [
+      "unsupportedContent"
+    ],
+    "launchAtLogin": false,
+    "monitoringEnabled": true,
+    "newVaultCleanupPassed": true,
+    "notificationState": "Off",
+    "observedAgentVersions": [
+      "2.1.295"
+    ],
+    "occurrenceCount": 16,
+    "occurrencesByContentType": {
+      "finalResponse": 3,
+      "intermediateResponse": 1,
+      "toolError": 1,
+      "toolOutput": 2,
+      "userPrompt": 9
+    },
+    "queueCount": 0,
+    "revealedExcerptCount": 0,
+    "revealedSourceMetadataCount": 0,
+    "revealedValueCount": 0,
+    "schemaVersion": 1,
+    "storageReady": true,
+    "syntheticNativeChildContentTypes": [
+      "finalResponse",
+      "userPrompt"
+    ],
+    "syntheticNativeChildOccurrenceCount": 3,
+    "syntheticOccurrenceCount": 16,
+    "syntheticOccurrencesByContentType": {
+      "finalResponse": 3,
+      "intermediateResponse": 1,
+      "toolError": 1,
+      "toolOutput": 2,
+      "userPrompt": 9
+    },
+    "syntheticSessionCount": 1,
+    "syntheticValuePresent": true,
+    "valueCount": 1,
+    "viewingAuthorized": false,
+    "windowVisible": true,
+    "workflowEvents": {
+      "mask-userMask": 2
+    }
+  },
+  "passScope": "Signed observation of one genuinely T3-created original Claude source, all five types, live growth, exact-source replay, encrypted storage and scoped cleanup. Native-child coverage, hook proof, history discovery, restart, upgrade and six-host concurrency require separate gates.",
+  "cleanupPending": false,
+  "nativeSourceEvidence": {
+    "typedMarkers": [
+      "CHILD_FINAL",
+      "CHILD_PROMPT",
+      "FINAL",
+      "INTERMEDIATE",
+      "PROMPT",
+      "SHELL_ERROR",
+      "SHELL_OK"
+    ],
+    "childTypedMarkers": [
+      "CHILD_FINAL",
+      "CHILD_PROMPT"
+    ],
+    "producerVersions": [
+      "2.1.295"
+    ],
+    "completeJSONLFraming": true,
+    "requiredNativeFieldsValid": true,
+    "exactParentAndOwnChildFilesOnly": true,
+    "inspectedAfterSignedCollectorFinished": true
+  },
+  "signedNativeChildCommitEstablished": true,
+  "recordedOn": "2026-10-09",
+  "T3HostVersion": "0.0.46-nightly.20261008.2833",
+  "publicationNotes": [
+    "Genuine app-owned Claude T3 child created from the live composer catalog; no top-level thread or unrelated history search.",
+    "Private native mapping comes from the child own CLAUDE_CODE_SESSION_ID, then the derived standard source path is confirmed against its own prompt and native sessionId. This is a measured runtime field, not a documented stability promise.",
+    "The signed collector was ready before tool output, intentional error and native child production. Six distinct occurrence-count samples were observed before producer completion.",
+    "All five types, native child prompt/final commitment, one canonical native session, sixteen occurrences, CLI/T3 exact-source replay, empty queue, encrypted inspection and new-vault cleanup passed.",
+    "Native source marker checks occurred after signed collector shutdown, reading only the exact parent and conversation-local child files. Native sources remain in the original provider store.",
+    "unsupportedContent remains disclosed. No native hook proof, MCP subtype, simultaneous independent CLI/GUI producer, restart, upgrade, or OS notification claim."
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "Claude": {
+    "canRunChildTask": true,
+    "childOwnRuntimeMappingMeasured": false,
+    "delegatedTaskCreated": false,
+    "mappingGateEstablished": false,
+    "nativeIdentityInGenericTaskStatusOrThreadReadSchema": false,
+    "nativeSessionOrTranscriptMapperAdvertisedBySupportedTools": false,
+    "providerInstance": "claudeAgent",
+    "unmetCapability": "No exact native Claude session or transcript mapping is exposed by the available supported T3 metadata tools. An own-runtime mapper is unmeasured; no new Claude task was created without an established mapper. Current exact-source T3 Claude content acceptance remains open."
+  },
+  "Codex": {
+    "childOwnRuntimeCODEX_THREAD_IDAvailable": true,
+    "coreEvidence": "harness-compatibility-codex-t3-delegated-2026-10-09.json",
+    "delegatedTaskCreated": true,
+    "exactOriginalSourceReadConfirmed": true,
+    "model": "gpt-6.1-sol",
+    "nativeMappingFieldInAppMetadata": false,
+    "providerInstance": "codex"
+  },
+  "T3ServerVersion": "0.0.46-nightly.20261008.2833",
+  "appOwnedDelegationAvailable": true,
+  "existingConfigurationOrTrustModified": false,
+  "liveComposerCatalogUsed": true,
+  "measuredDate": "2026-10-09",
+  "newCoreOrBuildChanges": false,
+  "schemaVersion": 1,
+  "topLevelThreadsCreated": false,
+  "unrelatedProviderHistoryEnumeration": false
+}

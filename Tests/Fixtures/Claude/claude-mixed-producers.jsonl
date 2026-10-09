@@ -1,0 +1,3 @@
+{"type":"user","uuid":"older","sessionId":"mixed-native-session","timestamp":"2026-10-08T12:00:00Z","version":"2.1.293","message":{"role":"user","content":"SPILLCHECK_MIXED_OLD"}}
+{"type":"assistant","uuid":"newer","sessionId":"mixed-native-session","timestamp":"2026-10-08T12:00:01Z","version":"2.1.295","message":{"role":"assistant","content":[{"type":"text","text":"SPILLCHECK_MIXED_NEW"}],"stop_reason":"end_turn"}}
+{"type":"user","uuid":"unknown","sessionId":"mixed-native-session","timestamp":"2026-10-08T12:00:02Z","message":{"role":"user","content":"SPILLCHECK_MIXED_UNKNOWN"}}

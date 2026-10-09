@@ -1,0 +1,4 @@
+{
+  "description": "Bounded exact-session pass-through observer",
+  "modules": ["./register.js"]
+}

@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "recordedOn": "2026-10-09",
+  "T3HostVersion": "0.0.46-nightly.20261008.2833",
+  "providerInstance": "claudeAgent",
+  "model": "claude-opus-5-5",
+  "producerVersion": "2.1.295",
+  "appOwnedChildCreated": true,
+  "topLevelThreadsCreated": false,
+  "ownRuntimeNativeSessionIdAvailable": true,
+  "ownRuntimeField": "CLAUDE_CODE_SESSION_ID",
+  "nativeIdentityVerifiedAgainstOriginalOwnSource": true,
+  "originalTranscriptPathExplicitRuntimeField": false,
+  "originalTranscriptPathDerivedThenVerified": true,
+  "documentedRuntimeFieldStabilityEstablished": false,
+  "unrelatedHistoryEnumerated": false,
+  "hooksModified": false,
+  "originalNativeSourcesRetained": true,
+  "signedContentEvidence": "app-claude-t3-harness-compatibility-live-2026-10-09.json",
+  "limitation": "Supported generic T3 metadata still exposes no exact native Claude mapper. Own-runtime mapping is measured for this version; stable future mapping requires runtime or hook contract validation."
+}

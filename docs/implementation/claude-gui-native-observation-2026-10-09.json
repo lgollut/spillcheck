@@ -1,0 +1,66 @@
+{
+  "observedAt": "2026-10-09T10:54:05.908184+00:00",
+  "guiVersion": "2.31226.0",
+  "rowCount": 41,
+  "producerVersions": [
+    "2.1.293"
+  ],
+  "completeJSONL": true,
+  "owned": true,
+  "contentCounts": {
+    "userPrompt": 1,
+    "intermediateResponse": 1,
+    "toolOutput": 2,
+    "toolError": 1,
+    "finalResponse": 1
+  },
+  "markers": {
+    "USER": [
+      "userPrompt"
+    ],
+    "INTERMEDIATE": [
+      "userPrompt",
+      "intermediateResponse"
+    ],
+    "FINAL": [
+      "userPrompt",
+      "finalResponse"
+    ],
+    "CHILD_FINAL": [
+      "userPrompt",
+      "toolOutput"
+    ],
+    "TOOL_SUCCESS": [
+      "toolOutput"
+    ],
+    "TOOL_ERROR": [
+      "toolError"
+    ]
+  },
+  "nativeChildren": [
+    {
+      "filename": "<CHILD_TRANSCRIPT>.jsonl",
+      "rows": 12,
+      "producerVersions": [
+        "2.1.293"
+      ],
+      "childFinalInOwnResponse": true
+    }
+  ],
+  "toolOnlySuccessNotRepeatedInAssistant": true,
+  "toolOnlyErrorNotRepeatedInAssistant": true,
+  "passedMainTranscriptContentGate": true,
+  "phase0Passed": false,
+  "remainingGates": [
+    "owned hook delivery and encrypted commitment",
+    "production bounded active GUI observation",
+    "seven-day GUI catch-up",
+    "live side-chat observability and unavailable-history accounting",
+    "Codex genuine GUI route"
+  ],
+  "publicationNotes": [
+    "Read-only observation of a genuine disposable session created in the official local Code GUI. Native identity values and child filenames were redacted.",
+    "Content counts and markers were inspected in the authorized native transcript. They are not encrypted committed occurrence counts.",
+    "passedMainTranscriptContentGate concerns native source content only. phase0Passed remains false; this observation does not establish a production GUI collection route."
+  ]
+}

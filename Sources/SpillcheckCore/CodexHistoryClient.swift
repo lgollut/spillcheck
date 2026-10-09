@@ -4,6 +4,7 @@ import Foundation
 public enum CodexHistoryError: Error, Equatable, Sendable {
     case invalidConfiguration, unsupportedVersion, unavailable, timedOut, cancelled
     case responseLimitExceeded, malformedResponse, remoteFailure(code: Int), unsafeMethod
+    case unrecognizedExecutable, missingMethod(String), rejectedParameters(String)
 }
 /// Failed bounded protocol reads carry counts, never diagnostics or captured content.
 public struct CodexHistoryReadFailure: Error, Equatable, Sendable {
@@ -116,7 +117,7 @@ public struct CodexHistoryClientConfiguration: Sendable {
     public let requestTimeout: TimeInterval
     public let maximumResponseBytes: Int
     public init(executableURL: URL, codexHomeURL: URL, workingDirectoryURL: URL,
-                agentVersion: String = "0.161.0", requestTimeout: TimeInterval = 10,
+                agentVersion: String = CollectionCompatibility.unknownProducerVersion, requestTimeout: TimeInterval = 10,
                 maximumResponseBytes: Int = 8 * 1024 * 1024) throws {
         guard [executableURL, codexHomeURL, workingDirectoryURL].allSatisfy({
             $0.isFileURL && $0.path.hasPrefix("/") && !$0.path.utf8.contains(0)
@@ -134,8 +135,57 @@ public actor CodexAppServerHistoryClient: CodexHistoryReading {
     public static let sandboxProfile = "(version 1)(allow default)(deny network*)(deny process-fork)"
     private let configuration: CodexHistoryClientConfiguration
     private var server: CodexPassiveProcess?
-    public init(configuration: CodexHistoryClientConfiguration) { self.configuration = configuration }
-    public func close() { server?.close(); server = nil }
+    public private(set) var observedReaderVersion: String?
+    @_spi(Testing) public private(set) var lastShutdownCompletedWithinDeadline: Bool?
+    private var usableMethods: Set<String> = []
+    private var methodFailures: [String: CompatibilityFailureReason] = [:]
+    private var executableFingerprint: ExecutableFingerprint?
+    private struct ExecutableFingerprint: Equatable {
+        let device: UInt64, inode: UInt64, size: Int64, seconds: Int64, nanoseconds: Int64
+    }
+    private static func fingerprint(_ url: URL) -> ExecutableFingerprint? {
+        var info = stat()
+        guard stat(url.path, &info) == 0, info.st_mode & S_IFMT == S_IFREG else { return nil }
+        return .init(device: UInt64(info.st_dev), inode: UInt64(info.st_ino), size: info.st_size,
+            seconds: Int64(info.st_mtimespec.tv_sec), nanoseconds: Int64(info.st_mtimespec.tv_nsec))
+    }
+
+    /// Recreate only this owned reader after replacement, shrinkage, or an update in place.
+    /// Active selections and durable progress belong to callers and are left intact.
+    @discardableResult public func refreshExecutableIfChanged() -> Bool {
+        let current = Self.fingerprint(configuration.executableURL)
+        guard current != executableFingerprint else { return false }
+        close(); executableFingerprint = current
+        observedReaderVersion = nil; usableMethods.removeAll(); methodFailures.removeAll()
+        return true
+    }
+
+    /// Successful initialization does not imply support for any passive history method.
+    /// Item reads establish live operation; discovery plus item reads establish catch-up.
+    public func assessment(scope: CollectionScope) -> CollectionAssessment {
+        var operations: Set<CollectionOperation> = []
+        if usableMethods.contains("thread/read") && usableMethods.contains("thread/items/list") {
+            operations.insert(.liveRead)
+            if usableMethods.contains("thread/list") { operations.insert(.historicalRead) }
+        }
+        let failures = methodFailures.keys.sorted().flatMap { method -> [CompatibilityFailure] in
+            // Turn timestamps are a conditional fallback for both live and historical items.
+            // Dated items remain readable while either operation can still have an omission.
+            let affected: [CollectionOperation] = method == "thread/list" ? [.historicalRead]
+                : method == "thread/turns/list" ? [.liveRead, .historicalRead] : [.liveRead]
+            return affected.map { .init(reason: methodFailures[method]!, operation: $0) }
+        }
+        return .init(scope: scope, observedExecutableVersion: observedReaderVersion,
+            format: .codexPublicHistory, usableOperations: operations, failures: failures)
+    }
+    public init(configuration: CodexHistoryClientConfiguration) {
+        self.configuration = configuration
+        executableFingerprint = Self.fingerprint(configuration.executableURL)
+    }
+    public func close() {
+        if let server { lastShutdownCompletedWithinDeadline = server.close() }
+        server = nil
+    }
 
     public func readThread(_ threadID: String) async throws -> CodexThreadRead {
         try await readThread(threadID, budget: configuredBudget())
@@ -194,24 +244,63 @@ public actor CodexAppServerHistoryClient: CodexHistoryReading {
         guard ["thread/read", "thread/list", "thread/turns/list", "thread/items/list"].contains(method) else {
             throw CodexHistoryError.unsafeMethod
         }
-        guard configuration.agentVersion == "0.161.0" else { throw CodexHistoryError.unsupportedVersion }
+        refreshExecutableIfChanged()
         do {
             let started = ProcessInfo.processInfo.systemUptime
             let accounting = CodexReadAccounting(maximumBytes: min(budget.maximumBytes, configuration.maximumResponseBytes))
             do {
-            if server == nil { server = try CodexPassiveProcess(configuration: configuration, budget: budget, accounting: accounting) }
+            if server == nil {
+                let created = try CodexPassiveProcess(configuration: configuration, budget: budget, accounting: accounting)
+                if observedReaderVersion != created.observedVersion {
+                    usableMethods.removeAll(); methodFailures.removeAll()
+                }
+                observedReaderVersion = created.observedVersion
+                server = created
+            }
             let remaining = budget.timeout - (ProcessInfo.processInfo.systemUptime - started)
             guard remaining > 0 else { throw CodexHistoryError.timedOut }
             let result = try server!.request(method, parameters, budget: .init(maximumBytes: accounting.maximumBytes,
                 timeout: min(remaining, configuration.requestTimeout)), accounting: accounting)
+            try validateContract(result.0, method: method, parameters: parameters)
+            usableMethods.insert(method); methodFailures.removeValue(forKey: method)
             return (result.0, accounting.bytesRead)
             } catch let error as CodexHistoryError where error == .timedOut || error == .responseLimitExceeded {
                 throw CodexHistoryReadFailure(reason: error, bytesRead: accounting.bytesRead)
             }
         } catch {
             close()
+            // A prior successful call is no longer evidence that this method is currently usable.
+            // Only a fresh validated response may restore it and settle an operation incident.
+            usableMethods.remove(method)
+            let reason: CompatibilityFailureReason?
+            switch error {
+            case CodexHistoryError.missingMethod: reason = .missingMethod
+            case CodexHistoryError.rejectedParameters: reason = .rejectedParameters
+            case CodexHistoryError.malformedResponse, CodexHistoryError.unrecognizedExecutable: reason = .malformedReply
+            case CodexHistoryError.unavailable, CodexHistoryError.timedOut, is CodexHistoryReadFailure: reason = .transientFailure
+            case CodexHistoryError.remoteFailure: reason = .sourceUnavailable
+            default: reason = nil
+            }
+            if let reason { methodFailures[method] = reason }
             if error is CancellationError { throw CodexHistoryError.cancelled }
             throw error
+        }
+    }
+    private func validateContract(_ result: CodexJSON, method: String, parameters: CodexJSON) throws {
+        guard result.object != nil else { throw CodexHistoryError.malformedResponse }
+        if method == "thread/read" {
+            guard result["thread"].object != nil,
+                  result["thread"]["id"].nonemptyString == parameters["threadId"].nonemptyString else {
+                throw CodexHistoryError.malformedResponse
+            }
+        } else {
+            guard let rows = result["data"].array,
+                  rows.count <= Int(parameters["limit"].number ?? 256) else { throw CodexHistoryError.malformedResponse }
+            for key in ["nextCursor", "backwardsCursor"] where result[key] != .null {
+                guard let cursor = result[key].nonemptyString, cursor.utf8.count <= 64 * 1024 else {
+                    throw CodexHistoryError.malformedResponse
+                }
+            }
         }
     }
     private func validate(_ value: String) throws {
@@ -234,6 +323,8 @@ private final class CodexPassiveProcess {
     private var pending = Data()
     private var serial = 0
     private var closed = false
+    private var shutdownCompletedWithinDeadline: Bool?
+    let observedVersion: String
     init(configuration: CodexHistoryClientConfiguration, budget: CodexRPCBudget, accounting: CodexReadAccounting) throws {
         self.configuration = configuration
         guard FileManager.default.isExecutableFile(atPath: configuration.executableURL.path),
@@ -251,9 +342,12 @@ private final class CodexPassiveProcess {
         } catch DetectorFailure.cancelled { throw CodexHistoryError.cancelled }
         catch DetectorFailure.timedOut { throw CodexHistoryError.timedOut }
         catch { throw CodexHistoryError.unavailable }
-        guard String(data: version, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) == "codex-cli 0.161.0" else {
-            throw CodexHistoryError.unsupportedVersion
-        }
+        guard let output = String(data: version, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              output.hasPrefix("codex-cli ") else { throw CodexHistoryError.unrecognizedExecutable }
+        let observed = String(output.dropFirst("codex-cli ".count))
+        guard !observed.isEmpty, observed.utf8.count <= 256, !observed.utf8.contains(0),
+              !observed.contains(where: { $0.isWhitespace }) else { throw CodexHistoryError.unrecognizedExecutable }
+        observedVersion = observed
         process.executableURL = URL(fileURLWithPath: "/usr/bin/sandbox-exec")
         process.arguments = ["-p", CodexAppServerHistoryClient.sandboxProfile, configuration.executableURL.path,
             "app-server", "--stdio", "-c", "analytics.enabled=false", "-c", "otel.exporter=\"none\""]
@@ -269,19 +363,28 @@ private final class CodexPassiveProcess {
             guard fcntl(stdin.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1) == 0 else { throw CodexHistoryError.unavailable }
             let remaining = budget.timeout - (ProcessInfo.processInfo.systemUptime - started)
             guard remaining > 0 else { throw CodexHistoryError.timedOut }
-            _ = try request("initialize", .object(["clientInfo": .object(["name": .string("spillcheck-passive-history"),
+            let initialized = try request("initialize", .object(["clientInfo": .object(["name": .string("spillcheck-passive-history"),
                 "version": .string("1")]), "capabilities": .object(["experimentalApi": .bool(true)])]),
                 budget: .init(maximumBytes: accounting.maximumBytes, timeout: remaining), accounting: accounting)
+            guard initialized.0.object != nil else { throw CodexHistoryError.malformedResponse }
             try writeNotification()
         } catch { close(); throw error }
     }
     deinit { close() }
-    func close() {
-        guard !closed else { return }; closed = true
+    @discardableResult func close() -> Bool {
+        guard !closed else { return shutdownCompletedWithinDeadline ?? !process.isRunning }; closed = true
         for handle in [stdin.fileHandleForReading, stdin.fileHandleForWriting, stdout.fileHandleForReading,
                        stdout.fileHandleForWriting, stderr.fileHandleForReading, stderr.fileHandleForWriting] { try? handle.close() }
-        if process.isRunning { kill(process.processIdentifier, SIGKILL); process.waitUntilExit() }
+        // Foundation owns this Process's child reaping. Its waitUntilExit polls a
+        // run loop without a deadline and can strand an actor's executor thread.
+        // Signal only the currently live owned child once, then bound observation.
+        if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+        let deadline = ProcessInfo.processInfo.systemUptime + 0.25
+        while process.isRunning && ProcessInfo.processInfo.systemUptime < deadline { usleep(1_000) }
+        let completed = !process.isRunning
+        shutdownCompletedWithinDeadline = completed
         pending.removeAll(keepingCapacity: false)
+        return completed
     }
     private func writeNotification() throws {
         let bytes = Data("{\"method\":\"initialized\",\"params\":{}}\n".utf8)
@@ -310,6 +413,9 @@ private final class CodexPassiveProcess {
                 if row["error"] != .null {
                     let code = row["error"]["code"].number ?? 0
                     guard code.isFinite, code >= Double(Int32.min), code <= Double(Int32.max) else { throw CodexHistoryError.malformedResponse }
+                    guard code.rounded() == code else { throw CodexHistoryError.malformedResponse }
+                    if code == -32601 { throw CodexHistoryError.missingMethod(method) }
+                    if code == -32602 { throw CodexHistoryError.rejectedParameters(method) }
                     throw CodexHistoryError.remoteFailure(code: Int(code))
                 }
                 guard row.object?["result"] != nil else { throw CodexHistoryError.malformedResponse }

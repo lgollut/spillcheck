@@ -55,11 +55,14 @@ def evaluate_measurement(report):
         and live["excludedNegativeOrNonfiniteCount"] == 0
         and REQUIRED <= set(final["typedCommittedBeforeCatchUp"]))
     cleanup = report.get("cleanup", {})
-    report["passed"] = bool(report.get("actualProducerVersion") == "0.161.0"
-        and report.get("actualReaderVersion") == "0.161.0" and report.get("producerExitCode") == 0
+    report["passed"] = bool(isinstance(report.get("actualProducerVersion"), str)
+        and final.get("actualReaderVersion") == report.get("actualReaderVersion")
+        and final.get("observedProducerVersions") == [report.get("actualProducerVersion")] and report.get("producerExitCode") == 0
         and report.get("pipelineExitCode") == 0 and report.get("observerReady")
         and report["latencyMeasurementPassed"] and report["liveCanonicalReadStartP95WithinProposed120SecondTarget"]
         and REQUIRED <= set(final["typedCommitted"]) and final["syntheticValuePresent"]
+        and all(final["typedCommitted"].get(marker) == 1 for marker in REQUIRED)
+        and final.get("nativeLocationsUnique") and not final.get("gapReasons")
         and final["queueCount"] == 0 and final["replayStable"] and final["finalCatchUpNewOccurrences"] == 0
         and final["ciphertextMarkerInspectionPassed"] and cleanup.get("disposableRootRemoved")
         and cleanup.get("temporaryAuthenticationRemoved") and cleanup.get("ownedProcessGroupsStopped"))
@@ -92,12 +95,15 @@ def stop_owned_group(child):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--executable", default=str(pathlib.Path.home() / ".local/bin/codex"))
+    parser.add_argument("--reader-executable", help="Passive reader; defaults to producer executable")
+    parser.add_argument("--expect-producer-version", help="Optional strict baseline for this run")
+    parser.add_argument("--expect-reader-version", help="Optional strict reader baseline for this run")
     parser.add_argument("--acceptance-executable", default=str(ROOT / ".build/out/Products/Debug/spillcheck-storage-acceptance"))
     parser.add_argument("--report", default=str(ROOT / ".build/implementation/codex-observation-latency.json"))
     args = parser.parse_args()
     report = {"schemaVersion": 1, "startedAt": now(), "interface": "standalone-cli",
-              "collectionPath": "exact-selected-public-native-items", "configuredProducerVersion": "0.161.0",
-              "configuredReaderVersion": "0.161.0", "passed": False, "latencyMeasurementPassed": False,
+              "collectionPath": "exact-selected-public-native-items", "expectedProducerVersion": args.expect_producer_version,
+              "expectedReaderVersion": args.expect_reader_version, "passed": False, "latencyMeasurementPassed": False,
               "t3LatencyMeasured": False, "hookDeliveryLatencyMeasured": False,
               "existingConfigurationModified": False, "existingHistoriesModified": False,
               "existingHookSettingsModified": False, "hookTrustBypassed": False,
@@ -105,6 +111,7 @@ def main():
     private = None
     temporary_directory = None
     version_cleanup = {}
+    reader_cleanup = {}
     driver = None
     producer_cleanup = {}
     driver_cleanup = None
@@ -131,14 +138,11 @@ def main():
         os.chmod(home / "config.toml", 0o600)
         env = dict(os.environ)
         env["CODEX_HOME"] = str(home)
-        version_code, version_bytes, _ = FIXTURE.bounded([args.executable, "--version"], environment=env,
-            directory=work, timeout=10, maximum_bytes=65536, cleanup_report=version_cleanup)
-        version = version_bytes.decode("utf-8", errors="replace").strip()
-        if version_code != 0 or version != "codex-cli 0.161.0":
-            report["status"] = "unsupported-producer-version"
-            return
-        report["actualProducerVersion"] = "0.161.0"
-        report["actualReaderVersion"] = "0.161.0"
+        reader = args.reader_executable or args.executable
+        report["actualProducerVersion"] = FIXTURE.observe_version(args.executable, environment=env,
+            directory=work, expected=args.expect_producer_version, cleanup_report=version_cleanup)
+        report["actualReaderVersion"] = FIXTURE.observe_version(reader, environment=env,
+            directory=work, expected=args.expect_reader_version, cleanup_report=reader_cleanup)
 
         def output_line(line):
             nonlocal driver
@@ -154,7 +158,7 @@ def main():
             report["observerLaunchRequestedAt"] = now()
             driver = subprocess.Popen([args.acceptance_executable, "--codex-observe",
                 "--interface", "standalone-cli", "--directory", str(private), "--codex-home", str(home),
-                "--executable", args.executable, "--threads", event["thread_id"], "--scanner",
+                "--executable", reader, "--reader-version", report["actualReaderVersion"], "--threads", event["thread_id"], "--scanner",
                 str(ROOT / ".build/scanner/betterleaks"), "--rules",
                 str(ROOT / ".build/scanner/betterleaks.toml"), "--duration", "240"],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
@@ -200,6 +204,8 @@ Keep all commentary and final responses short."""
         root_removed = private is None or not private.exists()
         groups_stopped = (version_cleanup.get("leaderExited", False)
             and not version_cleanup.get("groupKillPermissionDenied", False)
+            and reader_cleanup.get("leaderExited", False)
+            and not reader_cleanup.get("groupKillPermissionDenied", False)
             and producer_cleanup.get("leaderExited", False)
             and not producer_cleanup.get("groupKillPermissionDenied", False)
             and driver_cleanup is not None and driver_cleanup.get("leaderExited", False)
@@ -207,7 +213,8 @@ Keep all commentary and final responses short."""
         report["finishedAt"] = now()
         report["cleanup"] = {"disposableRootRemoved": root_removed,
             "temporaryAuthenticationRemoved": root_removed, "ownedProcessGroupsStopped": groups_stopped,
-            "versionProbeProcessGroup": version_cleanup, "producerProcessGroup": producer_cleanup,
+            "versionProbeProcessGroup": version_cleanup, "readerVersionProbeProcessGroup": reader_cleanup,
+            "producerProcessGroup": producer_cleanup,
             "observerProcessGroup": driver_cleanup}
         evaluate_measurement(report)
         path = pathlib.Path(args.report)

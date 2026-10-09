@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "providerLaunchCount": 0,
+  "pluginInstalled": false,
+  "pluginLoaded": false,
+  "globalConfigurationChanged": false,
+  "sourceAuthorityEstablished": false,
+  "exactRuntimeDeclarationsGenerated": false,
+  "exactSessionGuardRequired": true,
+  "journalContainsRawProviderText": false,
+  "journalContainsRawNativeIdentities": false,
+  "maximumJournalRows": 256,
+  "maximumJournalBytes": 1048576,
+  "observedProducerVersion": "2.1.293",
+  "versionMatchesExpectation": true,
+  "validationExitCode": 0,
+  "recognizedEvents": [
+    "session.start",
+    "prompt.submit",
+    "command.run",
+    "turn.start",
+    "turn.step",
+    "turn.complete",
+    "ui.render"
+  ],
+  "recognizedAPICalls": [
+    "$.session.id",
+    "$.process.run"
+  ],
+  "staticValidationPassed": true,
+  "validationOutputBytes": 654,
+  "marketplaceValidationExitCode": 0,
+  "marketplaceStaticValidationPassed": true,
+  "isolatedValidationConfigRemoved": true,
+  "pureLocalPassThroughPrivacyChecksPassed": true,
+  "constructedJournalBoundaryTestsPassed": 2,
+  "publicDeclarationWriterVersion": "2.1.277",
+  "phase0Passed": false,
+  "exactSideDispatchUnmeasured": true
+}

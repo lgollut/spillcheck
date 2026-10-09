@@ -74,14 +74,34 @@ def bounded(command, *, environment, directory, input_bytes=b"", timeout=120, ma
         child.stdout.close()
         child.stderr.close()
 
+def observe_version(executable, *, environment, directory, expected=None, cleanup_report=None):
+    code, output, _ = bounded([str(executable), "--version"], environment=environment,
+        directory=directory, timeout=10, maximum_bytes=1024, cleanup_report=cleanup_report)
+    text = output.decode("utf-8", errors="strict").strip()
+    if code != 0 or not text.startswith("codex-cli "):
+        raise ValueError("unrecognized-codex-executable")
+    version = text[len("codex-cli "):]
+    if not version or len(version.encode()) > 256 or any(c.isspace() for c in version) or "\0" in version:
+        raise ValueError("malformed-codex-version")
+    if expected is not None and version != expected:
+        raise ValueError("acceptance-baseline-version-mismatch")
+    return version
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--executable", default=str(pathlib.Path.home()/".local/bin/codex"))
+    parser.add_argument("--reader-executable", help="Passive reader; defaults to the producer executable")
+    parser.add_argument("--expect-producer-version", help="Optional strict baseline for this acceptance run")
+    parser.add_argument("--expect-reader-version", help="Optional strict reader baseline for this run")
     parser.add_argument("--report", default=str(ROOT/".build/implementation/codex-cli-live.json"))
     parser.add_argument("--fixtures", default=str(ROOT/"Tests/Fixtures/Codex"))
     args = parser.parse_args()
-    report = {"schemaVersion": 1, "interface": "standalone-cli", "configuredReaderVersion": "0.161.0",
+    report = {"schemaVersion": 1, "interface": "standalone-cli", "expectedProducerVersion": args.expect_producer_version,
+        "expectedReaderVersion": args.expect_reader_version,
         "existingConfigurationModified": False, "hookTrustBypassed": False, "status": "unverified"}
+    private = None
+    producer_cleanup, probe_cleanup, driver_cleanup = {}, {}, {}
+    producer_version_cleanup, reader_version_cleanup = {}, {}
     try:
         with tempfile.TemporaryDirectory(prefix="spillcheck-m4-codex-cli-") as temporary:
             private = pathlib.Path(temporary).resolve()
@@ -99,6 +119,9 @@ def main():
             os.chmod(home/"config.toml", 0o600)
             env = dict(os.environ)
             env["CODEX_HOME"] = str(home)
+            reader = args.reader_executable or args.executable
+            report["actualProducerVersion"] = observe_version(args.executable, environment=env, directory=work, expected=args.expect_producer_version, cleanup_report=producer_version_cleanup)
+            report["actualReaderVersion"] = observe_version(reader, environment=env, directory=work, expected=args.expect_reader_version, cleanup_report=reader_version_cleanup)
             prompt = f"""Run only this synthetic Spillcheck acceptance task. LEAKRET_M4_PROMPT {TOKEN}.
 Send a commentary response containing exactly LEAKRET_M4_INTERMEDIATE {TOKEN}.
 Run a shell command that prints LEAKRET_M4_SHELL_OK {TOKEN} and exits0.
@@ -109,7 +132,7 @@ Do not read files or access the network. Finish with LEAKRET_M4_FINAL {TOKEN}.
 Keep all commentary and final responses short."""
             code, output, elapsed = bounded([args.executable, "--no-daemon", "-a", "never", "exec",
                 "--skip-git-repo-check", "--json", "-s", "read-only", "-C", str(work), "-"],
-                environment=env, directory=work, input_bytes=prompt.encode(), timeout=180)
+                environment=env, directory=work, input_bytes=prompt.encode(), timeout=180, cleanup_report=producer_cleanup)
             report["producerExitCode"] = code; report["producerMilliseconds"] = elapsed
             events = []
             for row in output.splitlines():
@@ -127,17 +150,18 @@ Keep all commentary and final responses short."""
             pathlib.Path(args.fixtures).mkdir(parents=True, exist_ok=True)
             probe_report = private/"public-read.json"
             env.update(SPILLCHECK_CODEX_PROBE_HOME=str(home), SPILLCHECK_CODEX_PROBE_THREAD_IDS=ids[0],
-                SPILLCHECK_CODEX_PROBE_EXECUTABLE=args.executable, SPILLCHECK_CODEX_PROBE_REPORT=str(probe_report),
+                SPILLCHECK_CODEX_PROBE_EXECUTABLE=reader, SPILLCHECK_CODEX_PROBE_INTERFACE="standalone-cli", SPILLCHECK_CODEX_PROBE_REPORT=str(probe_report),
                 SPILLCHECK_CODEX_PROBE_FIXTURE_DIRECTORY=args.fixtures)
             probe_code, _, _ = bounded(["/usr/bin/swift", "test", "--filter", "CodexPublicLiveTests"],
-                environment=env, directory=ROOT, timeout=180, maximum_bytes=4*1024*1024)
+                environment=env, directory=ROOT, timeout=180, maximum_bytes=4*1024*1024, cleanup_report=probe_cleanup)
             report["publicReadExitCode"] = probe_code
             if probe_report.exists():
                 report["publicRead"] = json.loads(probe_report.read_bytes())
             report["status"] = "public-read-complete" if probe_code == 0 else "public-read-unavailable"
             binary = ROOT/".build/out/Products/Debug/spillcheck-storage-acceptance"
             driver = subprocess.Popen([str(binary), "--codex-observe", "--interface", "standalone-cli",
-                "--directory", str(private), "--codex-home", str(home), "--executable", args.executable,
+                "--directory", str(private), "--codex-home", str(home), "--executable", reader,
+                "--reader-version", report["actualReaderVersion"],
                 "--threads", ids[0], "--scanner", str(ROOT/".build/scanner/betterleaks"),
                 "--rules", str(ROOT/".build/scanner/betterleaks.toml"), "--duration", "60"],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
@@ -154,18 +178,32 @@ Keep all commentary and final responses short."""
                 report["pipelineExitCode"] = driver.returncode
                 report["pipelineDiagnosticBytes"] = len(errors)
                 required = {"PROMPT", "INTERMEDIATE", "FINAL", "SHELL_OK", "SHELL_ERROR", "MCP_OK", "MCP_ERROR", "CHILD_FINAL"}
-                report["passed"] = bool(final and driver.returncode == 0 and required <= set(final["typedCommitted"]) and final["syntheticValuePresent"]
+                report["passed"] = bool(final and driver.returncode == 0
+                    and final.get("actualReaderVersion") == report["actualReaderVersion"]
+                    and final.get("observedProducerVersions") == [report["actualProducerVersion"]] and required <= set(final["typedCommitted"]) and final["syntheticValuePresent"]
+                    and all(final["typedCommitted"].get(marker) == 1 for marker in required)
+                    and final.get("nativeLocationsUnique") and not final.get("gapReasons")
                     and final["queueCount"] == 0 and final["replayStable"] and final["ciphertextMarkerInspectionPassed"])
             finally:
                 try:
                     os.killpg(driver.pid, signal.SIGKILL)
-                except (ProcessLookupError, PermissionError):
+                except ProcessLookupError:
                     pass
+                except PermissionError:
+                    driver_cleanup["groupKillPermissionDenied"] = True
                 driver.wait(timeout=5)
+                driver_cleanup.update(leaderExited=driver.returncode is not None, ownedGroupTerminationRequested=True)
+                driver_cleanup.setdefault("groupKillPermissionDenied", False)
                 driver.stdout.close(); driver.stderr.close()
     except (OSError, ValueError, TimeoutError, BufferError, subprocess.TimeoutExpired):
         report["status"] = "bounded-attempt-failed"
     finally:
+        removed = private is None or not private.exists()
+        process_cleanup = [producer_version_cleanup, reader_version_cleanup, producer_cleanup, probe_cleanup, driver_cleanup]
+        groups_stopped = all(item.get("leaderExited") and not item.get("groupKillPermissionDenied") for item in process_cleanup)
+        report["cleanup"] = {"disposableRootRemoved": removed, "temporaryAuthenticationRemoved": removed,
+            "ownedProcessGroupsStopped": groups_stopped}
+        report["passed"] = bool(report.get("passed") and removed and groups_stopped)
         path = pathlib.Path(args.report)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(report, indent=2, sort_keys=True)+"\n")

@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "passed": false,
+  "sourceIsOwnedSynthetic": true,
+  "interface": "standaloneCLI",
+  "agentVersion": "2.1.295",
+  "versionAfterRun": "2.1.295",
+  "expectedVersion": "2.1.295",
+  "executableVersionStable": true,
+  "providerRuns": [],
+  "nativeSourceEvidence": {},
+  "ownedProductionHookConfigurationUsed": true,
+  "signedSetupConnectionVerificationEstablished": false,
+  "coreChallengeVerificationMeasuredSeparately": true,
+  "profileDiscoveryDisabled": true,
+  "scannerIsSignedBundleChild": true,
+  "syntheticReplayAcrossRoutes": true,
+  "replayRuns": [],
+  "replayStable": false,
+  "restartRecoveryEstablished": false,
+  "signedAppExitCode": 0,
+  "timedOut": false,
+  "stdoutBytes": 0,
+  "diagnosticBytes": 0,
+  "ownedHookRemovalPassed": true,
+  "providerAuthenticationRemoved": true,
+  "processGroupCleanup": {
+    "grace_ms": 200,
+    "term_permission_denied": false,
+    "kill_permission_denied": false
+  },
+  "ciphertextMarkerInspectionPassed": false,
+  "result": {
+    "acceptancePhase": "shutdown-complete",
+    "collectionConfigured": false,
+    "phase": "key-unavailable-queue--25308",
+    "schemaVersion": 1,
+    "storageReady": false
+  },
+  "cleanupPending": true,
+  "recordedOn": "2026-10-09",
+  "configuredAcceptanceTarget": "Genuine signed-app ingestion, all required typed markers, native child, canonical replay across CLI/T3 routes, encrypted storage and owned cleanup. Saved setup proof, restart, upgrade and concurrent GUI acceptance remain separate gates.",
+  "publicationNotes": [
+    "Redacted copy of the failed signed-app startup attempt. The process ID was omitted.",
+    "key-unavailable-queue--25308 occurred before storageReady and collectionConfigured. No Claude provider run or native source observation occurred.",
+    "scannerIsSignedBundleChild and syntheticReplayAcrossRoutes describe configured artifacts and intended assertions. Neither scanning nor replay was exercised.",
+    "Owned registration removal, disposable provider authentication removal, and owned process shutdown passed.",
+    "cleanupPending means the scoped encrypted vault and guarded cleanup manifest were retained. Their machine-specific paths are omitted. Encrypted marker inspection and vault cleanup did not pass."
+  ]
+}

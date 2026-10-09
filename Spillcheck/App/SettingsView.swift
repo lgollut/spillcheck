@@ -218,6 +218,14 @@ private struct AgentSettings: View {
             }
             Text("\(AppIdentity.name) only adds and removes its own hooks. Codex asks you to trust them on next start.")
                 .font(.system(size: 12)).foregroundStyle(Palette.tertiary).padding(.horizontal, 2)
+            Text("An owned registration can serve CLI and T3 in the same authorized home. Its verification does not identify the producer host; each host's observed collection and acceptance evidence are shown separately. GUI collection is still awaiting its required gates.")
+                .font(.system(size: 12)).foregroundStyle(Palette.tertiary).padding(.horizontal, 2)
+            ForEach(model.routes) { route in
+                ForEach(route.hostRoutes) { host in
+                    Text("\(route.provider.displayName) \(host.name): \(host.summary)")
+                        .font(.system(size: 12)).foregroundStyle(Palette.tertiary).padding(.horizontal, 2)
+                }
+            }
         }
         .sheet(item: Binding(get: { configuring.map(ConfigureTarget.init) }, set: { configuring = $0?.provider })) { target in
             ConfigureAgentSheet(model: model, provider: target.provider)
@@ -254,8 +262,7 @@ private struct AgentRow: View {
             return "Searched ~/.local/bin, /opt/homebrew/bin, /usr/local/bin"
         }
         let command = route.provider == .codex ? "codex" : "claude"
-        let interface = profile.interface == .t3 ? "managed by T3\(profile.t3Version.map { " \($0)" } ?? "")" : profile.executablePath
-        return [profile.version.isEmpty ? command : "\(command) \(profile.version)", interface,
+        return [profile.version.isEmpty ? command : "\(command) \(profile.version)", profile.executablePath,
                 profile.homePath.isEmpty ? nil : "profile \(profile.homePath)"].compactMap { $0 }.joined(separator: " · ")
     }
 
@@ -268,8 +275,8 @@ private struct AgentRow: View {
         case .notDetected, .notChecked: "Not found in the usual locations."
         case .detected: "Executable found. Not connected yet."
         case .installedUnverified: "Hooks are installed. No event has arrived from a fresh session yet, so monitoring isn’t proven."
-        case .connected: "Connected and delivering events."
-        case .unsupported: "This version isn’t validated, so its sessions aren’t collected."
+        case .connected: "Owned hooks verified. Recent activity and content coverage are shown separately."
+        case .unsupported: "This collection route has not been established."
         case .unavailable: "Hook configuration needs repair."
         }
     }
@@ -281,7 +288,7 @@ private struct AgentRow: View {
         case .detected:
             guard let profile = route.profile, profile.isComplete else { return ("Connect…", true, configure) }
             return ("Connect…", true, { model.onInstallAgent?(route.provider, profile) })
-        case .unsupported: return ("Choose version…", false, configure)
+        case .unsupported: return ("Configure…", false, configure)
         case .unavailable: return ("Repair", false, { model.onRepairAgent?(route.provider) })
         case .notDetected, .notChecked: return ("Locate…", false, configure)
         case .connected, .installedUnverified: return nil
@@ -384,21 +391,14 @@ private struct ConfigureAgentSheet: View {
                     .accessibilityIdentifier("settings.\(provider.rawValue).executable")
                 TextField("Profile directory", text: $draft.homePath)
                     .accessibilityIdentifier("settings.\(provider.rawValue).home")
-                TextField("Agent version", text: $draft.version)
+                TextField("Last observed version", text: $draft.version)
                     .accessibilityIdentifier("settings.\(provider.rawValue).version")
-                Picker("Interface", selection: $draft.interface) {
-                    Text("Standalone CLI").tag(AgentInterface.standaloneCLI)
-                    Text("T3").tag(AgentInterface.t3)
-                }
-                .accessibilityIdentifier("settings.\(provider.rawValue).interface")
-                if draft.interface == .t3 {
-                    TextField("T3 version", text: Binding(get: { draft.t3Version ?? "" },
-                                                          set: { draft.t3Version = $0.isEmpty ? nil : $0 }))
-                }
+                Text("Authorized collection hosts: \(draft.collectionInterfaces.map(\.hostLabel).joined(separator: " and ")). They share this home and owned registration. Shared hook events may not identify their producer host. GUI collection is awaiting its required acceptance gates.")
+                    .font(.system(size: 12)).foregroundStyle(Palette.secondary)
             }
             .formStyle(.grouped)
             .scrollDisabled(true)
-            .frame(height: draft.interface == .t3 ? 230 : 196)
+            .frame(height: 196)
             if let message = model.agentSetupMessages[provider] {
                 Text(message).font(.system(size: 12)).foregroundStyle(Palette.secondary).fixedSize(horizontal: false, vertical: true)
             }

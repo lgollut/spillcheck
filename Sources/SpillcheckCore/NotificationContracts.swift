@@ -3,6 +3,7 @@ import Foundation
 public enum NotificationNavigationTarget: Hashable, Codable, Sendable {
     case value(UUID)
     case historicalAudit(UUID)
+    case collectionHealth(UUID)
 }
 
 /// The label can only contain app-generated numbering, never a provider title or identifier.
@@ -55,6 +56,13 @@ public struct MaskedNotification: Equatable, Sendable {
         Self(identifier: decision.notificationIdentifier, target: .historicalAudit(decision.audit.id),
              title: "Recent history reviewed",
              body: "\(decision.ordinaryValueCount) values in \(decision.ordinaryOccurrenceCount) occurrences. Open Spillcheck to review the masked summary.")
+    }
+
+    public static func health(_ incident: CollectionHealthIncident) -> Self {
+        let affected = [incident.contentType?.pluralLabel, incident.operation?.label].compactMap { $0 }.joined(separator: " · ")
+        return Self(identifier: incident.notificationIdentifier, target: .collectionHealth(incident.id),
+             title: "Collection needs attention",
+             body: "\(incident.scope.provider.displayName) · \(incident.scope.interface.hostLabel) · \(affected.isEmpty ? "Required collection" : affected) unavailable. Other readable content continues. Open Spillcheck to review coverage.")
     }
 }
 

@@ -1,0 +1,450 @@
+{
+  "schemaVersion": 1,
+  "phase0Passed": false,
+  "hostVersion": "2.31226.0",
+  "expectedProducerVersion": "2.1.293",
+  "officialGUICreatedSourceManuallySelected": true,
+  "coreHarnessInterface": "standaloneCLI",
+  "productionDesktopCollectorEnabled": false,
+  "sourceAuthority": "nativeTranscript",
+  "sideChatCanonicalCollectionEstablished": false,
+  "probeMode": "sideOnly",
+  "manualCompletion": {
+    "finished": true,
+    "sideChatSubmitted": true,
+    "sideResponseVisible": true
+  },
+  "liveCore": {
+    "exitCode": 0,
+    "diagnosticBytes": 0,
+    "result": {
+      "alertCount": 0,
+      "ciphertextMarkerInspectionPassed": true,
+      "durableDeliveries": 14,
+      "finalCatchUpNewOccurrences": 0,
+      "finished": true,
+      "firstObservedAt": {
+        "CHILD_FINAL": "2026-10-09T12:52:30.265Z",
+        "CHILD_PROMPT": "2026-10-09T12:52:30.265Z",
+        "FINAL": "2026-10-09T12:52:26.481Z",
+        "INTERMEDIATE": "2026-10-09T12:52:26.481Z",
+        "PROMPT": "2026-10-09T12:52:26.481Z",
+        "SHELL_ERROR": "2026-10-09T12:52:26.481Z",
+        "SHELL_OK": "2026-10-09T12:52:26.481Z"
+      },
+      "gapDiagnostics": {
+        "captureHandlerErrorCounts": {},
+        "labelsAreControlled": true,
+        "normalizedEventCounts": {
+          "MessageDisplay": 2,
+          "SpillcheckTranscriptPoll": 14,
+          "Stop": 2,
+          "UserPromptSubmit": 2
+        },
+        "normalizerErrorCounts": {},
+        "pipelineFailureCounts": {},
+        "receiverGapCounts": {},
+        "uniqueGapDescriptorCounts": {
+          "unsupportedContent/unconfirmed/none/transcript-position": 9
+        }
+      },
+      "gapReasons": [
+        "unsupportedContent"
+      ],
+      "historicalAdmissionsSettled": true,
+      "historicalProgressCount": 0,
+      "historicalQueueAdmissionCount": 0,
+      "historicalSettledAdmissionCount": 0,
+      "lastPending": 0,
+      "occurrenceCount": 15,
+      "occurrencesByContentType": {
+        "finalResponse": 2,
+        "intermediateResponse": 1,
+        "toolError": 1,
+        "toolOutput": 2,
+        "userPrompt": 9
+      },
+      "otherCandidates": [],
+      "producerVersions": [
+        "2.1.293"
+      ],
+      "queueCount": 0,
+      "replayStable": true,
+      "sessionCount": 1,
+      "setupState": "connected",
+      "sourceLatency": {
+        "committedSourceRevisionCount": 8,
+        "historical": {
+          "canonicalObservationToCommitObservation": {
+            "count": 8,
+            "excludedNegativeOrNonfiniteCount": 0,
+            "max": 3526.049017906189,
+            "p50": 3526.049017906189,
+            "p95": 3526.049017906189
+          },
+          "committedSourceRevisionCount": 8,
+          "providerTimestampToCanonicalObservation": {
+            "count": 8,
+            "excludedNegativeOrNonfiniteCount": 0,
+            "max": 2045015.4988765717,
+            "p50": 1520652.498960495,
+            "p95": 2045015.4988765717
+          },
+          "queueCaptureToCommitObservation": {
+            "count": 8,
+            "excludedNegativeOrNonfiniteCount": 0,
+            "max": 3758.458971977234,
+            "p50": 3758.458971977234,
+            "p95": 3758.458971977234
+          }
+        },
+        "limits": [
+          "Samples are unique canonical source revisions carrying the disposable synthetic value and a retained detection, with an exact full detector receipt.",
+          "Provider contentTime is its transcript timestamp, not a measurement of physical first output byte or agent publication; provider buffering and clock differences cannot be separated.",
+          "Canonical observedAt is the adapter read-start timestamp, set before asynchronous transcript reads; a later append can produce a negative provider delta without clock skew.",
+          "Each latency leg excludes and counts negative or nonfinite wall-clock deltas independently; clock adjustments can also affect positive durations.",
+          "Queue capture time belongs to the enclosing durable hook or poll and can precede publication of a source row; it is not the source's first available byte.",
+          "Commit observation is taken after the enclosing capture's pipeline activity completes, so it upper-bounds per-source durable commit and includes remaining batch/checkpoint work.",
+          "Final catch-up and replay are excluded. An empty historical population is unmeasured. Standalone CLI results do not measure T3 latency."
+        ],
+        "live": {
+          "canonicalObservationToCommitObservation": {
+            "count": 0,
+            "excludedNegativeOrNonfiniteCount": 0,
+            "max": null,
+            "p50": null,
+            "p95": null
+          },
+          "committedSourceRevisionCount": 0,
+          "providerTimestampToCanonicalObservation": {
+            "count": 0,
+            "excludedNegativeOrNonfiniteCount": 0,
+            "max": null,
+            "p50": null,
+            "p95": null
+          },
+          "queueCaptureToCommitObservation": {
+            "count": 0,
+            "excludedNegativeOrNonfiniteCount": 0,
+            "max": null,
+            "p50": null,
+            "p95": null
+          }
+        },
+        "observedSourceRevisionCount": 8,
+        "percentileMethod": "nearest-rank",
+        "schemaVersion": 1,
+        "units": "milliseconds",
+        "unmeasuredSourceRevisionCount": 0
+      },
+      "syntheticAlertCount": 0,
+      "syntheticValuePresent": true,
+      "typedCommitted": {
+        "CHILD_FINAL": 1,
+        "CHILD_PROMPT": 1,
+        "FINAL": 1,
+        "INTERMEDIATE": 1,
+        "PROMPT": 1,
+        "SHELL_ERROR": 1,
+        "SHELL_OK": 1
+      },
+      "typedObserved": {
+        "CHILD_FINAL": 1,
+        "CHILD_PROMPT": 1,
+        "FINAL": 1,
+        "INTERMEDIATE": 1,
+        "PROMPT": 1,
+        "SHELL_ERROR": 1,
+        "SHELL_OK": 1
+      },
+      "valueCount": 1,
+      "configuredHarnessProducerVersion": "2.1.293"
+    },
+    "processGroupCleanup": {
+      "grace_ms": 200,
+      "term_permission_denied": false,
+      "kill_permission_denied": false
+    }
+  },
+  "ownedRegistrationRemoved": true,
+  "nativeSourceObservation": {
+    "contentRowCount": 40,
+    "contentCounts": {
+      "userPrompt": 9,
+      "intermediateResponse": 2,
+      "toolOutput": 4,
+      "toolError": 2,
+      "finalResponse": 9
+    },
+    "producerVersions": [
+      "2.1.293"
+    ],
+    "completeJSONLFraming": true,
+    "selectedTranscriptCount": 3,
+    "bytesRead": 893905,
+    "malformedControlledRecordCount": 0,
+    "sidePromptMarkerPresent": false,
+    "sideFinalMarkerPresent": false
+  },
+  "hookObservation": {
+    "observedEvents": {
+      "UserPromptSubmit": 2,
+      "MessageDisplay": 2,
+      "Stop": 2
+    },
+    "successfulProductionHelperDeliveries": {
+      "UserPromptSubmit": 2,
+      "MessageDisplay": 2,
+      "Stop": 2
+    },
+    "outsideSelectedSourceCount": 0,
+    "controlledHookFailureCount": 0,
+    "displayMessageGroupCount": 2,
+    "completeDisplayMessageGroupCount": 2,
+    "sideFinalDisplayGroupCount": 0,
+    "completeSideFinalDisplayGroupCount": 0,
+    "sideFinalDisplaySelectedSessionMatches": false,
+    "sideFinalDisplayIDExactNativeIdentityMatches": 0,
+    "sidePromptHookObserved": false,
+    "sidePromptUserPromptSubmitObserved": false,
+    "subagentStartCount": 0,
+    "subagentStopCount": 0,
+    "subagentStopSelectedCallbackCount": 0,
+    "sideFinalSubagentStopCount": 0,
+    "sideFinalSubagentStopSelectedCallbackCount": 0,
+    "sideFinalSubagentStopSuccessfulDeliveryCount": 0,
+    "sideFinalSubagentStopAgentTypeCategories": [],
+    "sideFinalSubagentStopWithAgentIdentityCount": 0,
+    "sideFinalSubagentStopWithAgentTranscriptPathCount": 0,
+    "sideFinalSubagentStopSelectedChildPathCount": 0,
+    "sideFinalSubagentStopExactExistingNativeTranscriptMatches": 0,
+    "sideFinalSubagentStopAgentIDGroupCount": 0,
+    "sideFinalSubagentStopAgentIDsMatchedStartCount": 0,
+    "sideFinalSubagentStopDistinctEventCount": 0,
+    "sideFinalSubagentStopDuplicateCount": 0,
+    "sideFinalSubagentStopConflictingFinalGroupCount": 0
+  },
+  "coldHistoryDelivery": {
+    "exitCode": 0,
+    "diagnosticBytes": 0,
+    "selectedSourceCount": 3
+  },
+  "coldCatchUpCore": {
+    "exitCode": 0,
+    "diagnosticBytes": 0,
+    "result": {
+      "alertCount": 0,
+      "ciphertextMarkerInspectionPassed": true,
+      "durableDeliveries": 4,
+      "finalCatchUpNewOccurrences": 0,
+      "finished": true,
+      "firstObservedAt": {
+        "CHILD_FINAL": "2026-10-09T12:54:58.715Z",
+        "CHILD_PROMPT": "2026-10-09T12:54:58.715Z",
+        "FINAL": "2026-10-09T12:54:58.536Z",
+        "INTERMEDIATE": "2026-10-09T12:54:58.536Z",
+        "PROMPT": "2026-10-09T12:54:58.536Z",
+        "SHELL_ERROR": "2026-10-09T12:54:58.536Z",
+        "SHELL_OK": "2026-10-09T12:54:58.536Z"
+      },
+      "gapDiagnostics": {
+        "captureHandlerErrorCounts": {},
+        "labelsAreControlled": true,
+        "normalizedEventCounts": {
+          "history-request": 1,
+          "SpillcheckTranscriptPoll": 9
+        },
+        "normalizerErrorCounts": {},
+        "pipelineFailureCounts": {},
+        "receiverGapCounts": {},
+        "uniqueGapDescriptorCounts": {
+          "unsupportedContent/unconfirmed/none/transcript-position": 9
+        }
+      },
+      "gapReasons": [
+        "unsupportedContent"
+      ],
+      "historicalAdmissionsSettled": false,
+      "historicalProgressCount": 1,
+      "historicalQueueAdmissionCount": 1,
+      "historicalSettledAdmissionCount": 0,
+      "lastPending": 0,
+      "occurrenceCount": 15,
+      "occurrencesByContentType": {
+        "finalResponse": 2,
+        "intermediateResponse": 1,
+        "toolError": 1,
+        "toolOutput": 2,
+        "userPrompt": 9
+      },
+      "otherCandidates": [],
+      "producerVersions": [
+        "2.1.293"
+      ],
+      "queueCount": 0,
+      "replayStable": true,
+      "sessionCount": 1,
+      "setupState": "installedUnverified",
+      "sourceLatency": {
+        "committedSourceRevisionCount": 8,
+        "historical": {
+          "canonicalObservationToCommitObservation": {
+            "count": 8,
+            "excludedNegativeOrNonfiniteCount": 0,
+            "max": 4741.237998008728,
+            "p50": 4741.237998008728,
+            "p95": 4741.237998008728
+          },
+          "committedSourceRevisionCount": 8,
+          "providerTimestampToCanonicalObservation": {
+            "count": 8,
+            "excludedNegativeOrNonfiniteCount": 0,
+            "max": 2197070.349931717,
+            "p50": 1669376.335978508,
+            "p95": 2197070.349931717
+          },
+          "queueCaptureToCommitObservation": {
+            "count": 8,
+            "excludedNegativeOrNonfiniteCount": 0,
+            "max": 4942.198872566223,
+            "p50": 4942.198872566223,
+            "p95": 4942.198872566223
+          }
+        },
+        "limits": [
+          "Samples are unique canonical source revisions carrying the disposable synthetic value and a retained detection, with an exact full detector receipt.",
+          "Provider contentTime is its transcript timestamp, not a measurement of physical first output byte or agent publication; provider buffering and clock differences cannot be separated.",
+          "Canonical observedAt is the adapter read-start timestamp, set before asynchronous transcript reads; a later append can produce a negative provider delta without clock skew.",
+          "Each latency leg excludes and counts negative or nonfinite wall-clock deltas independently; clock adjustments can also affect positive durations.",
+          "Queue capture time belongs to the enclosing durable hook or poll and can precede publication of a source row; it is not the source's first available byte.",
+          "Commit observation is taken after the enclosing capture's pipeline activity completes, so it upper-bounds per-source durable commit and includes remaining batch/checkpoint work.",
+          "Final catch-up and replay are excluded. An empty historical population is unmeasured. Standalone CLI results do not measure T3 latency."
+        ],
+        "live": {
+          "canonicalObservationToCommitObservation": {
+            "count": 0,
+            "excludedNegativeOrNonfiniteCount": 0,
+            "max": null,
+            "p50": null,
+            "p95": null
+          },
+          "committedSourceRevisionCount": 0,
+          "providerTimestampToCanonicalObservation": {
+            "count": 0,
+            "excludedNegativeOrNonfiniteCount": 0,
+            "max": null,
+            "p50": null,
+            "p95": null
+          },
+          "queueCaptureToCommitObservation": {
+            "count": 0,
+            "excludedNegativeOrNonfiniteCount": 0,
+            "max": null,
+            "p50": null,
+            "p95": null
+          }
+        },
+        "observedSourceRevisionCount": 8,
+        "percentileMethod": "nearest-rank",
+        "schemaVersion": 1,
+        "units": "milliseconds",
+        "unmeasuredSourceRevisionCount": 0
+      },
+      "syntheticAlertCount": 0,
+      "syntheticValuePresent": true,
+      "typedCommitted": {
+        "CHILD_FINAL": 1,
+        "CHILD_PROMPT": 1,
+        "FINAL": 1,
+        "INTERMEDIATE": 1,
+        "PROMPT": 1,
+        "SHELL_ERROR": 1,
+        "SHELL_OK": 1
+      },
+      "typedObserved": {
+        "CHILD_FINAL": 1,
+        "CHILD_PROMPT": 1,
+        "FINAL": 1,
+        "INTERMEDIATE": 1,
+        "PROMPT": 1,
+        "SHELL_ERROR": 1,
+        "SHELL_OK": 1
+      },
+      "valueCount": 1,
+      "configuredHarnessProducerVersion": "2.1.293"
+    },
+    "processGroupCleanup": {
+      "grace_ms": 200,
+      "term_permission_denied": false,
+      "kill_permission_denied": false
+    }
+  },
+  "settingsSemanticallyPreserved": true,
+  "sideChatHistoryUnavailableObserved": false,
+  "sideChatFinalSubagentStopObserved": false,
+  "sideChatPromptLiveHookObserved": false,
+  "mainFixtureRepeated": false,
+  "mainLiveRequiredContentCommitted": false,
+  "nativeChildLiveCommitted": false,
+  "remainingGates": [
+    "Production GUI route and signed-app acceptance remain separate",
+    "Side-chat prompt and response require an evidenced canonical live authority; display IDs cannot be merged with API message IDs",
+    "All six local host/provider combinations, restart, upgrade, and scoped notification acceptance"
+  ],
+  "disposableProbeRootRemoved": true,
+  "originalProviderHistoryRetained": true,
+  "recordedOn": "2026-10-09",
+  "legacyColdMarkerCoverageGatePassed": true,
+  "coldHistoricalAuditAdmissionMeasured": true,
+  "coldHistoricalAuditSettlementEstablished": false,
+  "coldRequiredContentAndChildObserved": true,
+  "coldQueueSettledWithoutCaptureRejection": true,
+  "coldEncryptedReplayPassed": true,
+  "coldRequiredContentAndChildCommitted": false,
+  "nativeFormatDiagnostics": {
+    "exactParentAndOwnChildFilesOnly": true,
+    "maximumFileBytes": 2097152,
+    "maximumTotalBytes": 16777216,
+    "fileCount": 3,
+    "bytesRead": 893905,
+    "incompleteFinalFileCount": 0,
+    "malformedCompleteRecordCount": 0,
+    "envelopeTypeCounts": {
+      "agent-name": 4,
+      "assistant": 25,
+      "atis-latch": 4,
+      "attachment": 67,
+      "custom-title": 5,
+      "file-history-snapshot": 7,
+      "last-prompt": 4,
+      "queue-operation": 14,
+      "system": 7,
+      "user": 15
+    },
+    "unsupportedContract3EnvelopeShapeCounts": {
+      "agent-name/no-message/no-content": 4,
+      "custom-title/no-message/no-content": 5
+    },
+    "unsupportedContract3KnownFieldShapeCounts": {
+      "sessionId/string": 9
+    },
+    "contentBlockTypeCounts": {
+      "text": 20,
+      "thinking": 8,
+      "tool_result": 6,
+      "tool_use": 6
+    },
+    "labelsAreControlled": true,
+    "shapeCountsAloneEstablishMetadataSemantics": false
+  },
+  "publicationNotes": [
+    "Focused side-only manual follow-up used the same original genuine official local Code GUI session. It launched no provider, enabled no productionDesktop route, and started no signed app.",
+    "User confirmed submitting the separate SIDEPROBE side question and seeing its final response. Owned main challenge connected and ordinary selected callbacks reached the encrypted receiver.",
+    "No side marker was observed in UserPromptSubmit.prompt, MessageDisplay.delta, SubagentStop.last_assistant_message, or exact inspected native history. No SubagentStart or SubagentStop callback occurred during this probe. This is a scoped observation, not proof that every provider API lacks side content.",
+    "Main fixture was not repeated. The 15 readable occurrences and all7 main/child markers came from prior native source content and do not establish new live main production.",
+    "Cold audit binding now succeeded: one admitted audit and one persisted historical progress record. Settlement remained false with zero settled admissions because nine original-source unsupported envelopes retained partial coverage. Queue, native replay, encryption and seven typed markers alone cannot pass the strict audit gate.",
+    "Exact parent plus ownchildren inspection found complete framing and no malformed complete rows. The nine omissions correspond to agent-name4 and custom-title5 envelopes without top-level message/content; primary-source semantics must be established before treating them as metadata.",
+    "settingsSemanticallyPreserved=true, owned registration removal, original native source retention and probe process/root cleanup passed. Prior R2 settings mismatch is not retroactively resolved.",
+    "Canonical side prompt/final identity, unavailable-history accounting, complete cold audit, production GUI setup, signed GUI acceptance, restart/upgrade, scoped OS notifications and all-six concurrent operation remain unproven."
+  ]
+}

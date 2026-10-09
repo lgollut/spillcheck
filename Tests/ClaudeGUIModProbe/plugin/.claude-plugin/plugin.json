@@ -1,0 +1,6 @@
+{
+  "name": "spillcheck-side-probe",
+  "version": "0.1.0",
+  "description": "Owned, exact-session passive side-chat dispatch diagnostics",
+  "author": { "name": "Spillcheck" }
+}

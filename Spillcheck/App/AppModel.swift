@@ -8,27 +8,88 @@ struct AgentProfileDraft: Codable, Equatable, Sendable {
     var registrationID: UUID
     var executablePath: String
     var homePath: String
+    /// Legacy Codable key: the owned hook's transport binding, not the producer host.
     var interface: AgentInterface
+    var authorizedHosts: Set<AgentInterface>
     var version: String
     var t3Version: String?
     var installed: Bool
+    var connectionProof: ConnectionVerificationProof?
 
     init(provider: AgentProvider, profileID: String = UUID().uuidString,
          registrationID: UUID = UUID(), executablePath: String = "", homePath: String = "",
          interface: AgentInterface = .standaloneCLI, version: String = "",
-         t3Version: String? = nil, installed: Bool = false) {
+         t3Version: String? = nil, installed: Bool = false,
+         connectionProof: ConnectionVerificationProof? = nil,
+         authorizedHosts: Set<AgentInterface>? = nil) {
         self.provider = provider
         self.profileID = profileID
         self.registrationID = registrationID
         self.executablePath = executablePath
         self.homePath = homePath
         self.interface = interface
+        self.authorizedHosts = authorizedHosts ?? Self.legacyHosts(interface: interface)
         self.version = version
         self.t3Version = t3Version
         self.installed = installed
+        self.connectionProof = connectionProof
     }
 
     var isComplete: Bool { !executablePath.isEmpty && !homePath.isEmpty && !version.isEmpty }
+
+    static let supportedHosts: Set<AgentInterface> = [.standaloneCLI, .t3]
+    static func legacyHosts(interface: AgentInterface) -> Set<AgentInterface> {
+        interface == .desktopCode ? [] : supportedHosts
+    }
+    var collectionInterfaces: [AgentInterface] {
+        authorizedHosts.sorted { $0.rawValue < $1.rawValue }
+    }
+    /// Shared hooks identify their registration transport. Removing that transport from
+    /// authorization would silently discard events from other hosts using the same hook.
+    var hasValidHostAuthorization: Bool {
+        authorizedHosts.isSubset(of: Self.supportedHosts)
+            && (interface == .desktopCode ? authorizedHosts.isEmpty : authorizedHosts.contains(interface))
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case provider, profileID, registrationID, executablePath, homePath, interface
+        case authorizedHosts, version, t3Version, installed, connectionProof
+    }
+
+    init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        provider = try values.decode(AgentProvider.self, forKey: .provider)
+        profileID = try values.decode(String.self, forKey: .profileID)
+        registrationID = try values.decode(UUID.self, forKey: .registrationID)
+        executablePath = try values.decode(String.self, forKey: .executablePath)
+        homePath = try values.decode(String.self, forKey: .homePath)
+        interface = try values.decode(AgentInterface.self, forKey: .interface)
+        version = try values.decode(String.self, forKey: .version)
+        t3Version = try values.decodeIfPresent(String.self, forKey: .t3Version)
+        installed = try values.decode(Bool.self, forKey: .installed)
+        connectionProof = try values.decodeIfPresent(ConnectionVerificationProof.self, forKey: .connectionProof)
+        authorizedHosts = try values.decodeIfPresent(Set<AgentInterface>.self, forKey: .authorizedHosts)
+            ?? Self.legacyHosts(interface: interface)
+        guard hasValidHostAuthorization else {
+            throw DecodingError.dataCorruptedError(forKey: .authorizedHosts, in: values,
+                debugDescription: "Host authorization is not valid for this owned registration.")
+        }
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(provider, forKey: .provider)
+        try values.encode(profileID, forKey: .profileID)
+        try values.encode(registrationID, forKey: .registrationID)
+        try values.encode(executablePath, forKey: .executablePath)
+        try values.encode(homePath, forKey: .homePath)
+        try values.encode(interface, forKey: .interface)
+        try values.encode(collectionInterfaces, forKey: .authorizedHosts)
+        try values.encode(version, forKey: .version)
+        try values.encodeIfPresent(t3Version, forKey: .t3Version)
+        try values.encode(installed, forKey: .installed)
+        try values.encodeIfPresent(connectionProof, forKey: .connectionProof)
+    }
 }
 
 enum AgentSetupState: String {
@@ -41,7 +102,7 @@ enum AgentSetupState: String {
         case .detected: "Executable found"
         case .installedUnverified: "Hooks installed, verification pending"
         case .connected: "Connected"
-        case .unsupported: "Unsupported version"
+        case .unsupported: "Collection route unavailable"
         case .unavailable: "Unavailable"
         }
     }
@@ -130,29 +191,62 @@ struct InventoryGroups {
     var all: [EntrySummary] { active + notSecrets + handled }
 }
 
-/// A collection route the user can reason about: one provider profile through one interface.
+/// One authorized host in a shared native profile. Registration proof does not infer its producer.
+struct AgentHostRoute: Identifiable {
+    let interface: AgentInterface
+    let assessments: [CollectionAssessment]
+    let limitations: [CoverageGap]
+    var id: AgentInterface { interface }
+    var name: String { interface.hostLabel }
+    var collecting: Bool { assessments.contains { $0.canPerform(.liveRead) } }
+    var summary: String {
+        let live = collecting ? "Live reads available" : "Live reads unverified or unavailable"
+        let history = assessments.contains { $0.canPerform(.historicalRead) }
+            ? "Catch-up available" : "Catch-up unverified or unavailable"
+        let evidence = !assessments.isEmpty && assessments.allSatisfy { $0.acceptanceEvidence == .validated }
+            ? "Recorded acceptance" : "Full acceptance unverified"
+        return [live, history, status == .partial ? "Partial coverage" : nil, evidence]
+            .compactMap { $0 }.joined(separator: " · ")
+    }
+    var status: CollectionCompatibilityStatus {
+        if !limitations.isEmpty || assessments.contains(where: { $0.status == .partial }) { return .partial }
+        if assessments.contains(where: { $0.status == .compatible }) { return .compatible }
+        return assessments.contains(where: { $0.status == .incompatible }) ? .incompatible : .unverified
+    }
+}
+
+/// Shared owned registration with independently assessed, authorized collection hosts.
 struct AgentRoute: Identifiable {
     let provider: AgentProvider
     let profile: AgentProfileDraft?
     let state: AgentSetupState
     let waitingForEvent: Bool
+    var assessment: CollectionAssessment? = nil
+    var assessments: [CollectionAssessment] = []
+    var limitations: [CoverageGap] = []
+    var hostRoutes: [AgentHostRoute] {
+        (profile?.collectionInterfaces ?? []).map { interface in
+            AgentHostRoute(interface: interface,
+                assessments: assessments.filter { $0.scope.interface == interface },
+                limitations: limitations.filter { $0.scope?.interface == interface })
+        }
+    }
 
     var id: AgentProvider { provider }
     var name: String {
         guard let profile, !profile.executablePath.isEmpty || profile.installed else { return provider.displayName }
-        switch profile.interface {
-        case .t3: return "\(provider.displayName) in T3"
-        case .standaloneCLI: return "\(provider.displayName) CLI"
-        case .desktopCode: return "\(provider.displayName) Desktop"
-        }
+        let hosts = profile.collectionInterfaces.map(\.hostLabel).joined(separator: " and ")
+        return hosts.isEmpty ? provider.displayName : "\(provider.displayName) \(hosts)"
     }
     var monogram: String { provider == .codex ? "CX" : "CC" }
-    var collecting: Bool { state == .connected }
+    var collecting: Bool { state == .connected && hostRoutes.contains(where: \.collecting) }
     var shownInCoverage: Bool { state != .notDetected && state != .notChecked }
 }
 
 @MainActor @Observable
 final class AppModel {
+    var collectionAssessments: [CollectionScope: CollectionAssessment] = [:]
+    var collectionLimitations: [CoverageGap] = []
     private(set) var monitoring = MonitoringState()
     @ObservationIgnored var onMonitoringChanged: (() -> Void)?
     @ObservationIgnored var onMonitoringRequested: ((Bool) -> Void)?
@@ -383,12 +477,22 @@ final class AppModel {
     var routes: [AgentRoute] {
         AgentProvider.allCases.map { provider in
             let state = agentSetupStates[provider] ?? .notChecked
+            let profile = agentProfiles[provider]
+            let assessments = collectionAssessments.values.filter {
+                guard $0.scope.provider == provider else { return false }
+                guard let profile else { return true }
+                return $0.scope.profileID == profile.profileID && profile.authorizedHosts.contains($0.scope.interface)
+            }
+            let assessment = assessments.first(where: { $0.canPerform(.liveRead) }) ?? assessments.first
             return AgentRoute(provider: provider, profile: agentProfiles[provider], state: state,
-                              waitingForEvent: state == .installedUnverified && verificationPrompts[provider] != nil)
+                              waitingForEvent: state == .installedUnverified && verificationPrompts[provider] != nil,
+                              assessment: assessment, assessments: assessments.sorted {
+                                  $0.scope.interface.rawValue < $1.scope.interface.rawValue
+                              }, limitations: collectionLimitations.filter { $0.scope?.provider == provider })
         }
     }
 
-    /// Monitoring is proven only after a connected route has delivered an event.
+    /// A remembered connection proof is separate from recent collection and analyzed coverage.
     var monitoringProven: Bool { routes.contains(where: \.collecting) }
 
     var coverageWord: String {
@@ -419,19 +523,27 @@ final class AppModel {
             switch route.state {
             case .unsupported:
                 rows.append(.init(id: "route-\(route.provider.rawValue)",
-                    text: "\(route.name): this version isn’t validated, so its sessions aren’t collected.",
+                    text: "\(route.name): this collection route has not been established.",
                     action: ("Manage agents", .settings(.agents))))
             case .unavailable:
                 rows.append(.init(id: "route-\(route.provider.rawValue)",
-                    text: "\(route.name): hooks or configuration need repair. Its sessions aren’t collected.",
+                    text: "\(route.name): its executable, hooks, or configuration need attention. Coverage identifies affected content.",
                     action: ("Manage agents", .settings(.agents))))
             default: break
             }
         }
         if case .partial(let gaps) = monitoring.coverage {
-            let counts = Dictionary(grouping: gaps, by: \.reason).mapValues(\.count)
-            for reason in counts.keys.sorted(by: { $0.rawValue < $1.rawValue }) {
-                rows.append(.init(id: reason.rawValue, text: Self.gapText(reason)))
+            let grouped = Dictionary(grouping: gaps) { gap in
+                [gap.scope?.provider.rawValue ?? "legacy", gap.scope?.profileID ?? "",
+                 gap.scope?.interface.rawValue ?? "", gap.scope?.path.rawValue ?? "",
+                 gap.operation?.rawValue ?? "", gap.contentType?.rawValue ?? "", gap.reason.rawValue].joined(separator: ":")
+            }
+            for key in grouped.keys.sorted() {
+                guard let gap = grouped[key]?.first else { continue }
+                let scopeText = gap.scope.map { "\($0.provider.displayName) \($0.interface.hostLabel)" } ?? "Collection"
+                let typeText = gap.contentType.map { " · \($0.pluralLabel)" } ?? ""
+                let operationText = gap.operation.map { " · \($0.label)" } ?? ""
+                rows.append(.init(id: key, text: "\(scopeText)\(typeText)\(operationText): \(Self.gapText(gap.reason))"))
             }
         }
         return rows
@@ -440,7 +552,7 @@ final class AppModel {
     static func gapText(_ reason: CoverageGapReason) -> String {
         switch reason {
         case .unsupportedContent: "Some content wasn’t in a supported format, so it wasn’t analyzed."
-        case .unsupportedVersion: "An agent version isn’t supported, so its content wasn’t collected."
+        case .unsupportedVersion: "An earlier collector rejected a source version. Recovery requires available original content."
         case .sourceUnavailable: "A source couldn’t be read."
         case .missingTimestamp: "Some content had no usable time, so it couldn’t be placed in the last 7 days."
         case .queueSaturated: "The capture queue reached its limit and dropped content."

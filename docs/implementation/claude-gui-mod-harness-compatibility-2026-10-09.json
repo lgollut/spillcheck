@@ -1,0 +1,166 @@
+{
+  "schemaVersion": 1,
+  "measuredOn": "2026-10-09",
+  "phase0Passed": false,
+  "officialGUIHostVersion": "2.31226.0",
+  "observedEmbeddedProducerVersion": "2.1.293",
+  "manualMainAndSideSubmittedAndVisibleConfirmedByUser": true,
+  "providerProcessLaunchedByHarness": false,
+  "productionDesktopCollectorEnabled": false,
+  "installation": {
+    "schemaVersion": 1,
+    "phase0Passed": false,
+    "providerLaunchCount": 0,
+    "actualGUILoadMeasured": false,
+    "canonicalSideAuthorityEstablished": false,
+    "initialOwnedIdentitiesAbsent": true,
+    "rawSettingsArchived": false,
+    "rawProviderTextArchived": false,
+    "installationScope": "local",
+    "userEnablementRequested": false,
+    "ownedMarketplaceUserSettingsDeclarationRequired": true,
+    "observedProducerVersion": "2.1.293",
+    "marketplaceAdd": {
+      "exitCode": 0,
+      "outcome": "ok",
+      "diagnosticBytes": 0,
+      "outputBytes": 195
+    },
+    "localInstall": {
+      "exitCode": 0,
+      "outcome": "ok",
+      "diagnosticBytes": 0,
+      "outputBytes": 294
+    },
+    "ownedInstallPreservedUnownedSettingsByFile": {
+      "userSettings": true,
+      "marketplaceRegistry": true,
+      "pluginRegistry": true,
+      "localSettings": true,
+      "projectSettings": true
+    },
+    "localEnablementMeasured": true,
+    "noUserOrSharedProjectEnablementMeasured": true,
+    "exactLocalInstallRecordMeasured": true,
+    "manualCompletionSignaled": true,
+    "interrupted": false,
+    "localUninstall": {
+      "exitCode": 0,
+      "outcome": "ok",
+      "diagnosticBytes": 0,
+      "outputBytes": 284
+    },
+    "marketplaceRemove": {
+      "exitCode": 0,
+      "outcome": "ok",
+      "diagnosticBytes": 0,
+      "outputBytes": 172
+    },
+    "ownedRemovalPreservedCurrentUnownedSettingsByFile": {
+      "userSettings": true,
+      "marketplaceRegistry": true,
+      "pluginRegistry": true,
+      "localSettings": true,
+      "projectSettings": true
+    },
+    "initialUnownedSettingsEqualAfterRemovalByFile": {
+      "userSettings": true,
+      "marketplaceRegistry": false,
+      "pluginRegistry": true,
+      "localSettings": true,
+      "projectSettings": true
+    },
+    "ownedPluginAndMarketplaceAbsentAfterRemoval": true,
+    "ownedCleanupPassed": true,
+    "privateProbeRootRetainedForControlledJournal": false
+  },
+  "observation": {
+    "schemaVersion": 1,
+    "phase0Passed": false,
+    "canonicalSideAuthorityEstablished": false,
+    "journalRowCount": 1,
+    "journalByteCount": 580,
+    "maximumRowBudgetReached": false,
+    "selectedSessionMatchesAllJournalRows": true,
+    "eventCounts": {
+      "session.start.input": 1
+    },
+    "controlledMarkerCounts": {},
+    "nativeFieldPresenceCountsByEvent": {},
+    "sidePromptAndFinalSharedTurnIDCount": 0,
+    "sidePromptAndFinalSharedAgentIDCount": 0,
+    "sideAndMainSharedTurnIDCount": 0,
+    "distinctTurnIDCountsByControlledMarker": {
+      "LEAKRET_PHASE0_MODSIDE_PROMPT": 0,
+      "LEAKRET_PHASE0_MODSIDE_FINAL": 0,
+      "LEAKRET_PHASE0_MODMAIN_PROMPT": 0,
+      "LEAKRET_PHASE0_MODMAIN_FINAL": 0
+    },
+    "truncatedTextSummaryCount": 0,
+    "rawProviderTextExported": false,
+    "rawNativeIdentitiesExported": false,
+    "remainingGates": [
+      "Exact observed-version API and event semantics",
+      "Genuine side prompt and final dispatch",
+      "Native side-to-main affiliation and canonical source authority",
+      "Stable replay/restart/host identity",
+      "Owned installation/removal and current unowned settings preservation",
+      "Signed encrypted side ingestion"
+    ]
+  },
+  "nativeMainPositiveControl": {
+    "ownedSelectedParentOnly": true,
+    "inspectedBytes": 477461,
+    "typedMainPromptCount": 1,
+    "typedMainFinalResponseCount": 1,
+    "matchingSelectedNativeSession": true,
+    "actualProducerVersions": [
+      "2.1.293"
+    ],
+    "sidePromptMarkerPresent": false,
+    "sideFinalMarkerPresent": false
+  },
+  "mainModContentDispatchEstablished": false,
+  "sideModContentDispatchEstablished": false,
+  "sideAPIAbsenceEstablished": false,
+  "startupCallbackHostOrPIDAttributionEstablished": false,
+  "ownedCacheInspection": {
+    "maximumEntries": 128,
+    "maximumBytes": 2097152,
+    "observedEntries": 8,
+    "observedBytes": 5854,
+    "cachedPluginVersion": "0.1.0",
+    "literalEventRegistrationKinds": 7,
+    "cachedScopeMatchesSelected": true,
+    "exactGeneratedDeclarationsPresent": false,
+    "runtimeDiagnosticLogPresent": false,
+    "extraCacheMetadataShape": "integer"
+  },
+  "registryChangeActorEstablished": false,
+  "evidenceLimits": [
+    "One selected-session startup callback lacks host, surface, PID, or native event identities; GUI versus installer attribution is unmeasured.",
+    "The user-confirmed main prompt and final are positively present in the original selected GUI transcript, but absent from the Mod journal; the required main-dispatch positive control failed.",
+    "No side prompt/final event absence can be claimed until main content dispatch works through the actual GUI route.",
+    "The existing marketplace registry changed between initial snapshot and final removal. Its current unowned entries were preserved across exact removal; initial snapshots were held only in process memory, so the change is not localized or attributed.",
+    "The user confirmed GUI plugin reloading after owned removal; unloading was operator-confirmed rather than directly instrumented. Exact registry absence and private/cache deletion were measured."
+  ],
+  "remainingGates": [
+    "Working actual GUI main Mod content dispatch",
+    "Genuine side prompt and final capture and native affiliation",
+    "Stable canonical side identities and duplicate/restart behavior",
+    "Exact runtime declaration and load behavior",
+    "Signed GUI ingestion and all-six concurrent acceptance"
+  ],
+  "ownedFileCleanup": {
+    "operatorConfirmedGUIReloadAfterOwnedRemoval": true,
+    "runtimeUnloadDirectlyInstrumented": false,
+    "ownedRegistryAndSettingsEntriesAbsentBeforeFileCleanup": true,
+    "ownedCacheWasPresentAfterCLIUninstall": true,
+    "ownedCacheSourceExactlyMatchedPreparedPrivatePlugin": true,
+    "ownedPrivateProbeRootRemoved": true,
+    "ownedExactMarketplaceCacheRemoved": true,
+    "broaderProviderCacheTouched": false,
+    "rawProviderSourceArchived": false,
+    "actualGUIContentDispatchEstablished": false
+  }
+}

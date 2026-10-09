@@ -15,6 +15,46 @@ private struct ProgressSettlementRow: Equatable, Sendable {
     let encoded: Data
 }
 
+private struct PreparedCoverageSettlement: Sendable {
+    var gaps: [ProtectedPayload] = []
+    var omissions: [(id: UUID, locationID: UUID, incidentKey: UUID?, encoded: Data, time: Date?, state: CoverageOmissionState)] = []
+    var incidents: [(id: UUID, key: UUID, encoded: Data, requiresAssessment: Bool)] = []
+    var recoveredLocations: Set<UUID> = []
+    mutating func append(_ other: Self) {
+        gaps += other.gaps; omissions += other.omissions; incidents += other.incidents
+        recoveredLocations.formUnion(other.recoveredLocations)
+    }
+}
+
+private struct RecoveryLocationKey: Codable {
+    let session: SessionIdentity?
+    let locator: SourceLocator
+    let itemID: String?
+    init(_ reference: CoverageRecoveryReference) {
+        switch reference.locator {
+        case .transcript, .transcriptByteOffset: session = nil
+        case .upstreamItem, .unavailable: session = reference.session
+        }
+        locator = reference.locator; itemID = reference.itemID
+    }
+}
+
+private struct OmissionIdentityKey: Codable {
+    let scope: CollectionScope
+    let location: RecoveryLocationKey
+    let contentType: ContentType?
+    let reason: CoverageGapReason
+    let operation: CollectionOperation?
+}
+
+private struct HealthIdentityKey: Codable {
+    let scope: CollectionScope
+    let contentType: ContentType?
+    let reason: CoverageGapReason
+    /// Nil is omitted by Codable so existing content-only keys retain their exact bytes.
+    let operation: CollectionOperation?
+}
+
 /// SQLite persists ciphertext and controlled structural indexes. All upstream identifiers,
 /// source coordinates, keyed fingerprints and checkpoints live inside background-encrypted state.
 /// One actor owns domain transitions; the database revision also rejects stale independent writers.
@@ -66,7 +106,8 @@ public actor ProtectedStore {
                 var hasProtectedRows = false
                 for table in ["protection_manifest", "store_state", "protected_payloads", "captures", "capture_receipts",
                               "source_checkpoints", "coverage_gaps", "notification_outbox",
-                              "collection_authorities", "historical_progress", "protected_preferences", "historical_notification_outbox"] {
+                              "collection_authorities", "historical_progress", "protected_preferences", "historical_notification_outbox",
+                              "coverage_omissions", "collection_health_incidents"] {
                     if try connection.tableExists(table),
                        try Int.fetchOne(connection, sql: "SELECT COUNT(*) FROM \(table)") ?? 0 > 0 {
                         hasProtectedRows = true
@@ -226,7 +267,8 @@ public actor ProtectedStore {
             guard let label = ledger.conversationLabels[alert.eligibility.session] else { return nil }
             return .live(alert, conversation: label)
         }
-        return live + historical
+        let health = try await pendingHealthNotifications().map(MaskedNotification.health)
+        return live + historical + health
     }
 
     public func notificationTargetExists(_ target: NotificationNavigationTarget) -> Bool {
@@ -234,6 +276,11 @@ public actor ProtectedStore {
         switch target {
         case .value(let id): return ledger.records.values.contains { $0.id == id }
         case .historicalAudit(let id): return (try? ledger.snapshot.historicalSummaries().contains { $0.audit.id == id }) == true
+        case .collectionHealth(let id):
+            return (try? Self.read(database) { db in
+                try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM collection_health_incidents WHERE id = ?)",
+                                  arguments: [id.uuidString]) == true
+            }) == true
         }
     }
 
@@ -245,16 +292,21 @@ public actor ProtectedStore {
         try await pendingNotifications().contains(notification)
     }
 
-    public func notificationCanRemain(identifier: String) throws -> Bool {
-        try currentNotification(identifier: identifier) != nil
+    public func notificationCanRemain(identifier: String) async throws -> Bool {
+        try await currentNotification(identifier: identifier) != nil
     }
 
-    public func notificationCanRemain(_ notification: MaskedNotification) throws -> Bool {
-        try currentNotification(identifier: notification.identifier) == notification
+    public func notificationCanRemain(_ notification: MaskedNotification) async throws -> Bool {
+        try await currentNotification(identifier: notification.identifier) == notification
     }
 
-    private func currentNotification(identifier: String) throws -> MaskedNotification? {
+    private func currentNotification(identifier: String) async throws -> MaskedNotification? {
         guard !closed else { return nil }
+        if identifier.hasPrefix("spillcheck-health-"),
+           let id = UUID(uuidString: String(identifier.dropFirst("spillcheck-health-".count))),
+           let incident = try await healthIncident(id: id), incident.isActive, incident.delivery != .cancelled {
+            return .health(incident)
+        }
         if let alert = ledger.alertDecisions.values.first(where: { $0.notificationIdentifier == identifier }),
            ledger.alertHasEligibleContent(alert), let label = ledger.conversationLabels[alert.eligibility.session] {
             return .live(alert, conversation: label)
@@ -273,6 +325,13 @@ public actor ProtectedStore {
             try await mutateLedger(notificationPermit: permit) { try $0.recordAlertDelivery(alert.id, state: state) }
         } else if let decision = ledger.historicalNotificationDecisions.values.first(where: { $0.notificationIdentifier == identifier }) {
             try await mutateLedger(notificationPermit: permit) { try $0.recordHistoricalNotificationDelivery(decision.audit.id, state: state) }
+        } else if identifier.hasPrefix("spillcheck-health-"),
+                  let id = UUID(uuidString: String(identifier.dropFirst("spillcheck-health-".count))) {
+            try check(permit)
+            try Self.write(database) { db in
+                try db.execute(sql: "UPDATE collection_health_incidents SET delivery = ? WHERE id = ? AND resolved_at IS NULL AND delivery = ?",
+                               arguments: [state.rawValue, id.uuidString, AlertDeliveryState.pending.rawValue])
+            }
         } else { throw ContractError.invalidState }
     }
 
@@ -341,7 +400,12 @@ public actor ProtectedStore {
         }
         let expiresAt = capturedAt.addingTimeInterval(limits.maxQueueAge)
         guard expiresAt > now else {
-            try await recordGap(CoverageGap(reason: .queueExpired), at: now)
+            let loss = try await prepareCaptureLoss(id: id, body: captureBody, capturedAt: capturedAt,
+                                                  reason: .queueExpired, at: now)
+            try check(permit)
+            try Self.write(database) { db in
+                try Self.writeCoverageSettlement(loss, at: now, maximumBytes: limits.maxProtectedStateBytes, in: db)
+            }
             throw StorageError.expiredCapture
         }
         try await expirePending(at: now, permit: permit)
@@ -396,43 +460,80 @@ public actor ProtectedStore {
         } catch { throw StorageError.databaseUnavailable }
     }
 
-    /// Age-limit maintenance also runs while paused. It never reads captured plaintext, scans,
-    /// changes inventory, accepts a payload or creates an alert. Work is bounded per refresh.
+    /// Bounded opaque queue identities for private disposable restart acceptance. A consumed
+    /// receipt alone does not prove successful analysis: expiry and exhaustion consume too.
+    @_spi(Testing) public func captureIdentitiesForTesting(limit: Int = 4096) throws -> (pending: [UUID], consumed: [UUID]) {
+        guard limit > 0, limit <= 4096, !closed else { throw StorageError.invalidPayload }
+        return try Self.read(database) { db in
+            func identities(_ table: String) throws -> [UUID] {
+                let strings = try String.fetchAll(db, sql: "SELECT id FROM \(table) ORDER BY id LIMIT ?", arguments: [limit + 1])
+                guard strings.count <= limit else { throw StorageError.stateTooLarge }
+                return try strings.map {
+                    guard let id = UUID(uuidString: $0) else { throw StorageError.corruptProtectedState }
+                    return id
+                }
+            }
+            return (try identities("captures"), try identities("capture_receipts"))
+        }
+    }
+
+    /// Age-limit maintenance also runs while paused. It opens each expiring capture in memory
+    /// only to read its validated transport metadata, so the loss is attributed to its route.
+    /// It never scans or retains event content, changes inventory, accepts a payload or creates
+    /// an alert. Work is bounded per refresh.
     @discardableResult
     public func maintainQueue(at now: Date = Date(), limit: Int = 256) async throws -> Int {
         guard !closed else { throw StorageError.databaseUnavailable }
         guard now.timeIntervalSince1970.isFinite, limit > 0, limit <= 4096 else { throw StorageError.invalidTime }
-        let ids: [String]
+        let rows: [StoredCapture]
         do {
-            ids = try Self.read(database) { db in
-                try String.fetchAll(db, sql: "SELECT id FROM captures WHERE expires_at <= ? ORDER BY expires_at LIMIT ?",
-                                    arguments: [now.timeIntervalSince1970, limit])
+            rows = try Self.read(database) { db in
+                try Row.fetchAll(db, sql: "SELECT id, encoded, captured_at, expires_at, retry_count FROM captures WHERE expires_at <= ? ORDER BY expires_at LIMIT ?",
+                                 arguments: [now.timeIntervalSince1970, limit]).map { row in
+                    guard let id = UUID(uuidString: row["id"]), let count = UInt(exactly: row["retry_count"] as Int64) else {
+                        throw StorageError.corruptProtectedState
+                    }
+                    return StoredCapture(id: id, encoded: row["encoded"], capturedAt: Date(timeIntervalSince1970: row["captured_at"]),
+                        expiresAt: Date(timeIntervalSince1970: row["expires_at"]), retryCount: count)
+                }
             }
         } catch { throw StorageError.databaseUnavailable }
         try pruneBookkeeping(at: now)
-        guard !ids.isEmpty else { return 0 }
-        let gap = try await sealedGap(CoverageGap(reason: .queueExpired), at: now)
+        guard !rows.isEmpty else { return 0 }
+        var losses: [UUID: PreparedCoverageSettlement] = [:]
+        for row in rows {
+            // Decode at most the bounded queue volume, one capture at a time. Only validated
+            // transport metadata survives; neither event JSON nor raw diagnostics is retained.
+            let body = try? await cryptography.openBackground(Self.decode(row.encoded), binding: Self.captureBinding(row.id))
+            let opened = body.flatMap { try? CapturedWorkCodec.decode($0) }
+            losses[row.id] = try await prepareCaptureLoss(id: row.id, body: opened?.body,
+                capturedAt: row.capturedAt, reason: .queueExpired, at: now)
+        }
         guard !closed else { throw StorageError.databaseUnavailable }
         do {
             return try Self.write(database) { db in
                 var removed = 0
-                for rawID in ids {
-                    guard let id = UUID(uuidString: rawID) else { throw StorageError.corruptProtectedState }
+                var settled = PreparedCoverageSettlement()
+                for row in rows {
+                    let id = row.id
                     if try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM captures WHERE id = ? AND expires_at <= ?",
                                         arguments: [id.uuidString, now.timeIntervalSince1970]) == 1 {
                         try Self.consumeCapture(id, in: db)
+                        if let loss = losses[id] { settled.append(loss) }
                         removed += 1
                     }
                 }
-                if removed > 0 { try Self.insertGap(gap, at: now, in: db) }
+                if removed > 0 {
+                    try Self.writeCoverageSettlement(settled, at: now, maximumBytes: limits.maxProtectedStateBytes, in: db)
+                }
                 return removed
             }
         } catch let error as StorageError { throw error }
         catch { throw StorageError.databaseUnavailable }
     }
 
-    /// Capture receipts only deduplicate retried deliveries of a pending capture, which expire with
-    /// the queue. Gap rows remain visible for a bounded period; current status uses `recentGapWindow`.
+    /// Capture receipts deduplicate queue deliveries. Legacy activity gaps have bounded retention;
+    /// scoped omissions independently preserve loss attribution throughout the displayed period.
     public static let captureReceiptRetention: TimeInterval = 2 * 24 * 60 * 60
     public static let coverageGapRetention: TimeInterval = 30 * 24 * 60 * 60
     private var lastBookkeepingPrune = Date.distantPast
@@ -445,6 +546,9 @@ public actor ProtectedStore {
                 try db.execute(sql: "DELETE FROM capture_receipts WHERE consumed_at < ?", arguments: [receiptCutoff])
                 try db.execute(sql: "DELETE FROM coverage_gaps WHERE created_at < ?",
                                arguments: [now.timeIntervalSince1970 - Self.coverageGapRetention])
+                try db.execute(sql: "DELETE FROM coverage_omissions WHERE created_at < ? AND COALESCE(content_at, created_at) < ?",
+                               arguments: [now.timeIntervalSince1970 - Self.coverageGapRetention,
+                                   now.addingTimeInterval(-HistoricalAuditContext.lookback).timeIntervalSince1970])
             }
         } catch { throw StorageError.databaseUnavailable }
         lastBookkeepingPrune = now
@@ -535,14 +639,19 @@ public actor ProtectedStore {
         try check(permit)
         let count = capture.retryCount + 1
         let shouldDrop = count > limits.maxRetryCount || capture.expiresAt <= now
-        let gap = try await sealedGap(CoverageGap(reason: reason), at: now)
+        let loss: PreparedCoverageSettlement?
+        if shouldDrop {
+            let opened = try? await openCapturedWork(capture)
+            loss = try await prepareCaptureLoss(id: capture.id, body: opened?.body,
+                capturedAt: capture.capturedAt, reason: capture.expiresAt <= now ? .queueExpired : reason, at: now)
+        } else { loss = nil }
         try check(permit)
         do {
             try Self.write(database) { db in
                 try Self.checkClaim(capture, in: db, at: now, allowExpired: true)
                 if shouldDrop {
                     try Self.consumeCapture(capture.id, in: db)
-                    try Self.insertGap(gap, at: now, in: db)
+                    if let loss { try Self.writeCoverageSettlement(loss, at: now, maximumBytes: limits.maxProtectedStateBytes, in: db) }
                 } else {
                     let delay = min(60.0, pow(2.0, Double(min(count, 6))))
                     try db.execute(sql: """
@@ -629,6 +738,7 @@ public actor ProtectedStore {
     public func completeCapture(
         _ capture: PendingCapture, checkpoints: [SourceCheckpoint] = [],
         continuation: CapturePacket? = nil, historicalProgress: HistoricalReadProgress? = nil,
+        coverageGaps: [CoverageGap] = [], recoveredReferences: [CoverageRecoveryReference] = [],
         permit: StoreProcessingPermit, at now: Date = Date()
     ) async throws {
         try check(permit)
@@ -690,6 +800,8 @@ public actor ProtectedStore {
                 progressPayload = (id, try protected.encoded())
             }
         }
+        let coverage = try await prepareCoverageSettlement(gaps: coverageGaps,
+            recoveredReferences: recoveredReferences, at: now)
         try check(permit)
         let injector = failureInjector
         try Self.write(database) { db in
@@ -717,6 +829,7 @@ public actor ProtectedStore {
                     ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at, encoded = excluded.encoded
                     """, arguments: [progress.id.uuidString, now.timeIntervalSince1970, progress.bytes])
             }
+            try Self.writeCoverageSettlement(coverage, at: now, maximumBytes: limits.maxProtectedStateBytes, in: db)
             try Self.consumeCapture(capture.id, in: db)
             try injector?(.beforeProcessingCommit)
         }
@@ -849,7 +962,141 @@ public actor ProtectedStore {
                   interval.end.timeIntervalSince1970.isFinite,
                   interval.duration.isFinite, interval.duration >= 0 else { throw StorageError.invalidTime }
         }
-        try await recordGap(gap, at: time)
+        let settlement = try await prepareCoverageSettlement(gaps: [gap], recoveredReferences: [], at: time)
+        guard !closed else { throw StorageError.databaseUnavailable }
+        try Self.write(database) { db in
+            try Self.writeCoverageSettlement(settlement, at: time, maximumBytes: limits.maxProtectedStateBytes, in: db)
+        }
+    }
+
+    /// Unresolved losses remain attributable beyond the short activity-gap window. Passing a
+    /// displayed-period cutoff filters by original content time, or observation when unknown.
+    public func coverageOmissions(limit: Int = 1000, since: Date? = nil,
+                                  includeRecovered: Bool = false) async throws -> [CoverageOmission] {
+        guard !closed else { throw StorageError.databaseUnavailable }
+        guard limit > 0, limit <= 10_000, since?.timeIntervalSince1970.isFinite != false else {
+            throw StorageError.invalidPayload
+        }
+        let rows = try Self.read(database) { db in
+            try Row.fetchAll(db, sql: """
+                SELECT id, encoded, state, resolved_at FROM coverage_omissions
+                WHERE COALESCE(content_at, created_at) >= ? AND (? OR state != ?)
+                ORDER BY created_at DESC, id LIMIT ?
+                """, arguments: [since?.timeIntervalSince1970 ?? -Double.greatestFiniteMagnitude,
+                    includeRecovered, CoverageOmissionState.recovered.rawValue, limit])
+        }
+        var result: [CoverageOmission] = []
+        for row in rows {
+            guard let id = UUID(uuidString: row["id"]),
+                  let state = CoverageOmissionState(rawValue: row["state"]) else { throw StorageError.corruptProtectedState }
+            let plaintext = try await cryptography.openBackground(Self.decode(row["encoded"]), binding: Self.checkpointBinding(id))
+            let stored = try JSONDecoder().decode(CoverageOmission.self, from: plaintext)
+            guard stored.id == id else { throw StorageError.corruptProtectedState }
+            let resolved: Double? = row["resolved_at"]
+            result.append(CoverageOmission(id: id, gap: stored.gap, firstObservedAt: stored.firstObservedAt,
+                state: state, resolvedAt: resolved.map(Date.init(timeIntervalSince1970:))))
+        }
+        return result
+    }
+
+    /// A blocked omission becomes retryable under another parser contract. This returns metadata
+    /// for bounded original-source reads; it does not claim that those reads or recovery occurred.
+    public func recoverableOmissions(scope: CollectionScope? = nil, session: SessionIdentity? = nil,
+                                    documentID: UUID? = nil, parserContract: String? = nil,
+                                    at now: Date = Date(), limit: Int = 1000) async throws -> [CoverageOmission] {
+        guard now.timeIntervalSince1970.isFinite else { throw StorageError.invalidTime }
+        return try await coverageOmissions(limit: limit, since: now.addingTimeInterval(-HistoricalAuditContext.lookback)).filter { omission in
+            guard omission.isEligibleForRecovery(at: now), let reference = omission.gap.recovery else { return false }
+            if let scope, omission.gap.scope != scope { return false }
+            if let session, reference.session != session { return false }
+            if let documentID {
+                switch reference.locator {
+                case .transcript(let id, _), .transcriptByteOffset(let id, _): if id != documentID { return false }
+                default: return false
+                }
+            }
+            return parserContract == nil || omission.state == .retryable || reference.parserContract != parserContract
+        }
+    }
+
+    /// Time changes eligibility, never recovery. Old unresolved losses are explicitly unavailable
+    /// for further seven-day recovery and remain in the omission ledger. A content incident that
+    /// can no longer recover settles; a recurrence opens and notifies a new incident.
+    @discardableResult
+    public func expireCoverageRecovery(at now: Date = Date()) throws -> Int {
+        guard !closed, now.timeIntervalSince1970.isFinite else { throw StorageError.invalidTime }
+        return try Self.write(database) { db in
+            try db.execute(sql: """
+                UPDATE coverage_omissions SET state = ?
+                WHERE COALESCE(content_at, created_at) < ? AND state IN (?, ?)
+                """, arguments: [CoverageOmissionState.unrecoverable.rawValue,
+                    now.addingTimeInterval(-HistoricalAuditContext.lookback).timeIntervalSince1970,
+                    CoverageOmissionState.retryable.rawValue, CoverageOmissionState.blocked.rawValue])
+            let expired = db.changesCount
+            _ = try Self.resolveHealthIncidents(where: """
+                requires_assessment = 0
+                    AND key_id IN (SELECT incident_key FROM coverage_omissions WHERE state = ?)
+                """, arguments: [CoverageOmissionState.unrecoverable.rawValue], at: now, in: db)
+            return expired
+        }
+    }
+
+    public func healthIncidents(limit: Int = 1000, includeResolved: Bool = false) async throws -> [CollectionHealthIncident] {
+        guard !closed else { throw StorageError.databaseUnavailable }
+        guard limit > 0, limit <= 10_000 else { throw StorageError.invalidPayload }
+        let rows = try Self.read(database) { db in
+            try Row.fetchAll(db, sql: """
+                SELECT id, encoded, resolved_at, delivery FROM collection_health_incidents
+                WHERE ? OR resolved_at IS NULL ORDER BY created_at DESC, id LIMIT ?
+                """, arguments: [includeResolved, limit])
+        }
+        var incidents: [CollectionHealthIncident] = []
+        for row in rows { incidents.append(try await decodeHealthIncident(row)) }
+        return incidents
+    }
+
+    public func pendingHealthNotifications() async throws -> [CollectionHealthIncident] {
+        guard processingPermit() != nil else { return [] }
+        return try await healthIncidents().filter { $0.delivery == .pending }
+    }
+
+    public func healthIncident(id: UUID) async throws -> CollectionHealthIncident? {
+        guard !closed else { return nil }
+        guard let row = try Self.read(database, { db in
+            try Row.fetchOne(db, sql: "SELECT id, encoded, resolved_at, delivery FROM collection_health_incidents WHERE id = ?",
+                             arguments: [id.uuidString])
+        }) else { return nil }
+        return try await decodeHealthIncident(row)
+    }
+
+    /// A fresh successful operation assessment settles only that route's operation incident.
+    /// Native omissions must also be reparsed; content failures and sibling routes remain active.
+    @discardableResult
+    public func resolveHealthIncidents(scope: CollectionScope, operation: CollectionOperation,
+                                       at now: Date = Date()) async throws -> Int {
+        guard !closed, now.timeIntervalSince1970.isFinite else { throw StorageError.invalidTime }
+        let ids = try await healthIncidents().filter {
+            $0.scope == scope && $0.contentType == nil && $0.operation == operation
+        }.map(\.id)
+        guard !closed else { throw StorageError.databaseUnavailable }
+        return try Self.write(database) { db in
+            try ids.reduce(0) { resolved, id in
+                resolved + (try Self.resolveHealthIncidents(where: "id = ? AND requires_assessment = 1",
+                    arguments: [id.uuidString], at: now, in: db))
+            }
+        }
+    }
+
+    private func decodeHealthIncident(_ row: Row) async throws -> CollectionHealthIncident {
+        guard let id = UUID(uuidString: row["id"]),
+              let delivery = AlertDeliveryState(rawValue: row["delivery"]) else { throw StorageError.corruptProtectedState }
+        let plaintext = try await cryptography.openBackground(Self.decode(row["encoded"]), binding: Self.checkpointBinding(id))
+        let stored = try JSONDecoder().decode(CollectionHealthIncident.self, from: plaintext)
+        guard stored.id == id else { throw StorageError.corruptProtectedState }
+        let resolved: Double? = row["resolved_at"]
+        return CollectionHealthIncident(id: id, scope: stored.scope, contentType: stored.contentType,
+            operation: stored.operation, reason: stored.reason, firstObservedAt: stored.firstObservedAt,
+            resolvedAt: resolved.map(Date.init(timeIntervalSince1970:)), delivery: delivery)
     }
 
     public func review(_ occurrenceID: UUID, as state: OccurrenceReview) async throws {
@@ -958,6 +1205,202 @@ public actor ProtectedStore {
     private func expirePending(at now: Date, permit: StoreProcessingPermit) async throws {
         _ = try await maintainQueue(at: now)
         try check(permit)
+    }
+
+    private func prepareCaptureLoss(id captureID: UUID, body: Data?, capturedAt: Date,
+                                    reason: CoverageGapReason, at now: Date) async throws -> PreparedCoverageSettlement {
+        let metadata = body.flatMap { try? CapturePacket(body: $0).metadata }
+        let scope = metadata.map {
+            CollectionScope(provider: $0.agent, profileID: $0.profileID, interface: $0.interface, path: .hook)
+        }
+        let gap = CoverageGap(reason: reason, interval: DateInterval(start: capturedAt, end: max(capturedAt, now)), scope: scope)
+        let id = try await structuralID(Data("capture-loss-v1:\(captureID.uuidString)".utf8))
+        let omission = CoverageOmission(id: id, gap: gap, firstObservedAt: now, state: .unrecoverable, resolvedAt: nil)
+        let sealed = try await cryptography.sealBackground(JSONEncoder().encode(omission), binding: Self.checkpointBinding(id))
+        var result = PreparedCoverageSettlement()
+        result.gaps = [try await sealedGap(gap, at: now)]
+        // Capture loss is not a native source locator. Available original history can still be
+        // collected independently; we never fabricate a native mapping for this lost work.
+        result.omissions = [(id, id, nil, try sealed.encoded(), nil, .unrecoverable)]
+        return result
+    }
+
+    private func prepareCoverageSettlement(gaps: [CoverageGap], recoveredReferences: [CoverageRecoveryReference],
+                                          at now: Date) async throws -> PreparedCoverageSettlement {
+        guard now.timeIntervalSince1970.isFinite else { throw StorageError.invalidTime }
+        guard gaps.count <= 4096, recoveredReferences.count <= 4096 else { throw StorageError.stateTooLarge }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        var prepared = PreparedCoverageSettlement()
+        var incidentKeys: Set<UUID> = []
+        var omittedLocations: Set<UUID> = []
+        for gap in gaps {
+            if let interval = gap.interval {
+                guard interval.start.timeIntervalSince1970.isFinite,
+                      interval.end.timeIntervalSince1970.isFinite, interval.duration.isFinite else { throw StorageError.invalidTime }
+            }
+            if let scope = gap.scope {
+                guard !scope.profileID.isEmpty, scope.profileID.utf8.count <= 4096 else { throw StorageError.invalidPayload }
+            }
+            prepared.gaps.append(try await sealedGap(gap, at: now))
+            var incidentKey: UUID?
+            let formatFailureReasons: Set<CoverageGapReason> = [.unsupportedContent, .malformedSource, .missingTimestamp, .unresolvedCorrelation]
+            if gap.isRequiredFormatFailure == true, formatFailureReasons.contains(gap.reason),
+               let scope = gap.scope, gap.contentType != nil || gap.operation != nil {
+                let key = try await structuralID(Data("collection-health-scope-v1".utf8)
+                    + encoder.encode(HealthIdentityKey(scope: scope, contentType: gap.contentType,
+                        reason: gap.reason, operation: gap.operation)))
+                incidentKey = key
+                if incidentKeys.insert(key).inserted {
+                    let id = UUID()
+                    let incident = CollectionHealthIncident(id: id, scope: scope, contentType: gap.contentType,
+                        operation: gap.operation, reason: gap.reason, firstObservedAt: now, resolvedAt: nil, delivery: .pending)
+                    let sealed = try await cryptography.sealBackground(encoder.encode(incident), binding: Self.checkpointBinding(id))
+                    prepared.incidents.append((id, key, try sealed.encoded(), gap.recovery == nil))
+                } else if gap.recovery == nil,
+                          let index = prepared.incidents.firstIndex(where: { $0.key == key }) {
+                    prepared.incidents[index].requiresAssessment = true
+                }
+            }
+            if let reference = gap.recovery, let scope = gap.scope {
+                try Self.validateRecoveryReference(reference)
+                if let session = reference.session,
+                   session.provider != scope.provider || session.profileID != scope.profileID { throw StorageError.invalidPayload }
+                let location = RecoveryLocationKey(reference)
+                let locationID = try await structuralID(Data("coverage-recovery-location-v1".utf8) + encoder.encode(location))
+                let id = try await structuralID(Data("coverage-omission-v1".utf8)
+                    + encoder.encode(OmissionIdentityKey(scope: scope, location: location,
+                        contentType: gap.contentType, reason: gap.reason, operation: gap.operation)))
+                let state: CoverageOmissionState = [.unsupportedContent, .unsupportedVersion, .malformedSource,
+                    .missingTimestamp, .unresolvedCorrelation].contains(gap.reason) ? .blocked : .retryable
+                var omissionGap = gap
+                var firstObservedAt = now
+                var contentTime = reference.contentTime
+                if let previous = try Self.read(database, { db in
+                    try Row.fetchOne(db, sql: "SELECT created_at, content_at FROM coverage_omissions WHERE id = ?",
+                        arguments: [id.uuidString])
+                }) {
+                    let previousCreated: Double = previous["created_at"]
+                    let previousContent: Double? = previous["content_at"]
+                    firstObservedAt = Date(timeIntervalSince1970: previousCreated)
+                    // A new demonstrated failure can reopen the same canonical position, but it
+                    // cannot renew that source's seven-day age. Newly known time can only tighten it.
+                    contentTime = previousContent.map(Date.init(timeIntervalSince1970:))
+                        ?? reference.contentTime.map { min(firstObservedAt, $0) }
+                    omissionGap = CoverageGap(reason: gap.reason, capabilityID: gap.capabilityID,
+                        interval: gap.interval, scope: gap.scope, contentType: gap.contentType, operation: gap.operation,
+                        recovery: .init(session: reference.session, locator: reference.locator,
+                            itemID: reference.itemID, contentTime: contentTime, parserContract: reference.parserContract),
+                        isRequiredFormatFailure: gap.isRequiredFormatFailure)
+                }
+                let omission = CoverageOmission(id: id, gap: omissionGap, firstObservedAt: firstObservedAt, state: state, resolvedAt: nil)
+                let sealed = try await cryptography.sealBackground(encoder.encode(omission), binding: Self.checkpointBinding(id))
+                prepared.omissions.append((id, locationID, incidentKey, try sealed.encoded(), contentTime, state))
+                omittedLocations.insert(locationID)
+            }
+        }
+        for reference in recoveredReferences {
+            try Self.validateRecoveryReference(reference)
+            let locationID = try await structuralID(Data("coverage-recovery-location-v1".utf8)
+                + encoder.encode(RecoveryLocationKey(reference)))
+            // Even a caller incorrectly reporting a partially readable record as recovered cannot
+            // settle its unread siblings in the same batch.
+            if !omittedLocations.contains(locationID) { prepared.recoveredLocations.insert(locationID) }
+        }
+        return prepared
+    }
+
+    private static func validateRecoveryReference(_ reference: CoverageRecoveryReference) throws {
+        guard !reference.parserContract.isEmpty, reference.parserContract.utf8.count <= 256,
+              reference.contentTime?.timeIntervalSince1970.isFinite != false,
+              reference.itemID?.utf8.count ?? 0 <= 4096 else { throw StorageError.invalidPayload }
+        if let session = reference.session {
+            guard !session.profileID.isEmpty, !session.sessionID.isEmpty,
+                  session.profileID.utf8.count <= 4096, session.sessionID.utf8.count <= 4096 else { throw StorageError.invalidPayload }
+        }
+        switch reference.locator {
+        case .transcript, .transcriptByteOffset: break
+        case .upstreamItem, .unavailable:
+            guard reference.session != nil else { throw StorageError.invalidPayload }
+        }
+    }
+
+    /// Gap metadata, recoverable positions and health decisions settle with source progress.
+    /// Structural indexes contain only keyed/random UUIDs, controlled states and timestamps.
+    private static func writeCoverageSettlement(_ prepared: PreparedCoverageSettlement, at now: Date,
+                                               maximumBytes: Int, in db: Database) throws {
+        for gap in prepared.gaps { try insertGap(gap, at: now, in: db) }
+        for omission in prepared.omissions {
+            try db.execute(sql: """
+                INSERT INTO coverage_omissions
+                    (id, location_id, incident_key, created_at, content_at, state, encoded)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET incident_key = excluded.incident_key,
+                    content_at = COALESCE(coverage_omissions.content_at, excluded.content_at),
+                    state = excluded.state, resolved_at = NULL, encoded = excluded.encoded
+                WHERE coverage_omissions.state = ?
+                """, arguments: [omission.id.uuidString, omission.locationID.uuidString,
+                    omission.incidentKey?.uuidString, now.timeIntervalSince1970,
+                    omission.time?.timeIntervalSince1970, omission.state.rawValue, omission.encoded,
+                    CoverageOmissionState.recovered.rawValue])
+            // An open position first recorded without a required failure must still join the
+            // incident that a later required failure at the same position opens.
+            if let key = omission.incidentKey {
+                try db.execute(sql: """
+                    UPDATE coverage_omissions SET incident_key = ?
+                    WHERE id = ? AND incident_key IS NULL AND state IN (?, ?)
+                    """, arguments: [key.uuidString, omission.id.uuidString,
+                        CoverageOmissionState.retryable.rawValue, CoverageOmissionState.blocked.rawValue])
+            }
+        }
+        if !prepared.omissions.isEmpty {
+            let bytes = try Int.fetchOne(db, sql: "SELECT COALESCE(SUM(length(encoded)), 0) FROM coverage_omissions") ?? 0
+            guard bytes <= maximumBytes else { throw StorageError.stateTooLarge }
+        }
+        for incident in prepared.incidents {
+            try db.execute(sql: """
+                INSERT OR IGNORE INTO collection_health_incidents
+                    (id, key_id, created_at, delivery, requires_assessment, encoded)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """, arguments: [incident.id.uuidString, incident.key.uuidString, now.timeIntervalSince1970,
+                    AlertDeliveryState.pending.rawValue, incident.requiresAssessment, incident.encoded])
+            if incident.requiresAssessment {
+                try db.execute(sql: "UPDATE collection_health_incidents SET requires_assessment = 1 WHERE key_id = ? AND resolved_at IS NULL",
+                               arguments: [incident.key.uuidString])
+            }
+        }
+        let cutoff = now.addingTimeInterval(-HistoricalAuditContext.lookback).timeIntervalSince1970
+        for locationID in prepared.recoveredLocations {
+            try db.execute(sql: """
+                UPDATE coverage_omissions SET state = ?, resolved_at = ?
+                WHERE location_id = ? AND state IN (?, ?) AND COALESCE(content_at, created_at) >= ?
+                    AND COALESCE(content_at, created_at) <= ?
+                """, arguments: [CoverageOmissionState.recovered.rawValue, now.timeIntervalSince1970,
+                    locationID.uuidString, CoverageOmissionState.blocked.rawValue, CoverageOmissionState.retryable.rawValue,
+                    cutoff, now.timeIntervalSince1970])
+            // Clearing one item cannot resolve the incident while another item remains omitted.
+            _ = try resolveHealthIncidents(where: """
+                requires_assessment = 0
+                    AND key_id IN (SELECT incident_key FROM coverage_omissions WHERE location_id = ? AND state = ?)
+                """, arguments: [locationID.uuidString, CoverageOmissionState.recovered.rawValue], at: now, in: db)
+        }
+    }
+
+    /// Settles matching active incidents once none of their omissions can still be recovered.
+    /// An unrecoverable loss stays in the omission ledger, but it cannot hold an incident open
+    /// forever and silently absorb a later failure with the same identity.
+    private static func resolveHealthIncidents(where condition: String, arguments: StatementArguments,
+                                               at now: Date, in db: Database) throws -> Int {
+        try db.execute(sql: """
+            UPDATE collection_health_incidents SET resolved_at = ?,
+                delivery = CASE WHEN delivery = ? THEN ? ELSE delivery END
+            WHERE resolved_at IS NULL AND \(condition)
+                AND NOT EXISTS (SELECT 1 FROM coverage_omissions
+                    WHERE incident_key = collection_health_incidents.key_id AND state IN (?, ?))
+            """, arguments: [now.timeIntervalSince1970, AlertDeliveryState.pending.rawValue,
+                AlertDeliveryState.cancelled.rawValue] + arguments
+                + [CoverageOmissionState.retryable.rawValue, CoverageOmissionState.blocked.rawValue])
+        return db.changesCount
     }
 
     private func sealedGap(_ gap: CoverageGap, at _: Date) async throws -> ProtectedPayload {
@@ -1142,6 +1585,19 @@ public actor ProtectedStore {
                 ALTER TABLE capture_receipts ADD COLUMN consumed_at REAL NOT NULL DEFAULT 0;
                 CREATE INDEX capture_receipts_consumed ON capture_receipts (consumed_at);
                 CREATE INDEX coverage_gaps_created ON coverage_gaps (created_at);
+                """)
+        }
+        migrator.registerMigration("v5-scoped-coverage-recovery") { db in
+            try db.execute(sql: """
+                CREATE TABLE coverage_omissions (
+                    id TEXT PRIMARY KEY NOT NULL, location_id TEXT NOT NULL, incident_key TEXT,
+                    created_at REAL NOT NULL, content_at REAL, state TEXT NOT NULL, resolved_at REAL, encoded BLOB NOT NULL);
+                CREATE INDEX coverage_omissions_location ON coverage_omissions (location_id, state);
+                CREATE INDEX coverage_omissions_incident ON coverage_omissions (incident_key, state);
+                CREATE TABLE collection_health_incidents (
+                    id TEXT PRIMARY KEY NOT NULL, key_id TEXT NOT NULL, created_at REAL NOT NULL,
+                    resolved_at REAL, delivery TEXT NOT NULL, requires_assessment INTEGER NOT NULL, encoded BLOB NOT NULL);
+                CREATE UNIQUE INDEX collection_health_active ON collection_health_incidents (key_id) WHERE resolved_at IS NULL;
                 """)
         }
         try migrator.migrate(database)

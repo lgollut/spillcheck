@@ -1,0 +1,63 @@
+{
+  "actualNativeProducerVersion": "0.160.1",
+  "actualReaderVersion": "0.161.0",
+  "childFixtureMarkerRecordKinds": {
+    "FINAL": [
+      "event_msg",
+      "response_item/message/assistant"
+    ],
+    "INTERMEDIATE": [
+      "event_msg",
+      "response_item/message/assistant"
+    ],
+    "TOOL_ERROR": [
+      "event_msg",
+      "response_item"
+    ],
+    "TOOL_OUTPUT": [
+      "event_msg",
+      "response_item"
+    ]
+  },
+  "collectionFallbackImplemented": false,
+  "date": "2026-10-09",
+  "ephemeralReaderWorkspaceRemoved": true,
+  "exitCode": 0,
+  "liveCoverageEstablished": false,
+  "nativeChildResponseMessageRecords": 6,
+  "nativeChildResponseMessagesWithItemID": 6,
+  "nativeChildSessionMetadataMatched": true,
+  "nativeChildUserPromptMarkerAvailable": false,
+  "nativeFileBytes": 110055,
+  "nativeParentChildRelationshipVerified": true,
+  "nativeParentLinkedChildItemContainsRequestedPromptMarker": false,
+  "nativeParentLinkedChildItemHasPromptField": false,
+  "nativeParentOriginalMetadataMatched": true,
+  "nativeParentOriginalUserPromptContainsRequestedChildMarker": true,
+  "nativeParentPromptBearingSpawnCallIDMatchesPublicLinkedChildItemID": false,
+  "nativeParentSpawnArgumentsAreJSONObject": true,
+  "nativeParentSpawnArgumentsContainRequestedPromptMarker": false,
+  "nativeParentSpawnArgumentsHaveMessageOrTaskField": true,
+  "nativeParentSpawnCallCount": 1,
+  "nativeParentSpawnCallIDMatchesPublicLinkedChildItemID": true,
+  "noOriginalSourceArchive": true,
+  "noUnrelatedHistoryEnumeration": true,
+  "ownedDiagnosticGroupStopped": true,
+  "passed": true,
+  "phase0Passed": false,
+  "productionGUICollectionEnabled": false,
+  "readerShutdownCompletedWithinDeadline": true,
+  "recordKinds": {
+    "event_msg": 12,
+    "other": 6,
+    "response_item": 8,
+    "response_item/message/assistant": 2,
+    "response_item/message/developer": 3,
+    "response_item/message/user": 1,
+    "session_meta": 1,
+    "turn_context": 1
+  },
+  "schemaVersion": 1,
+  "scope": "exact-public-verified-parent-spawn-input-and-native-child-original-JSONL-only-after-producer",
+  "status": "exact-native-source-diagnostic-completed-child-prompt-fixture-noncompliance"
+}

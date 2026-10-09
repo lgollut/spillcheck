@@ -1,0 +1,185 @@
+{
+  "GUIAutomationUsed": false,
+  "actualNativeProducerVersion": "0.160.1",
+  "actualPassiveReaderVersion": "0.161.0",
+  "childPromptFixtureCompliance": {
+    "classification": "fixture-noncompliance; this run cannot establish provider inability to expose a correctly submitted native child prompt",
+    "nativeChildOriginalMarkersContainRequestedPrompt": false,
+    "nativeParentSpawnArgumentsAreJSONObject": true,
+    "nativeParentSpawnArgumentsContainRequestedPromptMarker": false,
+    "nativeParentSpawnArgumentsHaveMessageOrTaskField": true,
+    "nativeParentSpawnCallCount": 1,
+    "originalSourceDiagnostic": "harness-compatibility-codex-gui-native-child-source-r3-2026-10-09.json",
+    "parentUserPromptRequestedChildMarker": true
+  },
+  "collectorReport": {
+    "GUIAutomationUsed": false,
+    "ephemeralEncryptedStoreRemoved": true,
+    "exactNativeIdentitiesPublished": false,
+    "existingConfigurationModified": false,
+    "exitCode": 1,
+    "hookTrustBypassed": false,
+    "hostVersionEvidence": "officialBundleMetadata",
+    "ownedObserverGroupStopped": true,
+    "productionGUICollectionEnabled": false,
+    "result": {
+      "actualReaderVersion": "0.161.0",
+      "catchupNewOccurrences": 0,
+      "catchupOnly": false,
+      "catchupScope": "exact-selected-original-sources-only",
+      "catchupWindowDays": 7,
+      "ciphertextMarkerInspectionPassed": true,
+      "exactNativeIdentityAndAuthorizedOriginalStoreVerified": true,
+      "finished": true,
+      "gapReasons": [],
+      "hookDeliveryMeasured": false,
+      "hostVersion": "26.930.61225",
+      "hostVersionEvidence": "officialBundleMetadata",
+      "limitations": [
+        "Format probe uses the existing provider parser in its enabled CLI eligibility context; it does not enable or accept production Desktop normalization.",
+        "The GUI host/version and store authorization are explicit operator evidence; native identity comes only from the created task's own runtime and is checked against its exact original source.",
+        "Live boundary and exact-ID polling do not measure first-byte publication or hook delivery.",
+        "The live observer began before the genuine GUI fixture registered its native identities.",
+        "Catch-up covers only the two selected disposable original sources in a seven-day time window, not discovery of unrelated history."
+      ],
+      "liveBoundaryBeforeRuntimeRegistration": true,
+      "nativeLocationsUnique": true,
+      "nativeParentChildRelationshipVerified": true,
+      "nativeSessionCount": 2,
+      "normalizedContentObservationsIncludingReplay": {
+        "child": {
+          "finalResponse": 315,
+          "intermediateResponse": 326,
+          "toolError": 318,
+          "toolOutput": 652
+        },
+        "parent": {
+          "finalResponse": 676,
+          "intermediateResponse": 724,
+          "toolError": 352,
+          "toolOutput": 721,
+          "userPrompt": 728
+        }
+      },
+      "observedProducerVersions": [
+        "0.160.1"
+      ],
+      "occurrenceCount": 14,
+      "parserEligibilityContext": "standalone-cli-format-probe-only",
+      "passed": false,
+      "productionGUICollectionEnabled": false,
+      "queueCount": 0,
+      "readerFinalShutdownCompletedWithinDeadline": true,
+      "readerRestartShutdownCompletedWithinDeadline": true,
+      "replayStable": true,
+      "selectedNativePublicItemMarkers": {
+        "child": [
+          "CHILD_FINAL",
+          "CHILD_INTERMEDIATE",
+          "CHILD_TOOL_ERROR",
+          "CHILD_TOOL_OUTPUT"
+        ],
+        "parent": [
+          "PARENT_FINAL",
+          "PARENT_INTERMEDIATE",
+          "PARENT_PROMPT",
+          "PARENT_TOOL_ERROR",
+          "PARENT_TOOL_OUTPUT"
+        ]
+      },
+      "selectedSourceCatchupPassed": false,
+      "signedAppAcceptance": false,
+      "sourceHost": "official-codex-GUI",
+      "sourceOpeningMeasured": false,
+      "typedCommitted": {
+        "CHILD_FINAL": 1,
+        "CHILD_INTERMEDIATE": 1,
+        "CHILD_TOOL_ERROR": 1,
+        "CHILD_TOOL_OUTPUT": 1,
+        "PARENT_FINAL": 1,
+        "PARENT_INTERMEDIATE": 1,
+        "PARENT_PROMPT": 1,
+        "PARENT_TOOL_ERROR": 1,
+        "PARENT_TOOL_OUTPUT": 1
+      },
+      "typedCommittedDuringObservation": {
+        "CHILD_FINAL": 1,
+        "CHILD_INTERMEDIATE": 1,
+        "CHILD_TOOL_ERROR": 1,
+        "CHILD_TOOL_OUTPUT": 1,
+        "PARENT_FINAL": 1,
+        "PARENT_INTERMEDIATE": 1,
+        "PARENT_PROMPT": 1,
+        "PARENT_TOOL_ERROR": 1,
+        "PARENT_TOOL_OUTPUT": 1
+      }
+    },
+    "schemaVersion": 1,
+    "sourceHost": "official-codex-GUI",
+    "status": "unmet-GUI-phase0-gate",
+    "stderrBytesRetainedPrivately": 0
+  },
+  "date": "2026-10-09",
+  "evidenceScope": "Ten-minute standalone format probe started before parent and native child registration; production parser+detector operated in CLI eligibility context. Desktop collection and signed GUI acceptance remain disabled.",
+  "genuineSessionCreatedAndConfirmedByOperator": true,
+  "hostVersion": {
+    "build": "13232",
+    "bundleIdentifier": "com.openai.codex",
+    "evidence": "officialBundleMetadata",
+    "version": "26.930.61225"
+  },
+  "liveTypedCoverage": {
+    "child": {
+      "finalResponse": true,
+      "intermediateResponse": true,
+      "toolError": true,
+      "toolOutput": true,
+      "userPrompt": "unestablished-requested-marker-not-submitted-by-native-parent-spawn"
+    },
+    "nativeSessions": 2,
+    "occurrences": 14,
+    "parent": {
+      "finalResponse": true,
+      "intermediateResponse": true,
+      "toolError": true,
+      "toolOutput": true,
+      "userPrompt": true
+    },
+    "requiredMarkerCounts": "Nine markers committed once each with live provenance. CHILD_PROMPT was not observed; parent spawn arguments omitted its requested marker."
+  },
+  "nativeIdentityAndStore": {
+    "exactParentChildRelationshipVerified": true,
+    "nativeIdentitiesPublished": false,
+    "originalPublicPathsInsideExplicitlyAuthorizedStore": true,
+    "ownedOriginalProjectVerified": true,
+    "source": "own-runtime-CODEX_THREAD_ID"
+  },
+  "phase0Passed": false,
+  "priorEvidencePreserved": [
+    "harness-compatibility-codex-gui-manual-2026-10-09.json",
+    "harness-compatibility-codex-gui-native-partial-2026-10-09.json",
+    "harness-compatibility-codex-gui-native-child-source-2026-10-09.json"
+  ],
+  "privacy": {
+    "noNativeIDsPublished": true,
+    "noOriginalSourceArchive": true,
+    "noUnrelatedHistoryEnumeration": true,
+    "providerSettingsAndTrustUnchanged": true
+  },
+  "schemaVersion": 1,
+  "selectedSourceRestartCatchup": {
+    "addedOccurrences": 0,
+    "completeRequiredContentGatePassed": false,
+    "exactSelectedSourcesOnly": true,
+    "liveAndHistoricalIdentityDuplicateSuppressionPassed": true,
+    "replayStable": true,
+    "sevenDayWindow": true
+  },
+  "sourceHost": "official-codex-GUI",
+  "status": "genuine-GUI-live-nine-typed-markers-child-prompt-fixture-noncompliance",
+  "unmetGates": [
+    "A fixture must submit CHILD_PROMPT in the actual native child spawn/task input and establish its native prompt identity, live commitment and available catch-up",
+    "Official GUI all-required-content phase0 exit gate remains open; nine typed live markers do not establish all five types in the native child",
+    "Ordinary owned hook delivery where available, production Desktop normalization/setup, signed GUI acceptance, concurrent six-route operation, upgrade recovery, scoped degradation notifications and native source opening"
+  ]
+}

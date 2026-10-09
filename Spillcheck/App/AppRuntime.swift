@@ -17,9 +17,11 @@ private actor CaptureAdmission {
 private struct ObservedClaudeNormalizer: CaptureNormalizer {
     let adapter: ClaudeAdapter
     let onObservation: @Sendable ([ClaudeActiveSource]) async -> Void
+    let onBatch: @Sendable (CollectionBatch, CaptureMetadata) async -> Void
     func normalize(_ packet: CapturePacket, capturedAt: Date,
                    cryptography: BackgroundCryptography) async throws -> CollectionBatch {
         let batch = try await adapter.normalize(packet, capturedAt: capturedAt, cryptography: cryptography)
+        await onBatch(batch, packet.metadata)
         if !batch.sources.isEmpty {
             var observed: [ClaudeActiveSource] = []
             var paths = Set<String>()
@@ -41,6 +43,7 @@ private struct ObservedCodexNormalizer: CaptureNormalizer {
     let adapter: CodexAdapter
     let onSelection: @Sendable ([CodexActiveSource]) async -> Void
     let onObservation: @Sendable ([CodexActiveSource]) async -> Void
+    let onBatch: @Sendable (CollectionBatch, CaptureMetadata) async -> Void
     func normalize(_ packet: CapturePacket, capturedAt: Date,
                    cryptography: BackgroundCryptography) async throws -> CollectionBatch {
         // Hooks may arrive before Codex flushes public items. Retain the explicit session
@@ -48,7 +51,7 @@ private struct ObservedCodexNormalizer: CaptureNormalizer {
         if adapter.authority == .publicNativeItems,
            packet.metadata.agent == .codex, packet.metadata.profileID == adapter.profileID,
            packet.metadata.interface == adapter.interface,
-           adapter.capabilities().contains(where: { $0.validation == .validated }),
+           CollectionCompatibility.isEligible(provider: .codex, interface: adapter.interface, version: adapter.agentVersion),
            let hook = try? JSONSerialization.jsonObject(with: packet.eventJSON) as? [String: Any],
            let event = hook["hook_event_name"] as? String, CodexHookConfiguration.events.contains(event),
            let session = hook["session_id"] as? String,
@@ -64,6 +67,7 @@ private struct ObservedCodexNormalizer: CaptureNormalizer {
             await onSelection(selections)
         }
         let batch = try await adapter.normalize(packet, capturedAt: capturedAt, cryptography: cryptography)
+        await onBatch(batch, packet.metadata)
         if !batch.sources.isEmpty {
             var observed: [CodexActiveSource] = []
             var threads = Set<String>()
@@ -96,7 +100,7 @@ final class AppRuntime {
     private var activeMonitor: ClaudeActiveTranscriptMonitor?
     private var codexMonitor: CodexActiveHistoryMonitor?
     private var codexHistory: CodexAppServerHistoryClient?
-    private var historyProducers: [any HistoricalCaptureProducer] = []
+    private var historyProducers: [(provider: AgentProvider, producer: any HistoricalCaptureProducer)] = []
     private var collectionConfigured = false
     private var collectionObserved = false
     private var collectionDirectory: URL?
@@ -117,8 +121,18 @@ final class AppRuntime {
     #if DEBUG
     private var acceptanceReportURL: URL?
     private var acceptanceDeadline: Date?
+    private var acceptanceFinishFile: URL?
     private var acceptanceFinishing = false
+    private var acceptanceNativeChildSources: Set<SourceIdentity> = []
+    private var acceptanceUsesExplicitStore = false
     private var acceptancePhase: String?
+    private var acceptanceRecovery: DisposableRecoveryConfiguration?
+    private var acceptanceProcessingStopped = false
+    private var acceptanceExitWithPending = false
+    private var acceptanceLoadedExistingManifest = false
+    private var acceptanceCheckpointIDs: Set<UUID> = []
+    private var acceptanceLoadedCheckpointIDs: Set<UUID> = []
+    private var acceptanceCompletedCaptureIDs: Set<UUID> = []
     private var workflowEvents: [String: Int] = [:]
     private var lastReportedViewingState: InventoryViewingState = .masked
     #endif
@@ -142,6 +156,10 @@ final class AppRuntime {
            let seconds = Double(args[secondsIndex + 1]), seconds >= 2, seconds <= 120 {
             acceptanceReportURL = URL(fileURLWithPath: args[index + 1])
             acceptanceDeadline = args.contains("--acceptance-hold") ? nil : Date().addingTimeInterval(seconds)
+            if let finishIndex = args.firstIndex(of: "--acceptance-finish-file"),
+               args.indices.contains(finishIndex + 1), args[finishIndex + 1].hasPrefix("/") {
+                acceptanceFinishFile = URL(fileURLWithPath: args[finishIndex + 1])
+            }
             writeOpeningReport(phase: "starting")
         }
         #endif
@@ -160,6 +178,11 @@ final class AppRuntime {
             let overrideDirectory = args.firstIndex(of: "--store-directory").flatMap { index in
                 args.indices.contains(index + 1) ? URL(fileURLWithPath: args[index + 1], isDirectory: true) : nil
             }
+            acceptanceUsesExplicitStore = overrideDirectory != nil
+            if args.contains("--acceptance-recovery-worker") {
+                guard acceptanceReportURL != nil, overrideDirectory != nil else { throw ClaudeCollectionError.invalidConfiguration }
+                acceptanceRecovery = try DisposableRecoveryConfiguration(arguments: args)
+            }
             let selectedDirectory = try overrideDirectory ?? AppStorageLocation.prepare(in: applicationSupport)
             #else
             let selectedDirectory = try AppStorageLocation.prepare(in: applicationSupport)
@@ -167,6 +190,7 @@ final class AppRuntime {
             let directory = selectedDirectory
             let probe = try await Task.detached { try ProtectedStore.probe(at: directory) }.value
             #if DEBUG
+            acceptanceLoadedExistingManifest = probe.manifest != nil
             writeOpeningReport(phase: "loading-device-keys")
             #endif
             try Task.checkCancellation()
@@ -188,6 +212,10 @@ final class AppRuntime {
             }
             let admission = admission
             let currentSetup = setup
+            #if DEBUG
+            let acceptanceHistoryAdmission = acceptanceReportURL != nil && acceptanceUsesExplicitStore
+                && CommandLine.arguments.contains("--acceptance-allow-history-request")
+            #endif
             await admission.update(try LiveCaptureScope(startedAt: .now,
                 catchupReason: probe.manifest == nil ? .firstLaunch : .restart))
             try await server.start(at: directory.appendingPathComponent("capture.sock"),
@@ -199,7 +227,14 @@ final class AppRuntime {
                     guard let scope = await admission.currentScope() else { throw StorageError.monitoringPaused }
                     // No capture callback returns successfully before the encrypted transaction commits.
                     guard await admission.accepts(packet) else { throw CaptureTransportError.invalidMetadata }
-                    let insertion = try await opened.enqueue(packet.body, capturedAt: .now, permit: permit, scope: scope)
+                    var historicalAudit: HistoricalAuditContext?
+                    #if DEBUG
+                    if acceptanceHistoryAdmission {
+                        historicalAudit = try ClaudeAdapter.historicalAuditForTesting(in: packet)
+                    }
+                    #endif
+                    let insertion = try await opened.enqueue(packet.body, capturedAt: .now, permit: permit,
+                        scope: scope, historicalAudit: historicalAudit)
                     let queueID: UUID
                     switch insertion {
                     case .inserted(let id), .alreadyQueued(let id), .alreadyProcessed(let id): queueID = id
@@ -260,6 +295,14 @@ final class AppRuntime {
             socketURL: directory.appendingPathComponent("capture.sock"))
         setup = ownedSetup
         try await ownedSetup.load()
+        #if DEBUG
+        if let recovery = acceptanceRecovery, CommandLine.arguments.contains("--acceptance-recovery-install-profile") {
+            let profile = try recovery.claudeProfile(arguments: CommandLine.arguments)
+            try await ownedSetup.install(.init(provider: .claudeCode, profileID: "owned-signed-claude-recovery",
+                executablePath: profile.executable, homePath: profile.home, version: profile.version))
+            try await ownedSetup.verify(.claudeCode)
+        }
+        #endif
         model.loadSnapshot(await store.snapshot())
         await refreshSetup(updateProfiles: true)
         notifications.navigationIsCurrent = { target in await store.notificationTargetExists(target) }
@@ -277,6 +320,10 @@ final class AppRuntime {
                 if let valueID = self.model.historicalSummaries.first(where: { $0.audit.id == id })?.ordinaryValueIDs.first {
                     self.model.selectValue(valueID)
                 }
+            case .collectionHealth:
+                self.model.selectedEntryID = nil
+                self.model.route = .coverage
+                self.model.actionMessage = "Collection has a scoped limitation. Review the affected route and content in Coverage."
             }
             self.onShowInventory?()
         }
@@ -609,10 +656,26 @@ final class AppRuntime {
         guard let setup, !terminating else { return }
         await setup.check()
         let snapshot = await setup.snapshot()
-        if updateProfiles { model.agentProfiles = snapshot.profiles }
+        if updateProfiles || model.agentProfiles != snapshot.profiles { model.agentProfiles = snapshot.profiles }
+        let changed = await setup.consumeChangedExecutables()
+        if changed.contains(.codex) { _ = await codexHistory?.refreshExecutableIfChanged() }
+        if let profile = snapshot.profiles[.codex], let codexHistory {
+            for interface in profile.collectionInterfaces {
+                let scope = CollectionScope(provider: .codex, profileID: profile.profileID,
+                    interface: interface, path: .publicHistory)
+                let assessment = await codexHistory.assessment(scope: scope)
+                model.collectionAssessments[scope] = assessmentWithLimitations(assessment)
+                for operation in assessment.usableOperations where Self.operationAssessed(assessment, operation) {
+                    _ = try? await store?.resolveHealthIncidents(scope: scope, operation: operation)
+                }
+            }
+        }
         model.agentSetupStates = snapshot.states
         model.agentSetupMessages = snapshot.messages
         model.verificationPrompts = snapshot.verificationPrompts
+        for provider in changed where model.monitoringEnabled {
+            await enqueueHistory(provider: provider, reassessing: true)
+        }
         let home = FileManager.default.homeDirectoryForCurrentUser
         let paths = [snapshot.profiles[.codex]?.executablePath ?? home.appendingPathComponent(".local/bin/codex").path,
                      snapshot.profiles[.claudeCode]?.executablePath ?? home.appendingPathComponent(".local/bin/claude").path]
@@ -702,22 +765,44 @@ final class AppRuntime {
     func refresh() async {
         guard let store, !terminating else { return }
         do {
+            #if DEBUG
+            if let recovery = acceptanceRecovery, !acceptanceProcessingStopped,
+               recovery.authorizes(try recovery.controlURL("stop-processing")) {
+                await activeMonitor?.stop()
+                await codexMonitor?.stop()
+                await pipeline?.stop()
+                acceptanceProcessingStopped = true
+            }
+            if let recovery = acceptanceRecovery,
+               recovery.authorizes(try recovery.controlURL("exit-with-pending")), !acceptanceFinishing {
+                acceptanceExitWithPending = true
+                Task { await self.finishAcceptance() }
+            }
+            #endif
             _ = try await store.maintainQueue()
             let statistics = try await store.queueStatistics()
-            // Status reflects current conditions: recent gaps and each profile's latest audit.
-            // Persistent problems keep recording gaps; older rows stay listed until pruned.
-            let gaps = try await store.coverageGaps(since: Date().addingTimeInterval(-Self.recentGapWindow))
+            try await store.expireCoverageRecovery(at: .now)
+            let recentGaps = try await store.coverageGaps(since: Date().addingTimeInterval(-Self.recentGapWindow))
+            let omissions = try await store.coverageOmissions(since: Date().addingTimeInterval(-HistoricalAuditContext.lookback))
+            var gaps = Array(Set(recentGaps.filter { $0.recovery == nil } + omissions.map(\.gap)))
+            model.collectionLimitations = gaps
             let progress = try await store.historicalProgress()
             model.historyProgress = progress
             model.updateQueue(count: statistics.count)
             let latestAudits = Dictionary(grouping: progress, by: { "\($0.provider.rawValue)\u{0}\($0.profileID)" })
                 .compactMap { $0.value.max { $0.progress.audit.end < $1.progress.audit.end } }
             let unreadHistory = latestAudits.contains { $0.progress.hasUnreadContent }
+            await refreshSetup()
+            gaps.removeAll { gap in
+                guard gap.recovery == nil, gap.contentType == nil,
+                      let scope = gap.scope, let operation = gap.operation else { return false }
+                return model.collectionAssessments[scope].map { Self.operationAssessed($0, operation) } == true
+            }
+            model.collectionLimitations = gaps
             model.updateCoverage(gaps.isEmpty && !unreadHistory
                 ? (collectionObserved ? .complete : .notConfigured)
                 : .partial(gaps.isEmpty ? [.init(reason: .budgetExhausted)] : gaps))
             model.loadSnapshot(await store.snapshot())
-            await refreshSetup()
             await deliverNotifications()
             #if DEBUG
             await writeAcceptanceReport(statistics: statistics, gaps: gaps)
@@ -776,8 +861,34 @@ final class AppRuntime {
             try? output.write(to: url, options: .atomic)
         }
     }
+    /// Keyed digest that lets a recovery report compare state across restarts without exporting it.
+    private func recoveryDigest<T: Encodable & Sendable>(_ value: T?) async -> String? {
+        guard let value, let protection else { return nil }
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        guard let bytes = try? encoder.encode(value),
+              let revision = try? await protection.background.revision(canonicalBytes: bytes) else { return nil }
+        return revision.keyedDigest.base64EncodedString()
+    }
+
+    private func recoveryDigests<T: Encodable & Sendable>(_ values: [T]) async -> [String] {
+        var digests: [String] = []
+        for value in values { if let digest = await recoveryDigest(value) { digests.append(digest) } }
+        return digests.sorted()
+    }
+
+    private func observedRecoveryCheckpoint(_ checkpoint: SourceCheckpoint?) {
+        guard acceptanceRecovery != nil, let checkpoint else { return }
+        acceptanceLoadedCheckpointIDs.insert(checkpoint.sourceDocumentID)
+    }
+
+    private func observedRecoveryCaptureCompletion(_ id: UUID) {
+        guard acceptanceRecovery != nil else { return }
+        acceptanceCompletedCaptureIDs.insert(id)
+    }
+
     /// Counts from the running signed app, restricted to an explicitly requested test report.
-    /// This never exports values, excerpts, source paths, upstream IDs or error text.
+    /// This never exports values, excerpts, source paths, upstream IDs or error text. A recovery
+    /// run's private report also carries its own one-time synthetic verification prompt.
     private func writeAcceptanceReport(statistics: StoreQueueStatistics, gaps: [CoverageGap]) async {
         guard let url = acceptanceReportURL, let store else { return }
         let snapshot = await store.snapshot()
@@ -788,6 +899,10 @@ final class AppRuntime {
         let syntheticOccurrences = snapshot.occurrences.values.filter { $0.valueID == syntheticValueID }
         let syntheticKinds = Dictionary(grouping: syntheticOccurrences,
             by: { $0.source.contentType.rawValue }).mapValues(\.count)
+        let syntheticChildren = syntheticOccurrences.filter {
+            acceptanceNativeChildSources.contains($0.source.identity)
+        }
+        let historicalProgress = try? await store.historicalProgress()
         var report: [String: Any] = ["schemaVersion": 1, "storageReady": model.storageReady,
             "collectionConfigured": collectionConfigured, "queueCount": statistics.count,
             "valueCount": snapshot.records.count, "occurrenceCount": snapshot.occurrences.count,
@@ -797,7 +912,16 @@ final class AppRuntime {
             "syntheticOccurrenceCount": syntheticOccurrences.count,
             "syntheticOccurrencesByContentType": syntheticKinds,
             "syntheticSessionCount": Set(syntheticOccurrences.map { $0.source.identity.session }).count,
+            "syntheticOccurrencesByProducerVersionAndContentType": Dictionary(grouping: syntheticOccurrences,
+                by: { $0.source.origin.agentVersion }).mapValues { occurrences in
+                    Dictionary(grouping: occurrences, by: { $0.source.contentType.rawValue }).mapValues(\.count)
+                },
+            "syntheticNativeChildOccurrenceCount": syntheticChildren.count,
+            "syntheticNativeChildContentTypes": Array(Set(syntheticChildren.map { $0.source.contentType.rawValue })).sorted(),
             "observedAgentVersions": Array(Set(syntheticOccurrences.map { $0.source.origin.agentVersion })).sorted()]
+        report["historicalProgressMeasurementAvailable"] = historicalProgress != nil
+        report["settledHistoricalAuditCount"] = Set((historicalProgress ?? []).map { $0.progress.audit.id }).count
+        report["unreadHistoricalProgressCount"] = (historicalProgress ?? []).filter { $0.progress.hasUnreadContent }.count
         report["workflowEvents"] = workflowEvents
         report["alertsByDeliveryState"] = Dictionary(grouping: snapshot.alertDecisions.values,
             by: { $0.delivery.rawValue }).mapValues(\.count)
@@ -809,6 +933,39 @@ final class AppRuntime {
         report["notificationState"] = model.notificationState.label
         report["launchAtLogin"] = model.launchAtLogin
         report["monitoringEnabled"] = model.monitoringEnabled
+        if acceptanceRecovery != nil {
+            report["recoveryLoadedExistingManifest"] = acceptanceLoadedExistingManifest
+            report["recoveryProcessingStopped"] = acceptanceProcessingStopped
+            report["recoveryQueueClaimedCount"] = statistics.claimedCount
+            report["recoveryEncryptedQueueBytes"] = statistics.encryptedBytes
+            let profiles = await setup?.snapshot()
+            let schemas = await setup?.profileSchemaVersions()
+            report["recoveryLoadedProfileSchemaVersion"] = schemas?.loaded ?? 0
+            report["recoverySavedProfileSchemaVersion"] = schemas?.saved ?? 0
+            report["recoveryProfileSchemaMeasurementAvailable"] = schemas?.loaded != nil && schemas?.saved != nil
+            let profile = profiles?.profiles[.claudeCode]
+            report["recoverySavedSetupConnected"] = profiles?.states[.claudeCode] == .connected
+            report["recoveryObservedExecutableVersion"] = profile?.version
+            report["recoveryRegistrationDigest"] = await recoveryDigest(profile?.registrationID)
+            report["recoveryConnectionProofDigest"] = await recoveryDigest(profile?.connectionProof)
+            // Only this private owned-run report includes the one-time synthetic verification prompt.
+            report["recoveryVerificationPrompt"] = profiles?.verificationPrompts[.claudeCode]
+            report["recoveryManifestDigest"] = await recoveryDigest(protection?.manifest)
+            report["recoveryOccurrenceDigests"] = await recoveryDigests(snapshot.occurrences.keys.map { $0 })
+            report["recoveryReceiptDigests"] = await recoveryDigests(Array(snapshot.analysisReceipts))
+            report["recoveryAlertDigests"] = await recoveryDigests(snapshot.alertDecisions.keys.map { $0 })
+            report["recoveryCheckpointDigests"] = await recoveryDigests(Array(acceptanceCheckpointIDs))
+            report["recoveryLoadedCheckpointDigests"] = await recoveryDigests(Array(acceptanceLoadedCheckpointIDs))
+            let captures = try? await store.captureIdentitiesForTesting()
+            report["recoveryCaptureIdentityMeasurementAvailable"] = captures != nil
+            report["recoveryPendingCaptureDigests"] = await recoveryDigests(captures?.pending ?? [])
+            report["recoveryConsumedCaptureDigests"] = await recoveryDigests(captures?.consumed ?? [])
+            report["recoverySuccessfullyProcessedCaptureDigests"] = await recoveryDigests(Array(acceptanceCompletedCaptureIDs))
+            report["recoveryNativeChildTypesByProducer"] = Dictionary(grouping: syntheticChildren,
+                by: { $0.source.origin.agentVersion }).mapValues { occurrences in
+                    Dictionary(grouping: occurrences, by: { $0.source.contentType.rawValue }).mapValues(\.count)
+                }
+        }
         if let acceptancePhase { report["acceptancePhase"] = acceptancePhase }
         if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
             try? data.write(to: url, options: .atomic)
@@ -833,7 +990,7 @@ final class AppRuntime {
         await server.stop()
         writeAcceptancePhase("draining-queue")
         let deadline = ContinuousClock.now.advanced(by: .seconds(20))
-        while let store, !Task.isCancelled, ContinuousClock.now < deadline,
+        while !acceptanceExitWithPending, let store, !Task.isCancelled, ContinuousClock.now < deadline,
               (try? await store.queueStatistics().count) ?? 0 > 0 {
             try? await Task.sleep(for: .milliseconds(100))
         }
@@ -894,7 +1051,8 @@ final class AppRuntime {
         writeAcceptancePhase("store-closed")
         // A disposable acceptance run may remove only keys created by this process.
         // Existing manifests and normal application launches cannot enter this cleanup.
-        if acceptanceReportURL != nil, CommandLine.arguments.contains("--acceptance-cleanup-new-vault"),
+        if acceptanceReportURL != nil, acceptanceUsesExplicitStore,
+           CommandLine.arguments.contains("--acceptance-cleanup-new-vault"),
            let protection {
             do {
                 let cleaned = try await protection.removeNewlyCreatedProtectionForTesting()
@@ -926,7 +1084,7 @@ final class AppRuntime {
                 ?? selected.first(where: { $0.provider == .claudeCode }).map { profile in
                     CollectionConfiguration(profileID: profile.profileID, agentVersion: profile.version,
                         roots: [URL(fileURLWithPath: profile.homePath, isDirectory: true).appendingPathComponent("projects")],
-                        activeSources: [])
+                        activeSources: [], authorizedHosts: profile.authorizedHosts, historicalInterface: profile.interface)
                 }
             let codexConfiguration = codexOverride
                 ?? selected.first(where: { $0.provider == .codex }).map { profile in
@@ -935,7 +1093,7 @@ final class AppRuntime {
                         t3Version: profile.t3Version, interface: profile.interface, authority: .publicNativeItems,
                         home: home, executable: URL(fileURLWithPath: profile.executablePath),
                         transcriptRoots: [home.appendingPathComponent("sessions"), home.appendingPathComponent("archived_sessions")],
-                        activeSources: [])
+                        activeSources: [], authorizedHosts: profile.authorizedHosts)
                 }
             guard claudeConfiguration != nil || codexConfiguration != nil else {
                 await admission.allow([])
@@ -956,16 +1114,25 @@ final class AppRuntime {
             if let configuration = claudeConfiguration {
                 let adapter = try ClaudeAdapter(profileID: configuration.profileID, agentVersion: configuration.agentVersion,
                     allowedTranscriptRoots: configuration.roots,
-                    checkpointLookup: { id in try await store.checkpoint(documentID: id) })
+                    checkpointLookup: { [weak self] id in
+                        let checkpoint = try await store.checkpoint(documentID: id)
+                        #if DEBUG
+                        await self?.observedRecoveryCheckpoint(checkpoint)
+                        #endif
+                        return checkpoint
+                    })
                 let normalizer = ObservedClaudeNormalizer(adapter: adapter,
-                    onObservation: { [weak self] sources in await self?.markCollectionObserved(sources) })
-                for interface in [AgentInterface.standaloneCLI, .t3] {
+                    onObservation: { [weak self] sources in await self?.markCollectionObserved(sources) },
+                    onBatch: { [weak self] batch, metadata in await self?.observeCollection(batch, metadata: metadata,
+                        path: .versionedTranscript) })
+                for interface in configuration.authorizedHosts.sorted(by: { $0.rawValue < $1.rawValue }) {
                     allowedProfiles.insert(try CaptureMetadata(agent: .claudeCode, interface: interface,
                                                                profileID: configuration.profileID))
                     routes.append(.init(provider: .claudeCode, profileID: configuration.profileID,
                                         interface: interface, normalizer: normalizer))
                 }
-                historyProducers.append(adapter)
+                historyProducers.append((.claudeCode, AuthorizedHistoricalCaptureProducer(producer: adapter,
+                    provider: .claudeCode, profileID: configuration.profileID, interface: configuration.historicalInterface)))
                 activeMonitor = try ClaudeActiveTranscriptMonitor(profileID: configuration.profileID,
                     sources: configuration.activeSources, enqueue: enqueue,
                     onGap: { gap in try? await store.recordCoverageGap(gap) })
@@ -977,8 +1144,11 @@ final class AppRuntime {
                 let client = CodexAppServerHistoryClient(configuration: try .init(executableURL: configuration.executable,
                     codexHomeURL: configuration.home, workingDirectoryURL: work))
                 codexHistory = client
+                let interfaces: [AgentInterface] = configuration.authority == .publicNativeItems
+                    ? configuration.authorizedHosts.sorted(by: { $0.rawValue < $1.rawValue }) : [configuration.interface]
+                for interface in interfaces {
                 let adapter = try CodexAdapter(profileID: configuration.profileID, agentVersion: configuration.readerVersion,
-                    interface: configuration.interface, t3Version: configuration.t3Version,
+                    interface: interface, t3Version: configuration.t3Version,
                     authority: configuration.authority, history: client,
                     allowedTranscriptRoots: configuration.transcriptRoots,
                     authorityLookup: { session in try await store.authority(for: session) },
@@ -988,12 +1158,15 @@ final class AppRuntime {
                     }, checkpointLookup: { id in try await store.checkpoint(documentID: id) })
                 let normalizer = ObservedCodexNormalizer(adapter: adapter,
                     onSelection: { [weak self] sources in await self?.selectCodexSources(sources) },
-                    onObservation: { [weak self] sources in await self?.markCodexObserved(sources) })
+                    onObservation: { [weak self] sources in await self?.markCodexObserved(sources) },
+                    onBatch: { [weak self] batch, metadata in await self?.observeCollection(batch, metadata: metadata,
+                        path: configuration.authority == .publicNativeItems ? .publicHistory : .versionedTranscript) })
                 routes.append(.init(provider: .codex, profileID: configuration.profileID,
-                                    interface: configuration.interface, normalizer: normalizer))
-                allowedProfiles.insert(try CaptureMetadata(agent: .codex, interface: configuration.interface,
+                                    interface: interface, normalizer: normalizer))
+                allowedProfiles.insert(try CaptureMetadata(agent: .codex, interface: interface,
                                                            profileID: configuration.profileID))
-                historyProducers.append(adapter)
+                if interface == configuration.interface { historyProducers.append((.codex, adapter)) }
+                }
                 codexMonitor = try CodexActiveHistoryMonitor(profileID: configuration.profileID,
                     sources: configuration.activeSources, enqueue: enqueue,
                     onGap: { gap in try? await store.recordCoverageGap(gap) })
@@ -1003,6 +1176,13 @@ final class AppRuntime {
                 detector: detector, detectorVersion: BetterleaksSecretDetector.version,
                 onActivity: { [weak model] activity in await model?.updatePipeline(activity) })
             pipeline = worker
+            #if DEBUG
+            if acceptanceRecovery != nil {
+                await worker.observeCaptureCompletionsForTesting { [weak self] id in
+                    await self?.observedRecoveryCaptureCompletion(id)
+                }
+            }
+            #endif
             guard !terminating, !Task.isCancelled else { return }
             collectionConfigured = true
             await admission.allow(allowedProfiles)
@@ -1015,14 +1195,67 @@ final class AppRuntime {
         } catch {
             collectionConfigured = false
             await admission.allow([])
-            model.storageMessage = "Collection unavailable. Select a supported agent version and authorized profile. The vault remains available."
-            try? await store.recordCoverageGap(reason: error is DetectorFailure ? .scannerUnavailable : .unsupportedVersion)
+            model.storageMessage = "Collection unavailable. Check the authorized profile and required collection operations. The vault remains available."
+            try? await store.recordCoverageGap(reason: error is DetectorFailure ? .scannerUnavailable : .sourceUnavailable)
         }
     }
 
     private func markCollectionObserved(_ sources: [ClaudeActiveSource]) async {
         collectionObserved = true
         for source in sources { await activeMonitor?.add(source: source) }
+    }
+
+    private static func operationAssessed(_ assessment: CollectionAssessment, _ operation: CollectionOperation) -> Bool {
+        assessment.canPerform(operation) && !assessment.failures.contains { $0.operation == operation }
+    }
+
+    private func assessmentWithLimitations(_ assessment: CollectionAssessment) -> CollectionAssessment {
+        let required = model.collectionLimitations.filter {
+            $0.scope == assessment.scope && $0.isRequiredFormatFailure == true
+                && ($0.contentType != nil || $0.recovery != nil
+                    || ($0.operation.map { !Self.operationAssessed(assessment, $0) } ?? true))
+        }
+        return CollectionAssessment(scope: assessment.scope,
+            observedExecutableVersion: assessment.observedExecutableVersion, format: assessment.format,
+            usableOperations: assessment.usableOperations,
+            unavailableContent: assessment.unavailableContent.union(required.compactMap(\.contentType)),
+            failures: assessment.failures + required.map {
+                .init(reason: $0.operation == nil ? .changedContentFormat : .sourceUnavailable,
+                      operation: $0.operation, contentType: $0.contentType)
+            }, acceptanceEvidence: assessment.acceptanceEvidence)
+    }
+
+    private func observeCollection(_ batch: CollectionBatch, metadata: CaptureMetadata, path: CollectionPath) {
+        #if DEBUG
+        if acceptanceRecovery != nil { acceptanceCheckpointIDs.formUnion(batch.checkpoints.map(\.sourceDocumentID)) }
+        if acceptanceReportURL != nil {
+            for source in batch.sources where source.record.metadata.identity.session.provider == .claudeCode
+                && source.context?.transcriptPath?.contains("/subagents/agent-") == true {
+                acceptanceNativeChildSources.insert(source.record.metadata.identity)
+            }
+        }
+        #endif
+        let scope = CollectionScope(provider: metadata.agent, profileID: metadata.profileID,
+            interface: metadata.interface, path: path)
+        let previous = model.collectionAssessments[scope]
+        let version = model.agentProfiles[metadata.agent]?.version
+        // Observations of another executable are no longer evidence; this batch starts afresh.
+        var operations = previous.map { $0.observedExecutableVersion == version ? $0.usableOperations : [] } ?? []
+        for source in batch.sources {
+            switch source.record.metadata.origin.provenance {
+            case .live: operations.insert(.liveRead)
+            case .historical: operations.insert(.historicalRead)
+            }
+        }
+        let required = batch.coverageGaps.filter { $0.isRequiredFormatFailure == true }
+        operations.subtract(required.compactMap(\.operation))
+        model.collectionAssessments[scope] = assessmentWithLimitations(CollectionAssessment(scope: scope,
+            observedExecutableVersion: version,
+            format: metadata.agent == .claudeCode ? .claudeTranscript
+                : path == .versionedTranscript ? .codexNativeRollout : .codexPublicHistory,
+            usableOperations: operations, unavailableContent: Set(required.compactMap(\.contentType)),
+            failures: required.map { .init(reason: $0.operation == nil ? .changedContentFormat : .sourceUnavailable,
+                                          operation: $0.operation, contentType: $0.contentType) }))
     }
 
     private func markCodexObserved(_ sources: [CodexActiveSource]) async {
@@ -1034,7 +1267,7 @@ final class AppRuntime {
         for source in sources { try? await codexMonitor?.addSource(source) }
     }
 
-    private func enqueueHistory() async {
+    private func enqueueHistory(provider: AgentProvider? = nil, reassessing: Bool = false) async {
         #if DEBUG
         // Acceptance against exact owned original-provider sessions must not enumerate unrelated history.
         if CommandLine.arguments.contains("--acceptance-no-profile-catchup") { return }
@@ -1042,12 +1275,16 @@ final class AppRuntime {
         guard let store, let permit = await store.processingPermit(),
               let scope = await admission.currentScope(), !terminating else { return }
         do {
-            let audit = try HistoricalAuditContext(id: scope.catchupAuditID ?? UUID(),
-                reason: scope.catchupReason, endingAt: scope.startedAt)
-            for producer in historyProducers {
-                let packet = try await producer.initialHistoricalCapture(audit: audit)
-                _ = try await store.enqueue(packet.body, capturedAt: .now, permit: permit,
-                    scope: scope, historicalAudit: audit)
+            let audit = try HistoricalAuditContext(id: reassessing ? UUID() : scope.catchupAuditID ?? UUID(),
+                reason: reassessing ? .resume : scope.catchupReason, endingAt: reassessing ? .now : scope.startedAt)
+            for route in historyProducers where provider == nil || route.provider == provider {
+                do {
+                    let packet = try await route.producer.initialHistoricalCapture(audit: audit)
+                    _ = try await store.enqueue(packet.body, capturedAt: .now, permit: permit,
+                        scope: scope, historicalAudit: audit)
+                } catch {
+                    try? await store.recordCoverageGap(reason: .sourceUnavailable)
+                }
             }
         } catch {
             try? await store.recordCoverageGap(reason: .sourceUnavailable)
@@ -1072,7 +1309,9 @@ final class AppRuntime {
             MainActor.assumeIsolated {
                 self?.protection?.viewingSession.expireIfNeeded()
                 #if DEBUG
-                if let self, let deadline = self.acceptanceDeadline, Date() >= deadline {
+                if let self, self.acceptanceReportURL != nil,
+                   self.acceptanceDeadline.map({ Date() >= $0 }) == true
+                    || self.acceptanceFinishFile.map({ FileManager.default.fileExists(atPath: $0.path) }) == true {
                     Task { await self.finishAcceptance() }
                 }
                 #endif

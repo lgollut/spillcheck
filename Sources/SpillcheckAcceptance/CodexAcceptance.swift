@@ -21,6 +21,7 @@ private actor CodexLiveEvidence {
     var sessions: Set<String> = []
     var primarySessions: Set<String> = []
     var deliveries = 0
+    var producerVersions: Set<String> = []
     private var measuring = true
     private var sourceObservations: [CodexTimingSource: CodexSourceObservation] = [:]
     private var commitObservations: [CodexTimingSource: CodexCommitObservation] = [:]
@@ -32,6 +33,7 @@ private actor CodexLiveEvidence {
             ("MCP_OK", .toolOutput), ("MCP_ERROR", .toolError), ("CHILD_PROMPT", .userPrompt),
             ("CHILD_FINAL", .finalResponse)]
         for source in batch.sources {
+            producerVersions.insert(source.record.metadata.origin.agentVersion)
             sessions.insert(source.record.metadata.identity.session.sessionID)
             let text = source.record.segments.map { String(decoding: $0.utf8, as: UTF8.self) }.joined(separator: "\n")
             guard text.contains(codexLiveSecret) else { continue }
@@ -56,6 +58,7 @@ private actor CodexLiveEvidence {
     func summary() -> [String: Int] { observed.mapValues(\.count) }
     func selectedThreads() -> [String] { sessions.sorted() }
     func deliveryCount() -> Int { deliveries }
+    func observedProducerVersions() -> [String] { producerVersions.sorted() }
     func observeCommits(_ snapshot: InventorySnapshot, at completedAt: Date) {
         guard measuring else { return }
         for (key, observation) in sourceObservations where commitObservations[key] == nil {
@@ -149,12 +152,14 @@ enum CodexAcceptance {
         }
         let crypto = try BackgroundCryptography.ephemeralForTesting()
         let store = try await ProtectedStore.open(at: storeURL, cryptography: crypto)
+        let configuredReaderVersion = option("--reader-version") ?? option("--version") ?? CollectionCompatibility.unknownProducerVersion
+        let observedHostVersion = option("--host-version") ?? option("--t3-version")
         let client = CodexAppServerHistoryClient(configuration: try .init(executableURL: URL(fileURLWithPath: executable),
-            codexHomeURL: URL(fileURLWithPath: home), workingDirectoryURL: clientWork))
+            codexHomeURL: URL(fileURLWithPath: home), workingDirectoryURL: clientWork, agentVersion: configuredReaderVersion))
         let interface: AgentInterface = arguments.contains("--codex-observe")
             ? (AgentInterface(rawValue: option("--interface") ?? "t3") ?? .desktopCode) : .standaloneCLI
-        let adapter = try CodexAdapter(profileID: "codex-live", agentVersion: "0.161.0", interface: interface,
-            t3Version: interface == .t3 ? CodexAdapter.validatedT3Version : nil, history: client,
+        let adapter = try CodexAdapter(profileID: "codex-live", agentVersion: configuredReaderVersion, interface: interface,
+            t3Version: observedHostVersion, history: client,
             authorityLookup: { try await store.authority(for: $0) },
             authorityRecorder: { choice in
                 guard let permit = await store.processingPermit() else { throw StorageError.monitoringPaused }
@@ -189,7 +194,7 @@ enum CodexAcceptance {
             guard let helper = option("--helper") else { throw CodexCollectionError.invalidConfiguration }
             let socket = root.appendingPathComponent("capture.sock")
             let configuration = try CodexHookConfiguration(registrationID: UUID(), helperURL: URL(fileURLWithPath: helper),
-                socketURL: socket, profileID: "codex-live", agentVersion: "0.161.0")
+                socketURL: socket, profileID: "codex-live", agentVersion: configuredReaderVersion)
             let installed = try CodexHookSetup(hooksURL: URL(fileURLWithPath: home).appendingPathComponent("hooks.json"), configuration: configuration)
             _ = try await installed.install()
             let challenge = try await installed.beginVerification()
@@ -258,9 +263,13 @@ enum CodexAcceptance {
         let finalClean = try clean && filesAreClean(storeURL)
         let latencyBytes = try await evidence.latencySummaryJSON()
         let sourceLatency = try JSONSerialization.jsonObject(with: latencyBytes)
-        emit(["finished": true, "setupState": setupState?.rawValue ?? "selected-source",
+        emit(["finished": true, "actualReaderVersion": await client.observedReaderVersion as Any? ?? NSNull(),
+            "observedProducerVersions": await evidence.observedProducerVersions(),
+            "hostVersion": observedHostVersion as Any? ?? NSNull(), "interface": interface.rawValue,
+            "setupState": setupState?.rawValue ?? "selected-source",
             "durableDeliveries": await evidence.deliveryCount(), "typedObserved": await evidence.summary(), "typedCommitted": committed,
             "syntheticValuePresent": record != nil, "valueCount": after.records.count, "occurrenceCount": occurrences.count,
+            "nativeLocationsUnique": Set(occurrences.map(\.identity)).count == occurrences.count,
             "occurrencesByContentType": Dictionary(grouping: occurrences, by: { $0.source.contentType.rawValue }).mapValues(\.count),
             "sessionCount": Set(occurrences.map(\.source.identity.session)).count,
             "syntheticAlertCount": after.alertDecisions.values.filter { $0.eligibility.fingerprint == fingerprint }.count,

@@ -1,0 +1,51 @@
+{
+  "actualReaderVersion": "0.161.0",
+  "date": "2026-10-09",
+  "ephemeralReaderWorkspaceRemoved": true,
+  "fullReadAndFirstItemPageHaveSameNativeItemIDs": true,
+  "fullReadAndFullTurnsHaveSameNativeItemIDs": true,
+  "nativeParentChildRelationshipVerified": true,
+  "noOriginalSourceArchive": true,
+  "noProviderTurnsOrSettingsChanges": true,
+  "noUnrelatedHistoryEnumeration": true,
+  "ownedReaderStopped": true,
+  "passed": true,
+  "phase0Passed": false,
+  "productionGUICollectionEnabled": false,
+  "schemaVersion": 1,
+  "scope": "exact-selected-parent-and-child-passive-public-history-only-after-producer",
+  "sourceBytesRead": 26480,
+  "sourceHost": "official-codex-GUI",
+  "status": "passive-public-full-history-contract-measured-on-fixture-noncompliant-native-child",
+  "stderrBytesDiscarded": 0,
+  "threadItemsList": {
+    "itemTypes": {
+      "agentMessage": 2,
+      "commandExecution": 3,
+      "reasoning": 1
+    },
+    "pageComplete": true,
+    "requestedPromptMarkerAnywhere": false,
+    "requestedPromptMarkerOnNativeUserMessage": false
+  },
+  "threadReadIncludeTurns": {
+    "itemTypes": {
+      "agentMessage": 2,
+      "commandExecution": 3,
+      "reasoning": 1
+    },
+    "requestedPromptMarkerAnywhere": false,
+    "requestedPromptMarkerOnNativeUserMessage": false,
+    "turnCount": 1
+  },
+  "threadTurnsListFullItems": {
+    "itemTypes": {
+      "agentMessage": 2,
+      "commandExecution": 3,
+      "reasoning": 1
+    },
+    "pageComplete": true,
+    "requestedPromptMarkerAnywhere": false,
+    "requestedPromptMarkerOnNativeUserMessage": false
+  }
+}

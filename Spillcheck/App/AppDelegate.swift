@@ -16,7 +16,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let app = NSApplication.shared
         let delegate = AppDelegate()
         app.delegate = delegate
+        #if DEBUG
+        app.setActivationPolicy(CommandLine.arguments.contains("--acceptance-vault-owner") ? .prohibited : .regular)
+        #else
         app.setActivationPolicy(.regular)
+        #endif
         app.run()
         withExtendedLifetime(delegate) {}
     }
@@ -25,6 +29,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         var previewOnly = false
         #if DEBUG
         let args = CommandLine.arguments
+        if args.contains("--acceptance-vault-owner") {
+            Task { await SignedRecoveryVaultOwner.run(arguments: args); NSApplication.shared.terminate(nil) }
+            return
+        }
         // Sample mode never opens the vault or starts collection, so the UI can be reviewed safely.
         if args.contains("--demo") { model.loadDemo(); previewOnly = true }
         if let i = args.firstIndex(of: "--lifecycle-log"), args.indices.contains(i + 1) {
@@ -318,6 +326,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc private func quit() { NSApplication.shared.terminate(nil) }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        #if DEBUG
+        if CommandLine.arguments.contains("--acceptance-vault-owner") { return .terminateNow }
+        #endif
         guard !shutdownStarted else { return .terminateLater }
         shutdownStarted = true
         runtime.mask(.windowClose)

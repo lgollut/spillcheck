@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-09",
+  "status": "manual-fixture-and-collector-prepared-not-provider-acceptance",
+  "sourceHost": "official-codex-GUI",
+  "providerSessionCreated": false,
+  "GUIAutomationUsed": false,
+  "productionGUICollectionEnabled": false,
+  "fixture": "Tests/CodexGUIProbe",
+  "freshPreparedProject": ".build/harness-compatibility/manual-codex-gui-r2-2026-10-09/work",
+  "preparationStartsObserverLease": false,
+  "hostVersionPreparation": {
+    "version": "26.930.61225",
+    "build": "13232",
+    "bundleIdentifier": "com.openai.codex",
+    "evidence": "officialBundleMetadata",
+    "source": "/Applications/ChatGPT.app/Contents/Info.plist",
+    "nativeProducerVersion": "unmeasured"
+  },
+  "buildScope": "Standalone Swift probe linked against existing debug Core products; no SwiftPM/Core/app changes or signed-app launch",
+  "preparationVerification": {
+    "standaloneCompilePassed": true,
+    "scopeRegressionTestsPassed": 2,
+    "scopeRegressionCommand": "SPILLCHECK_GUI_PROBE_BINARY=.build/harness-compatibility/manual-codex-gui-r2-2026-10-09/codex-gui-format-probe python3 -m unittest discover -s Tests/CodexGUIProbe -p 'test_scope.py'",
+    "scopeRegressions": ["Missing own-runtime native ID does not guess a provider store", "Mismatched authorized store cannot invoke the passive reader"],
+    "pythonCompilePassed": true
+  },
+  "observationScope": "Only exact native IDs emitted by the created GUI parent and child own runtime; each original source path, project, and explicitly authorized store are checked before fixture release. An original selected-parent native collaboration item must link the exact child ID before child admission",
+  "contentRequested": ["userPrompt", "intermediateResponse", "finalResponse", "toolOutput", "toolError"],
+  "parentAndNativeChildRequired": true,
+  "catchupScope": "Seven-day time window over only the two explicitly selected original disposable sources",
+  "noUnrelatedHistoryEnumeration": true,
+  "unmetGates": [
+    "Manual creation of a genuine new local session directly in the official Codex GUI",
+    "Actual official GUI host version and native producer version",
+    "Exact native parent and child identities and original authorized GUI store",
+    "All five required content types in each native session, including native child prompt",
+    "Bounded live commitments and available selected-source seven-day catch-up",
+    "Ordinary owned hook delivery where available",
+    "Production Desktop normalization/setup, signed-app acceptance, concurrent six-route operation, upgrade recovery, scoped degradation notifications and native opening"
+  ],
+  "limits": [
+    "Computer Use explicitly denied control of this official GUI; no alternate automation or CLI-created-session substitution is used",
+    "The format probe uses the existing provider parser in its enabled CLI eligibility context and labels that scope; it does not enable Desktop collection",
+    "Prepared prompts contain only synthetic fake fixture material",
+    "Preparation does not copy credentials, configure provider hooks, alter trust, read histories, or call a provider"
+  ]
+}

@@ -1,0 +1,245 @@
+{
+  "afterFix": {
+    "bothExecutableVersionsStable": true,
+    "ciphertextMarkerInspectionPassed": true,
+    "currentRequiredMarkerAndHistoricalSettlementGatePassed": true,
+    "disposableRootRemoved": true,
+    "existingHistoriesModified": false,
+    "existingHookSettingsModified": false,
+    "gapDiagnostics": {
+      "captureHandlerErrorCounts": {},
+      "labelsAreControlled": true,
+      "normalizedEventCounts": {
+        "MessageDisplay": 4,
+        "PostToolBatch": 4,
+        "PostToolUse": 5,
+        "PostToolUseFailure": 2,
+        "SessionStart": 3,
+        "SpillcheckTranscriptPoll": 32,
+        "Stop": 3,
+        "SubagentStart": 1,
+        "SubagentStop": 1,
+        "UserPromptSubmit": 3,
+        "history-request": 1
+      },
+      "normalizerErrorCounts": {
+        "claude/awaitingTranscript": 1
+      },
+      "pipelineFailureCounts": {
+        "sourceUnavailable/normalize/collectionFailure": 1
+      },
+      "receiverGapCounts": {},
+      "uniqueGapDescriptorCounts": {}
+    },
+    "gapReasons": [],
+    "historicalAdmissionsSettled": true,
+    "historicalProgressCount": 1,
+    "historicalQueueAdmissionCount": 1,
+    "historicalSettledAdmissionCount": 1,
+    "nativeFormatDiagnostics": {
+      "additionalEnvelopeShapeCounts": {
+        "ai-title/no-message/no-content": 8,
+        "atis-latch/no-message/no-content": 12,
+        "attachment/no-message/no-content": 102,
+        "cost-state/no-message/no-content": 4,
+        "last-prompt/no-message/no-content": 10
+      },
+      "attachmentTypeCounts": {
+        "agent_listing_delta": 4,
+        "budget_usd": 12,
+        "date": 6,
+        "environment": 6,
+        "model": 6,
+        "other": 32,
+        "prompt_snapshot": 12,
+        "remote_session_change": 6,
+        "session_context": 6,
+        "total_tokens_reminder": 12
+      },
+      "contentBlockTypeCounts": {
+        "text": 14,
+        "thinking": 1,
+        "tool_result": 12,
+        "tool_use": 12
+      },
+      "envelopeSubtypeCounts": {
+        "system/stop_hook_summary": 3
+      },
+      "envelopeTypeCounts": {
+        "ai-title": 8,
+        "assistant": 21,
+        "atis-latch": 12,
+        "attachment": 102,
+        "cost-state": 4,
+        "last-prompt": 10,
+        "queue-operation": 8,
+        "system": 3,
+        "user": 18
+      },
+      "labelsAreControlled": true,
+      "malformedRowCount": 0,
+      "scope": "Owned native fixture files before cleanup; shape counts alone do not establish required-content loss."
+    },
+    "nativeHistoryIdentityAndContentStable": true,
+    "observedHistoricalProducerVersion": "2.1.293",
+    "observedLiveProducerVersion": "2.1.295",
+    "occurrenceCount": 36,
+    "occurrencesByContentType": {
+      "finalResponse": 5,
+      "intermediateResponse": 2,
+      "toolError": 4,
+      "toolOutput": 6,
+      "userPrompt": 19
+    },
+    "ownedProcessGroupsStopped": true,
+    "queueCount": 0,
+    "replayStable": true,
+    "sessionCount": 3,
+    "temporaryAuthenticationRemoved": true,
+    "typedCommitted": {
+      "CHILD_FINAL": 2,
+      "CHILD_PROMPT": 2,
+      "FINAL": 3,
+      "INTERMEDIATE": 2,
+      "MCP_ERROR": 2,
+      "MCP_OK": 2,
+      "PROMPT": 2,
+      "SHELL_ERROR": 2,
+      "SHELL_OK": 2
+    }
+  },
+  "allSixHostsConcurrentEstablishedByThisReport": false,
+  "beforeFix": {
+    "bothExecutableVersionsStable": true,
+    "ciphertextMarkerInspectionPassed": true,
+    "disposableRootRemoved": true,
+    "existingHistoriesModified": false,
+    "existingHookSettingsModified": false,
+    "gapDiagnostics": {
+      "captureHandlerErrorCounts": {},
+      "labelsAreControlled": true,
+      "normalizedEventCounts": {
+        "MessageDisplay": 4,
+        "PostToolBatch": 4,
+        "PostToolUse": 4,
+        "PostToolUseFailure": 3,
+        "SessionStart": 4,
+        "SpillcheckTranscriptPoll": 32,
+        "Stop": 3,
+        "SubagentStart": 1,
+        "SubagentStop": 1,
+        "UserPromptSubmit": 3,
+        "history-request": 4
+      },
+      "normalizerErrorCounts": {
+        "claude/awaitingTranscript": 2
+      },
+      "pipelineFailureCounts": {
+        "captureRejected/completeCapture/storageInvalidPayload": 4,
+        "sourceUnavailable/normalize/collectionFailure": 2
+      },
+      "receiverGapCounts": {},
+      "uniqueGapDescriptorCounts": {
+        "unsupportedContent/unconfirmed/none/transcript-position": 135
+      }
+    },
+    "gapReasons": [
+      "captureRejected",
+      "unsupportedContent"
+    ],
+    "historicalProgressSettlementEstablished": false,
+    "interpretation": "Sources committed before historical completion rejected an unbound frozen audit. Empty queue after retry exhaustion did not prove settlement.",
+    "legacyRequiredMarkerGatePassed": true,
+    "nativeFormatDiagnostics": {
+      "additionalEnvelopeShapeCounts": {
+        "ai-title/no-message/no-content": 7,
+        "atis-latch/no-message/no-content": 12,
+        "attachment/no-message/no-content": 102,
+        "cost-state/no-message/no-content": 4,
+        "last-prompt/no-message/no-content": 10
+      },
+      "attachmentTypeCounts": {
+        "agent_listing_delta": 4,
+        "budget_usd": 12,
+        "date": 6,
+        "environment": 6,
+        "model": 6,
+        "other": 32,
+        "prompt_snapshot": 12,
+        "remote_session_change": 6,
+        "session_context": 6,
+        "total_tokens_reminder": 12
+      },
+      "contentBlockTypeCounts": {
+        "text": 14,
+        "thinking": 2,
+        "tool_result": 12,
+        "tool_use": 12
+      },
+      "envelopeSubtypeCounts": {
+        "system/stop_hook_summary": 3
+      },
+      "envelopeTypeCounts": {
+        "ai-title": 7,
+        "assistant": 22,
+        "atis-latch": 12,
+        "attachment": 102,
+        "cost-state": 4,
+        "last-prompt": 10,
+        "queue-operation": 8,
+        "system": 3,
+        "user": 18
+      },
+      "labelsAreControlled": true,
+      "malformedRowCount": 0,
+      "scope": "Owned native fixture files before cleanup; shape counts alone do not establish required-content loss."
+    },
+    "nativeHistoryIdentityAndContentStable": true,
+    "observedHistoricalProducerVersion": "2.1.293",
+    "observedLiveProducerVersion": "2.1.295",
+    "occurrenceCount": 37,
+    "occurrencesByContentType": {
+      "finalResponse": 6,
+      "intermediateResponse": 2,
+      "toolError": 4,
+      "toolOutput": 6,
+      "userPrompt": 19
+    },
+    "ownedProcessGroupsStopped": true,
+    "queueCount": 0,
+    "replayStable": true,
+    "sessionCount": 3,
+    "temporaryAuthenticationRemoved": true,
+    "typedCommitted": {
+      "CHILD_FINAL": 2,
+      "CHILD_PROMPT": 2,
+      "FINAL": 3,
+      "INTERMEDIATE": 2,
+      "MCP_ERROR": 2,
+      "MCP_OK": 2,
+      "PROMPT": 2,
+      "SHELL_ERROR": 2,
+      "SHELL_OK": 2
+    }
+  },
+  "diagnosticPrivacy": {
+    "authenticationExported": false,
+    "closedLabelsOnly": true,
+    "nativeIdentitiesExported": false,
+    "personalPathsExported": false,
+    "sourceBodiesExported": false
+  },
+  "inPlaceProducerUpgradeEstablishedByThisReport": false,
+  "measuredOn": "2026-10-09",
+  "officialGUICollectionEstablishedByThisReport": false,
+  "parserContractAfterFix": "claude-transcript-3",
+  "regressionVerification": {
+    "command": "swift test --filter 'ClaudeAdapterTests|ClaudeHistoryTests'",
+    "passed": true,
+    "suiteCount": 2,
+    "testCount": 42
+  },
+  "schemaVersion": 1,
+  "scope": "Independent genuine CLI producer runs in separate owned disposable roots; the historical producer was invoked as a CLI, not through its GUI.",
+  "signedAppCollectionEstablishedByThisReport": false
+}

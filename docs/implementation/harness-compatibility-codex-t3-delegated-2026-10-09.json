@@ -1,0 +1,188 @@
+{
+  "additionalRawArchiveCreated": false,
+  "currentT3CoreContentEstablished": true,
+  "delegatedChildArchived": true,
+  "delegatedChildPendingRuns": false,
+  "delegatedChildStatus": "completed",
+  "diagnosticBytes": 0,
+  "existingConfigurationModified": false,
+  "hookTrustBypassed": false,
+  "hostVersion": "0.0.46-nightly.20261008.2833",
+  "liveOverlapEstablished": false,
+  "mappingEvidence": {
+    "T3MetadataNativeMappingFieldPresent": false,
+    "childOwnRuntimeNativeIdentityPresent": true,
+    "creationSource": "mcp",
+    "hostVersionSource": "t3_environment_read.serverVersion",
+    "model": "gpt-6.1-sol",
+    "nativeHomeDefaultSource": "https://raw.githubusercontent.com/openai/codex/main/codex-rs/utils/home-dir/src/lib.rs",
+    "nativeIdentityConfirmedByExactOriginalRead": true,
+    "originalNativeIdentifiersExcluded": true,
+    "providerHome": "<HOME>/.codex",
+    "providerInstance": "codex",
+    "relationshipToParent": "subagent",
+    "topLevelThreadCreated": false
+  },
+  "measuredDate": "2026-10-09",
+  "missingContentTypes": [],
+  "nativeGrandchildCoverageEstablished": false,
+  "nativeGrandchildCreated": false,
+  "nativeHomeEnvironment": "CODEX_HOME-unset-documented-default",
+  "nativeIdentifiersRedacted": true,
+  "nativeMappingOrigin": "child-runtime-CODEX_THREAD_ID",
+  "observerExitCode": 0,
+  "observerOwnedProcessGroupStopped": true,
+  "observerReady": true,
+  "originalProviderSourceRetained": true,
+  "ownedDelegatedTaskCancellationStatus": "completed",
+  "passed": true,
+  "pipeline": {
+    "actualReaderVersion": "0.161.0",
+    "ciphertextMarkerInspectionPassed": true,
+    "durableDeliveries": 8,
+    "finalCatchUpNewOccurrences": 0,
+    "finished": true,
+    "gapReasons": [],
+    "hostVersion": "0.0.46-nightly.20261008.2833",
+    "interface": "t3",
+    "nativeLocationsUnique": true,
+    "observedProducerVersions": [
+      "0.161.0"
+    ],
+    "occurrenceCount": 9,
+    "occurrencesByContentType": {
+      "finalResponse": 1,
+      "intermediateResponse": 1,
+      "toolError": 1,
+      "toolOutput": 1,
+      "userPrompt": 5
+    },
+    "queueCount": 0,
+    "replayStable": true,
+    "sessionCount": 1,
+    "setupState": "selected-source",
+    "sourceLatency": {
+      "committedSourceRevisionCount": 5,
+      "firstCanonicalReadStartedAt": "2026-10-09T11:36:26.126Z",
+      "historical": {
+        "canonicalReadStartToCommitObservation": {
+          "count": 5,
+          "excludedNegativeOrNonfiniteCount": 0,
+          "max": 1793.5080528259277,
+          "p50": 1793.5080528259277,
+          "p95": 1793.5080528259277
+        },
+        "committedSourceRevisionCount": 5,
+        "providerTimestampToCanonicalReadStart": {
+          "count": 5,
+          "excludedNegativeOrNonfiniteCount": 0,
+          "max": 182046.36204242706,
+          "p50": 172965.36195278168,
+          "p95": 182046.36204242706
+        },
+        "queueCaptureToCommitObservation": {
+          "count": 5,
+          "excludedNegativeOrNonfiniteCount": 0,
+          "max": 2063.022017478943,
+          "p50": 2063.022017478943,
+          "p95": 2063.022017478943
+        }
+      },
+      "lastCommitObservedAt": "2026-10-09T11:36:27.920Z",
+      "limits": [
+        "Samples are unique public canonical source revisions carrying the disposable synthetic value, with an exact full detector receipt and a retained occurrence for that source and content time.",
+        "Read start is measured immediately before awaiting CodexAdapter.normalize. Product metadata.observedAt remains the queue capturedAt timestamp and is not used as read start.",
+        "Provider contentTime is completedAtMs when available, otherwise startedAtMs or a turn timestamp. It does not measure first-byte publication or when public history made that item available.",
+        "A public read may include an item published after its start. Each latency leg excludes and counts negative or nonfinite wall-clock deltas; clock adjustments can affect positive durations too.",
+        "Queue capture belongs to the enclosing public poll, not the source's first available byte.",
+        "Commit observation follows completion of the enclosing pipeline capture. It upper-bounds the source's exact durable commit and includes remaining batch and checkpoint work.",
+        "Live or historical classification comes from the retained occurrence after the production pipeline applies its start boundary. Final catch-up and replay are excluded from timing.",
+        "This measures standalone CLI exact-ID public-history polling, not hook delivery, T3 latency, hosted tools, or long-running output fragment publication."
+      ],
+      "live": {
+        "canonicalReadStartToCommitObservation": {
+          "count": 0,
+          "excludedNegativeOrNonfiniteCount": 0,
+          "max": null,
+          "p50": null,
+          "p95": null
+        },
+        "committedSourceRevisionCount": 0,
+        "providerTimestampToCanonicalReadStart": {
+          "count": 0,
+          "excludedNegativeOrNonfiniteCount": 0,
+          "max": null,
+          "p50": null,
+          "p95": null
+        },
+        "queueCaptureToCommitObservation": {
+          "count": 0,
+          "excludedNegativeOrNonfiniteCount": 0,
+          "max": null,
+          "p50": null,
+          "p95": null
+        }
+      },
+      "observedSourceRevisionCount": 5,
+      "percentileMethod": "nearest-rank",
+      "schemaVersion": 1,
+      "units": "milliseconds",
+      "unmeasuredSourceRevisionCount": 0
+    },
+    "syntheticAlertCount": 0,
+    "syntheticValuePresent": true,
+    "typedCommitted": {
+      "FINAL": 1,
+      "INTERMEDIATE": 1,
+      "PROMPT": 1,
+      "SHELL_ERROR": 1,
+      "SHELL_OK": 1
+    },
+    "typedCommittedBeforeCatchUp": {
+      "FINAL": 1,
+      "INTERMEDIATE": 1,
+      "PROMPT": 1,
+      "SHELL_ERROR": 1,
+      "SHELL_OK": 1
+    },
+    "typedObserved": {
+      "FINAL": 1,
+      "INTERMEDIATE": 1,
+      "PROMPT": 1,
+      "SHELL_ERROR": 1,
+      "SHELL_OK": 1
+    },
+    "valueCount": 1
+  },
+  "productionProviderAuthenticationModified": false,
+  "realMCPFixtureRun": false,
+  "remainingGates": [
+    "T3 native grandchild content",
+    "genuine MCP success/error subtype attribution",
+    "current T3 owned native hook verification",
+    "T3 live overlap",
+    "signed T3 ingestion and restart/upgrade/degradation recovery",
+    "all six concurrent local host/provider combinations"
+  ],
+  "requiredContentTypes": [
+    "finalResponse",
+    "intermediateResponse",
+    "toolError",
+    "toolOutput",
+    "userPrompt"
+  ],
+  "schemaVersion": 1,
+  "scope": "exact-owned-T3-delegated-Codex-session-post-run",
+  "selectedModel": "gpt-6.1-sol",
+  "selectedProviderInstance": "codex",
+  "selectedSourceAfterProducerCompleted": true,
+  "shellNonzeroExitWasSuccessfulToolResponse": true,
+  "signedAppAcceptance": false,
+  "sourceContentExcluded": true,
+  "sourceTimingLimit": "This observation began after the T3 producer completed. The shared driver retains a legacy standalone latency disclaimer; no T3 publication or live latency acceptance is established by these timings.",
+  "temporaryAuthenticationCreated": false,
+  "temporaryObserverStoreRemoved": true,
+  "toolErrorFixture": "controlled-failed-tool-script",
+  "topLevelThreadCreated": false,
+  "unrelatedHistoryEnumeration": false
+}

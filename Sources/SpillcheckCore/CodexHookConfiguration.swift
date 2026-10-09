@@ -38,10 +38,10 @@ public struct CodexHookConfiguration: Sendable {
     public var command: String { ([helperURL.path] + arguments).map(Self.quote).joined(separator: " ") }
     private static func quote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\"'\"'") + "'" }
 
-    /// Codex 0.161.0 accepts a shell command string. Quote only fixed application configuration;
+    /// The recognized hook settings contract accepts a shell command string. Quote fixed configuration;
     /// source text is never interpolated and hook trust remains Codex-owned.
     public func editing(_ data: Data?, action: CodexHookEdit) throws -> Data {
-        if action == .install, agentVersion != CodexAdapter.validatedAgentVersion || interface == .desktopCode {
+        if action == .install, !CollectionCompatibility.isEligible(provider: .codex, interface: interface, version: agentVersion) {
             throw CodexSetupError.unsupportedVersion
         }
         var root: [String: Any]
@@ -113,7 +113,7 @@ public actor CodexHookSetup {
         guard hooksURL.isFileURL, hooksURL.path.hasPrefix("/") else { throw CodexSetupError.invalidConfiguration }
         self.hooksURL = codexConfiguredURL(hooksURL.deletingLastPathComponent()).appendingPathComponent(hooksURL.lastPathComponent)
         self.configuration = configuration
-        if configuration.agentVersion != CodexAdapter.validatedAgentVersion || configuration.interface == .desktopCode {
+        if !CollectionCompatibility.isEligible(provider: .codex, interface: configuration.interface, version: configuration.agentVersion) {
             state = .unsupportedVersion
         }
     }

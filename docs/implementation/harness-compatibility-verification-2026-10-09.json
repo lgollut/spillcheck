@@ -1,0 +1,242 @@
+{
+  "agentSetupProbe": {
+    "GUICollectionEnabled": false,
+    "checkCount": 19,
+    "checks": [
+      "missing-T3-version-permits-native-configuration",
+      "unfamiliar-T3-version-permits-native-configuration",
+      "unfamiliar-saved-versions-remove-only-owned-hooks",
+      "codex-failed-install-retains-removal-and-blocks-root-change",
+      "claude-code-failed-install-retains-removal-and-blocks-root-change",
+      "compatible-upgrade-and-restart-preserve-owned-registration-and-proof",
+      "compatible-executable-change-preserves-pending-registration-challenge",
+      "codex-schema1-standalone-cli-migration-preserves-owned-proof-native-profile-and-queue",
+      "codex-schema2-standalone-cli-migration-preserves-owned-proof-native-profile-and-queue",
+      "codex-schema1-t3-migration-preserves-owned-proof-native-profile-and-queue",
+      "codex-schema2-t3-migration-preserves-owned-proof-native-profile-and-queue",
+      "claude-code-schema1-standalone-cli-migration-preserves-owned-proof-native-profile-and-queue",
+      "claude-code-schema2-standalone-cli-migration-preserves-owned-proof-native-profile-and-queue",
+      "claude-code-schema1-t3-migration-preserves-owned-proof-native-profile-and-queue",
+      "claude-code-schema2-t3-migration-preserves-owned-proof-native-profile-and-queue",
+      "legacy-desktop-remains-uncollected-with-owned-removal-and-invalid-host-rejection",
+      "schema3-does-not-infer-missing-authorization-and-failed-update-rolls-back",
+      "failed-legacy-migration-keeps-original-encrypted-preference-and-unpublished-status",
+      "authorized-host-runtime-selection-and-scoped-status-do-not-infer-host-connection"
+    ],
+    "command": "python3 Tests/AgentSetupProbe/run.py --products-path .build/out/Products/Debug",
+    "credentialsRead": false,
+    "hookHelperExecutions": 0,
+    "passed": true,
+    "profiles": "owned-disposable",
+    "providerSessionsStarted": 0,
+    "savedProfileSchema": 3,
+    "systemAuthentication": "not-exercised-ephemeral-testing-keys",
+    "verificationEvidence": "synthetic-controller-contract-with-durable-enqueue"
+  },
+  "allSixConcurrentAcceptancePassed": false,
+  "currentClaudeT3OwnRuntimeMapping": "harness-compatibility-claude-t3-mapping-current-2026-10-09.json",
+  "currentSignedStartupAvailable": true,
+  "finalRegression": {
+    "command": "SPILLCHECK_SIGNED_SCANNER_APP=\"$PWD/.build/app/Build/Products/Debug/Spillcheck.app\" swift test",
+    "coreElapsedSeconds": 10.267,
+    "coreSuites": 34,
+    "coreTests": 283,
+    "hookAndScannerBinariesUnchanged": true,
+    "hookHelperTests": {
+      "passed": true,
+      "tests": 13
+    },
+    "passed": true,
+    "priorFullRunFailure": "Two new exact timestamp assertions differed by 0.119 microseconds after SQLite epoch Double round-trip. Test assertions now require less than one microsecond while rejecting a 24-hour age extension; product code unchanged.",
+    "productionSwiftSourceCount": 57,
+    "productionSwiftSourceHashesUnchangedAfterBuild": true,
+    "pythonRunnerCompilationPassed": true,
+    "regressionLog": ".build/harness-compatibility/core-tests-cli-t3-migration-r5.log",
+    "releasePolicyTooling": {
+      "notarizationUploads": 0,
+      "passed": true,
+      "syntheticOnly": true,
+      "tests": 14
+    },
+    "scannerBundlingTooling": {
+      "actualSigningOperations": 0,
+      "passed": true,
+      "syntheticOnly": true,
+      "tests": 5
+    },
+    "signedAppBinaryChanged": true,
+    "signedBuildEvidence": "app-claude-harness-compatibility-schema-migration-2026-10-09.json",
+    "signedBuildLog": ".build/harness-compatibility/app-claude-schema-migration-genuine-r2.log",
+    "signedDevelopmentBuildPassed": true,
+    "signedScannerIntegration": true,
+    "sourceHashArtifacts": [
+      ".build/harness-compatibility/source-hashes-cli-t3-migration-r5-before.json",
+      ".build/harness-compatibility/source-hashes-cli-t3-migration-r5-after.json"
+    ],
+    "vaultEvidenceTests": {
+      "passed": true,
+      "tests": 9
+    },
+    "whitespaceChecksPassed": true
+  },
+  "focusedChecks": {
+    "Claude": {
+      "passed": true,
+      "suites": 4,
+      "tests": 46
+    },
+    "ClaudeGUIAuditSettingsGates": {
+      "passed": true,
+      "syntheticOnly": true,
+      "tests": 6
+    },
+    "ClaudeGUIContract4": {
+      "parserContract": "claude-transcript-4",
+      "passed": true,
+      "regressionIncludes": "narrow-naming-metadata-and-unchanged-source-checkpoint-invalidation",
+      "tests": 42
+    },
+    "ClaudeGUIHookSummary": {
+      "passed": true,
+      "syntheticOnly": true,
+      "tests": 5
+    },
+    "ClaudeGUIModHelpers": {
+      "nodePassThroughChecksPassed": true,
+      "passed": true,
+      "pythonTests": 6,
+      "syntheticOnly": true
+    },
+    "ClaudeGapLocalization": {
+      "passed": true,
+      "regressionIncludes": "narrow-native-metadata-and-frozen-history-admission",
+      "tests": 42
+    },
+    "ClaudeNativeEvidenceBounds": {
+      "passed": true,
+      "syntheticOnly": true,
+      "tests": 5
+    },
+    "Codex": {
+      "passed": true,
+      "suites": 7,
+      "tests": 50
+    },
+    "CodexGUIProbeScopeAndArtifacts": {
+      "passed": true,
+      "syntheticOnly": true,
+      "tests": 3
+    },
+    "CodexShutdown": {
+      "elapsedSeconds": 8.353,
+      "passed": true,
+      "regressionIncludes": "closed-streams-stubborn-owned-process-bounded-idempotent-shutdown",
+      "tests": 11
+    },
+    "DisposableRecoveryGuards": {
+      "passed": true,
+      "regressionIncludes": "private-owner-profile-controls-and-pending-capture-receipt-vs-successful-completion",
+      "tests": 4
+    },
+    "durableCoverageRecovery": {
+      "passed": true,
+      "suites": 1,
+      "tests": 9
+    }
+  },
+  "genuineEvidence": {
+    "ClaudeCLI": "claude-harness-compatibility-cli-2026-10-09.json",
+    "ClaudeGUIFocusedSide": "claude-gui-harness-compatibility-side-2026-10-09.json",
+    "ClaudeGUIMainCoreLive": "claude-gui-harness-compatibility-main-2026-10-09.json",
+    "ClaudeGUIModStaticValidation": "claude-gui-mod-static-validation-2026-10-09.json",
+    "ClaudeGUIModTrial": "claude-gui-mod-harness-compatibility-2026-10-09.json",
+    "ClaudeGUIOriginalSourceCatchUp": "claude-gui-harness-compatibility-catchup-2026-10-09.json",
+    "ClaudeMixedHistory": "claude-harness-compatibility-mixed-history-2026-10-09.json",
+    "ClaudeNativeGapLocalization": "claude-harness-compatibility-gap-localization-2026-10-09.json",
+    "ClaudeSignedApplicationAndSchemaMigration": "app-claude-harness-compatibility-schema-migration-2026-10-09.json",
+    "ClaudeSignedCurrent": "app-claude-harness-compatibility-live-2026-10-09.json",
+    "ClaudeSignedMixed": "app-claude-harness-compatibility-mixed-history-2026-10-09.json",
+    "ClaudeSignedMixedSettled": "app-claude-harness-compatibility-mixed-history-settled-2026-10-09.json",
+    "ClaudeSignedUpgradeAndRestart": "app-claude-harness-compatibility-recovery-2026-10-09.json",
+    "ClaudeT3SignedSelectedSource": "app-claude-t3-harness-compatibility-live-2026-10-09.json",
+    "CodexCLIActive": "harness-compatibility-codex-cli-active-live-2026-10-09.json",
+    "CodexCLICatchup": "harness-compatibility-codex-cli-catchup-2026-10-09.json",
+    "CodexGUIExactChildDiagnostic": "harness-compatibility-codex-gui-native-child-source-2026-10-09.json",
+    "CodexGUIExactChildR3": "harness-compatibility-codex-gui-native-child-source-r3-2026-10-09.json",
+    "CodexGUILiveR3": "harness-compatibility-codex-gui-live-r3-2026-10-09.json",
+    "CodexGUILiveR4": "harness-compatibility-codex-gui-live-r4-2026-10-09.json",
+    "CodexGUINativePartial": "harness-compatibility-codex-gui-native-partial-2026-10-09.json",
+    "CodexGUIPassiveFullHistoryR3": "harness-compatibility-codex-gui-passive-full-history-r3-2026-10-09.json",
+    "CodexGUISpawnPromptContractR3": "harness-compatibility-codex-gui-spawn-prompt-contract-r3-2026-10-09.json",
+    "CodexGUISpawnPromptContractR4": "harness-compatibility-codex-gui-spawn-prompt-contract-r4-2026-10-09.json",
+    "CodexT3SelectedSource": "harness-compatibility-codex-t3-delegated-2026-10-09.json",
+    "GUISourceObservationOnly": "harness-compatibility-phase0-2026-10-09.json",
+    "SignedRecoveryOwner": "app-claude-harness-compatibility-recovery-owner-2026-10-09.json",
+    "SignedRecoveryStartupFailure": "app-claude-harness-compatibility-recovery-startup-2026-10-09.json",
+    "SignedSchemaMigrationPreservedPreflight": "app-claude-harness-compatibility-schema-migration-preflight-2026-10-09.json",
+    "SignedStartupArtifactFollowUp": "app-claude-harness-compatibility-startup-artifact-followup-2026-10-09.json"
+  },
+  "limitations": [
+    "Core/probe tests use ephemeral or synthetic private-key access and injected notifications; they do not prove current real authentication or OS banners.",
+    "Signed build and synthetic ingestion do not substitute for genuine signed provider acceptance.",
+    "Genuine manual GUI source measurements remain partial: Claude main encrypted all-five live collection and settled original-source catch-up pass, but Mod main dispatch failed its positive control and side-chat authority remains unestablished. Codex R3 passes live parent all-five and child four-type content; the actual spawn omitted the requested child prompt. R4 stopped at unavailable native send_input, so the child fixture was never submitted.",
+    "Current T3 Codex observation started after its producer completed; no live concurrency claim.",
+    "Historical startup failures retain diagnostics. The exact retry has no protected-store/database; the first root is unavailable and its artifact/ownership check remains open. Keychain item absence is unqueried; no broad cleanup was performed.",
+    "Current Claude T3 own-runtime mapping is measured and signed selected-source live collection passes; future runtime-field stability, hook setup and six-host concurrency remain open.",
+    "Signed genuine CLI 2.1.293 to 2.1.295 upgrade and process restart pass all 22 scoped predicates, including exact encrypted pending-capture replay and durable connection proof. Required-format restoration, review/obsolete state, other-host operation, GUI updates and actual OS health notifications remain open.",
+    "Genuine signed schema-2 to schema-3 migration passes 28 predicates for one Claude profile. Other legacy/provider/host migrations, host-specific hook attribution, actual visible banners and scoped health delivery remain unmeasured."
+  ],
+  "measuredDate": "2026-10-09",
+  "nativeWorkflowProbe": {
+    "checkCount": 21,
+    "checks": [
+      "authenticated-exact-fields-and-window-mask",
+      "cancelled-authentication",
+      "late-authentication-after-sleep",
+      "late-authentication-after-sessionLock",
+      "late-authentication-after-userMask",
+      "late-authentication-after-selection-change",
+      "intra-entry-occurrence-selection-rejects-late-authentication",
+      "unchanged-occurrence-selection-keeps-current-content",
+      "deletion-during-authentication",
+      "binding-rejected-before-authentication",
+      "allowed-notification-stable-retry",
+      "denied-or-unrequested-permission-never-prompts",
+      "explicit-notification-permission-action",
+      "permission-request-error-keeps-denied-state-without-reprompting",
+      "deletion-during-notification-submit",
+      "pause-during-notification-submit",
+      "pause-during-notification-eligibility",
+      "changed-audit-counts-reuse-stable-identifier",
+      "notification-navigation-waits-for-protected-storage",
+      "owned-source-command-timeout",
+      "owned-source-command-cancellation"
+    ],
+    "command": "python3 Tests/NativeWorkflowProbe/run.py --products-path .build/out/Products/Debug --output-directory .build/harness-compatibility/native-workflow-migration-r5",
+    "credentialsRead": false,
+    "passed": true,
+    "reusedCoreProducts": true,
+    "sourceSessionsStarted": 0,
+    "systemAuthentication": "not-exercised-synthetic-private-key",
+    "systemNotifications": "injected-backend"
+  },
+  "planComplete": false,
+  "priorIntermittentStartupFailureCauseEstablished": false,
+  "remainingGates": "harness-compatibility.md#every-remaining-plan-gate",
+  "schemaVersion": 1,
+  "signedCLIUpgradeAndRestartPassed": true,
+  "signedClaudeSchema2To3MigrationPassed": true,
+  "signedGenuineAttempts": {
+    "attempts": 2,
+    "cleanupPending": true,
+    "passed": false,
+    "providerRunsStarted": 0,
+    "reports": [
+      "app-claude-harness-compatibility-startup-2026-10-09.json",
+      "app-claude-harness-compatibility-startup-retry-2026-10-09.json"
+    ],
+    "scope": "Preserved earlier startup attempts; subsequent signed startup and genuine runs passed.",
+    "startupFailure": "key-unavailable-queue--25308"
+  },
+  "signedSyntheticEvidence": "app-harness-compatibility-synthetic-2026-10-09.json"
+}

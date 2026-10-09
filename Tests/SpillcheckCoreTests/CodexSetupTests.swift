@@ -67,7 +67,10 @@ struct CodexSetupTests {
         for input in ["[]", "{broken", "{\"hooks\":false}", "{\"hooks\":{\"Stop\":\"wrong\"}}"] {
             #expect(throws: CodexSetupError.malformedHooks) { try config.editing(Data(input.utf8), action: .install) }
         }
-        #expect(throws: CodexSetupError.unsupportedVersion) { try codexConfiguration(version: "0.162.0").editing(nil, action: .install) }
+        let upgraded = try codexConfiguration(version: "4.0.0")
+        let installed = try config.editing(nil, action: .install)
+        #expect(upgraded.isInstalled(in: installed))
+        #expect(try upgraded.editing(installed, action: .install) == installed)
         let large = try JSONSerialization.data(withJSONObject: ["padding": String(repeating: "a", count: 1024*1024 - 20)])
         #expect(throws: CodexSetupError.malformedHooks) { try config.editing(large, action: .install) }
         let directory = try codexSetupDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
@@ -113,8 +116,10 @@ struct CodexMonitorTests {
         #expect(try await monitor.pollOnce(at: now) == 1)
         #expect(try await monitor.pollOnce(at: now.addingTimeInterval(1)) == 1)
         try await monitor.addSource(.init(threadID: "parent", interface: .t3, authority: .publicNativeItems))
+        try await monitor.addSource(.init(threadID: "parent", interface: .standaloneCLI, authority: .publicNativeItems))
         await #expect(throws: CodexCollectionError.authorityConflict) {
-            try await monitor.addSource(.init(threadID: "parent", interface: .standaloneCLI, authority: .publicNativeItems))
+            try await monitor.addSource(.init(threadID: "parent", interface: .t3, authority: .nativeRolloutTranscript,
+                transcriptURL: URL(fileURLWithPath: "/tmp/selected.jsonl")))
         }
         #expect(await sink.count() == 2)
         await monitor.stop()

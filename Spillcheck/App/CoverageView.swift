@@ -9,15 +9,15 @@ struct RouteStatus {
 }
 
 extension AgentRoute {
-    /// Connection status, as listed in Settings and Coverage.
+    /// Owned registration status; it does not verify every host using this native home.
     var status: RouteStatus {
         switch state {
-        case .connected: RouteStatus(text: "Verified", color: Palette.secondary, dot: Palette.green, outlined: false)
+        case .connected: RouteStatus(text: "Registration verified", color: Palette.secondary, dot: Palette.green, outlined: false)
         case .installedUnverified where waitingForEvent:
             RouteStatus(text: "Waiting for an event…", color: Palette.amberText, dot: Palette.amber, outlined: false)
         case .installedUnverified: RouteStatus(text: "Installed · not verified", color: Palette.amberText, dot: Palette.amber, outlined: false)
         case .detected: RouteStatus(text: "Found · not connected", color: Palette.secondary, dot: .clear, outlined: true)
-        case .unsupported: RouteStatus(text: "Unsupported version", color: Palette.red, dot: Palette.redDot, outlined: false)
+        case .unsupported: RouteStatus(text: "Route unavailable", color: Palette.red, dot: Palette.redDot, outlined: false)
         case .unavailable: RouteStatus(text: "Needs repair", color: Palette.red, dot: Palette.redDot, outlined: false)
         case .notDetected: RouteStatus(text: "Not found", color: Palette.secondary, dot: .clear, outlined: true)
         case .notChecked: RouteStatus(text: "Not checked yet", color: Palette.secondary, dot: .clear, outlined: true)
@@ -27,11 +27,14 @@ extension AgentRoute {
     /// Collection status, as summarized in the menu bar.
     var collectionStatus: RouteStatus {
         switch state {
-        case .connected: RouteStatus(text: "Collecting", color: Palette.secondary, dot: Palette.green, outlined: false)
+        case .connected:
+            RouteStatus(text: limitations.isEmpty ? (collecting ? "Collecting" : "Verified · awaiting observation") : "Partial coverage",
+                        color: limitations.isEmpty ? Palette.secondary : Palette.amberText,
+                        dot: limitations.isEmpty ? Palette.green : Palette.amber, outlined: false)
         case .installedUnverified:
             RouteStatus(text: waitingForEvent ? "Waiting for a first event" : "Installed · not verified yet",
                         color: Palette.amberText, dot: Palette.amber, outlined: false)
-        case .unsupported: RouteStatus(text: "Stopped · unsupported version", color: Palette.red, dot: Palette.redDot, outlined: false)
+        case .unsupported: RouteStatus(text: "Stopped · route unavailable", color: Palette.red, dot: Palette.redDot, outlined: false)
         case .unavailable: RouteStatus(text: "Stopped · needs repair", color: Palette.red, dot: Palette.redDot, outlined: false)
         default: status
         }
@@ -165,6 +168,11 @@ struct CoverageView: View {
                     Text(status.text).lineLimit(1)
                 }
                 .font(.system(size: 11.5)).foregroundStyle(status.color)
+                ForEach(route.hostRoutes) { host in
+                    Text("\(host.name): \(host.summary)")
+                        .font(.system(size: 11.5)).foregroundStyle(host.status == .partial ? Palette.amberText : Palette.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             HStack(spacing: 5) {

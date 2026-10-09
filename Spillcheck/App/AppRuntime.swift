@@ -144,6 +144,7 @@ final class AppRuntime {
     private var eventMonitor: Any?
     private var workspaceObservers: [NSObjectProtocol] = []
     private var lockObserver: NSObjectProtocol?
+    private var activationObserver: NSObjectProtocol?
 
     init(model: AppModel) {
         self.model = model
@@ -152,6 +153,11 @@ final class AppRuntime {
 
     func start() {
         installViewingLifecycle()
+        // Permissions change in System Settings; coming back to the app shows the current state.
+        activationObserver = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification,
+                                                                    object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshPreferences() }
+        }
         #if DEBUG
         let args = CommandLine.arguments
         if let index = args.firstIndex(of: "--acceptance-report"), args.indices.contains(index + 1),
@@ -254,8 +260,6 @@ final class AppRuntime {
             }
             model.storageReady = true
             model.storageMessage = nil
-            // Until an agent is verified, the window opens on guided setup rather than an empty list.
-            if !model.monitoringProven, !model.hasEntries, model.route == .inventory { model.openSetup() }
             await startCollection(directory: directory, store: opened, cryptography: services.background)
             await refresh()
             refreshTask = Task { [weak self] in
@@ -273,6 +277,7 @@ final class AppRuntime {
             monitoringRequested = false
             updateNotificationGate()
             model.storageReady = false
+            model.storageFailed = true
             model.storageMessage = Self.storageFailureMessage(error)
             model.pauseAfterBarrier()
             #if DEBUG
@@ -431,7 +436,15 @@ final class AppRuntime {
                 runtime.publishLoginPreference()
             }
         }
+        model.onRefreshPreferences = { [weak self] in self?.refreshPreferences() }
         notifications.onPermissionChange = { [weak self] in self?.publishNotificationPermission() }
+    }
+
+    /// Reads the notification permission and login item again, which only System Settings changes.
+    private func refreshPreferences() {
+        guard !terminating, !model.isDemo else { return }
+        publishLoginPreference()
+        Task { [weak self] in await self?.notifications.refreshPermission() }
     }
 
     private func performAction(_ operation: @escaping @MainActor (AppRuntime) async -> Void) {
@@ -626,7 +639,14 @@ final class AppRuntime {
     private enum SetupAction { case install(AgentProfileDraft), verify, remove }
 
     private func editSetup(provider: AgentProvider, action: SetupAction) async {
-        guard let setup, !model.agentSetupBusy.contains(provider), !model.monitoringTransition else { return }
+        guard let setup, !model.agentSetupBusy.contains(provider) else { return }
+        // Edits run one at a time. A request made during another edit, or during a pause or resume,
+        // waits its turn instead of being dropped, which would leave its agent waiting forever.
+        while model.monitoringTransition {
+            guard !terminating, !Task.isCancelled else { return }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        guard !model.agentSetupBusy.contains(provider) else { return }
         model.agentSetupBusy.insert(provider)
         model.monitoringTransition = true
         defer {
@@ -726,6 +746,7 @@ final class AppRuntime {
     private func publishLoginPreference() {
         loginItem.refresh()
         model.launchAtLogin = loginItem.state == .enabled || loginItem.state == .requiresApproval
+        model.loginAvailable = loginItem.state != .unavailable
         model.loginBusy = loginItem.isChanging
         model.loginMessage = loginItem.errorMessage ?? loginItem.state.message
     }
@@ -812,6 +833,7 @@ final class AppRuntime {
             let progress = try await store.historicalProgress()
             if model.historyProgress != progress { model.historyProgress = progress }
             model.updateQueue(count: statistics.count)
+            model.updateHistoryWork(queued: statistics.historicalCount)
             let latestAudits = Dictionary(grouping: progress, by: { "\($0.provider.rawValue)\u{0}\($0.profileID)" })
                 .compactMap { $0.value.max { $0.progress.audit.end < $1.progress.audit.end } }
             let unreadHistory = latestAudits.contains { $0.progress.hasUnreadContent }
@@ -1310,7 +1332,6 @@ final class AppRuntime {
         do {
             let audit = try HistoricalAuditContext(id: reassessing ? UUID() : scope.catchupAuditID ?? UUID(),
                 reason: reassessing ? .resume : scope.catchupReason, endingAt: reassessing ? .now : scope.startedAt)
-            if historyProducers.contains(where: { provider == nil || $0.provider == provider }) { model.beginCatchUp() }
             for route in historyProducers where provider == nil || route.provider == provider {
                 do {
                     let packet = try await route.producer.initialHistoricalCapture(audit: audit)
@@ -1320,6 +1341,8 @@ final class AppRuntime {
                     try? await store.recordCoverageGap(reason: .sourceUnavailable)
                 }
             }
+            // After the work is queued, so a refresh in between can't end the catch-up early.
+            if historyProducers.contains(where: { provider == nil || $0.provider == provider }) { model.beginCatchUp() }
         } catch {
             try? await store.recordCoverageGap(reason: .sourceUnavailable)
         }
@@ -1373,6 +1396,8 @@ final class AppRuntime {
         workspaceObservers.removeAll()
         if let lockObserver { DistributedNotificationCenter.default().removeObserver(lockObserver) }
         lockObserver = nil
+        if let activationObserver { NotificationCenter.default.removeObserver(activationObserver) }
+        activationObserver = nil
     }
 
     static let recentGapWindow: TimeInterval = 24 * 60 * 60

@@ -2,6 +2,19 @@ import CryptoKit
 import Darwin
 import Foundation
 
+extension Process {
+    /// Kills the process if it's still running and waits up to `timeout` for its exit to be observed.
+    /// `waitUntilExit()` spins the calling thread's run loop, and on a concurrency thread it was seen
+    /// waiting forever for a child that had already exited, which stalled the detection pipeline.
+    /// Polling `isRunning` against a deadline can't stall.
+    public func forceStop(timeout: TimeInterval = 2) {
+        guard isRunning else { return }
+        kill(processIdentifier, SIGKILL)
+        let deadline = ProcessInfo.processInfo.systemUptime + timeout
+        while isRunning, ProcessInfo.processInfo.systemUptime < deadline { usleep(5_000) }
+    }
+}
+
 enum ScannerProcess {
     // No service validation, outbound traffic, listeners or descendant processes.
     static let sandboxProfile = "(version 1)(allow default)(deny network*)(deny process-fork)"
@@ -102,7 +115,7 @@ enum ScannerProcess {
         defer {
             for file in [stdin.fileHandleForReading, writer, reader, stdout.fileHandleForWriting,
                          diagnostics, stderr.fileHandleForWriting] { try? file.close() }
-            if process.isRunning { kill(process.processIdentifier, SIGKILL); process.waitUntilExit() }
+            process.forceStop()
         }
         do { try process.run() } catch { throw DetectorFailure.unavailable }
         try? stdin.fileHandleForReading.close()

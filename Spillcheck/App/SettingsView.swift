@@ -128,13 +128,14 @@ struct SettingRow<Control: View>: View {
 }
 
 struct DesignSwitchStyle: ToggleStyle {
+    var onColor = Palette.switchOn
     @Environment(\.isEnabled) private var enabled
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func makeBody(configuration: Configuration) -> some View {
         Button { configuration.isOn.toggle() } label: {
             ZStack(alignment: configuration.isOn ? .trailing : .leading) {
-                Capsule().fill(configuration.isOn ? Palette.switchOn : Color(hex: 0xd3d9d6, dark: 0x4a4e4c))
+                Capsule().fill(configuration.isOn ? onColor : Color(hex: 0xd3d9d6, dark: 0x4a4e4c))
                 Circle().fill(.white).shadow(color: Palette.shadow.opacity(0.25), radius: 1, y: 1)
                     .frame(width: 18, height: 18).padding(2)
             }
@@ -173,7 +174,7 @@ private struct GeneralSettings: View {
                 Toggle("Launch at login", isOn: Binding(get: { model.launchAtLogin }, set: { model.onLaunchAtLoginRequested?($0) }))
                     .toggleStyle(DesignSwitchStyle())
                     .labelsHidden()
-                    .disabled(!model.storageReady || model.loginBusy || model.isDemo)
+                    .disabled(!model.storageReady || model.loginBusy || !model.loginAvailable || model.isDemo)
                     .accessibilityIdentifier("settings.launch-at-login")
             }
         }
@@ -202,6 +203,15 @@ private struct GeneralSettings: View {
         Text("Values, excerpts, conversation titles, and project paths stay masked until you reveal them with Touch ID or your password. Viewing locks after 5 minutes idle, when the window closes, or when the Mac sleeps or locks.")
             .font(.system(size: 12)).foregroundStyle(Palette.tertiary).lineSpacing(2)
             .padding(.horizontal, 2).padding(.top, -18)
+        SettingsSection(title: "Setup") {
+            SettingRow(title: "Setup assistant",
+                       detail: "Walk through how \(AppIdentity.name) works, choose and verify agents, and set alerts again. Agents that are already verified stay connected.") {
+                Button("Run setup again…") { model.openSetup(at: .welcome) }
+                    .buttonStyle(OutlineButtonStyle(height: 28))
+                    .disabled(model.isDemo)
+                    .accessibilityIdentifier("settings.run-setup")
+            }
+        }
     }
 }
 
@@ -221,7 +231,7 @@ private struct AgentSettings: View {
                     .font(.system(size: 12)).foregroundStyle(Palette.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
-                Button("Open guided setup") { model.openSetup() }
+                Button("Open setup assistant") { model.openSetup(at: .chooseAgents) }
                     .buttonStyle(QuietButtonStyle(foreground: Palette.link, height: 24))
                     .fixedSize()
                     .disabled(model.isDemo)

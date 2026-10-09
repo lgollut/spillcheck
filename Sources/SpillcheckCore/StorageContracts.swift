@@ -67,6 +67,8 @@ public struct StoreQueueStatistics: Equatable, Sendable {
     public let count: Int
     public let encryptedBytes: Int
     public let claimedCount: Int
+    /// Recent-history work still queued, including its continuations.
+    public let historicalCount: Int
 }
 
 public enum StorageFailpoint: String, Codable, Sendable {

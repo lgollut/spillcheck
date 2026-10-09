@@ -54,17 +54,22 @@ After building, open the signed development app from the repository root:
 open .build/app/Build/Products/Debug/Spillcheck.app
 ```
 
-Until an agent is verified, the window opens on guided setup: choose detected
-agents, add owned hooks, then run one test session from the shown command. The
-command starts the selected executable with a bounded test prompt; Codex still
-asks you to trust the hooks. Finding an executable does not establish a verified
-connection. A verification persists until the hooks change, the executable
-version changes, or the hooks are reinstalled. Settings › Agents offers the same
-actions and manual profile selection. Launch at login is off by default. Enable
-notifications in macOS to receive masked alerts.
-CLI and T3 share an authorized native home and owned registration. Settings shows
-their observed collection separately; verifying the shared hook does not identify
-the producer host.
+On first launch, the setup assistant opens instead of the main window. It explains
+what Spillcheck does, then looks for agents. Choose the agents to monitor and add
+owned hooks, then run one test session from the shown command. Last, choose alerts
+and launch at login. The command starts the selected executable with a bounded
+test prompt; Codex still asks you to trust the hooks. Finding an executable does
+not establish a verified connection. A verification persists until the owned hooks
+change or are removed; a new executable version is reassessed without another test
+session. Settings › General › Run setup again reopens the assistant. Settings ›
+Agents offers the same agent actions and manual profile selection. Launch at login
+is off by default. Notifications require macOS permission, which the assistant
+requests if alerts stay on. CLI and T3 share an authorized native home and owned
+registration. Settings shows their observed collection separately; verifying the
+shared hook does not identify the producer host.
+
+Debug builds can open the assistant on sample data without touching agent
+profiles: `--demo-setup welcome|how-it-works|choose-agents|connect|preferences|ready`.
 
 New standalone core runs passed Codex producer/reader 0.161.0 and Claude Code
 2.1.295. Earlier signed evidence covers Claude 2.1.293. An unfamiliar version

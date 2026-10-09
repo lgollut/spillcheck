@@ -85,9 +85,11 @@ struct CoverageView: View {
         let conversations = model.activity?.conversationCount ?? 0
         let messages = model.activity?.messageCount ?? 0
         let nothingFound = model.monitoringProven && !model.hasEntries
+        let reading = model.monitoringProven && model.monitoringEnabled && model.catchingUp
         let headline = switch (nothingFound, conversations) {
         case (true, 0): model.catchingUp ? "Reading recent history" : "No conversations analyzed yet"
-        case (true, _): "Nothing found in \(plural(conversations, "conversation"))"
+        // While history is still being read, "nothing found" is only true so far.
+        case (true, _): "Nothing found\(reading ? " so far" : "") in \(plural(conversations, "conversation"))"
         default: plural(conversations, "conversation")
         }
         return VStack(alignment: .leading, spacing: 6) {
@@ -100,22 +102,17 @@ struct CoverageView: View {
             Text(headline)
                 .font(.system(size: nothingFound ? 30 : 34, weight: .semibold)).tracking(-0.6).monospacedDigit()
                 .accessibilityAddTraits(.isHeader)
-            HStack(spacing: 12) {
-                Text(model.monitoringProven ? "\(plural(messages, "message")) analyzed · \(rangeText)" : "Analysis starts once an agent is verified")
-                    .monospacedDigit()
-                // Live analysis is reported in the header; only a catch-up changes what this summary means.
-                if model.monitoringProven, model.monitoringEnabled, model.catchingUp {
-                    HStack(spacing: 6) {
-                        ProgressView().controlSize(.mini)
-                        Text("Reading the last 7 days")
-                    }
-                    .foregroundStyle(Palette.tertiary)
-                    .transition(.opacity)
-                }
+            Text(model.monitoringProven ? "\(plural(messages, "message")) analyzed · \(rangeText)" : "Analysis starts once an agent is verified")
+                .monospacedDigit()
+                .font(.system(size: 13)).foregroundStyle(Palette.secondary)
+            // Live analysis is reported in the header; only a catch-up changes what this summary means.
+            if reading {
+                ReadingHistoryBanner()
+                    .padding(.top, 10)
+                    .transition(.opacity.combined(with: .offset(y: -4)))
             }
-            .font(.system(size: 13)).foregroundStyle(Palette.secondary)
-            .animation(.easeOut(duration: 0.2), value: model.catchingUp)
         }
+        .animation(.easeOut(duration: 0.25), value: reading)
     }
 
     private var totals: some View {
@@ -240,6 +237,24 @@ struct CoverageView: View {
                 .font(.system(size: 12)).foregroundStyle(Palette.tertiary).lineSpacing(2)
                 .padding(.horizontal, 2)
         }
+    }
+}
+
+/// A catch-up in progress, with motion, so the numbers above read as still growing.
+private struct ReadingHistoryBanner: View {
+    var body: some View {
+        HStack(spacing: 10) {
+            RingSpinner()
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Reading the last 7 days").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Brand.greenText)
+                Text("Counts and results update as earlier conversations are analyzed.")
+                    .font(.system(size: 12)).foregroundStyle(Palette.secondary)
+            }
+        }
+        .padding(.leading, 12).padding(.trailing, 16).padding(.vertical, 9)
+        .background(Brand.calloutFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Brand.calloutRing, lineWidth: 1))
+        .accessibilityElement(children: .combine)
     }
 }
 

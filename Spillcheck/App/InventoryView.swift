@@ -8,27 +8,20 @@ struct InventoryView: View {
     let model: AppModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// Guided setup fills the window; everything else sits beside the sidebar.
-    private var sidebarWidth: CGFloat { model.route == .setup ? 0 : 320 }
+    private let sidebarWidth: CGFloat = 320
 
     var body: some View {
-        Group {
-            if model.route == .setup {
-                SetupView(model: model)
-            } else {
-                HStack(spacing: 0) {
-                    SidebarView(model: model)
-                        .frame(width: 320)
-                    Rectangle().fill(Palette.separator).frame(width: 1)
-                    ZStack {
-                        content.id(contentKind).transition(.opacity)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(Palette.background)
-                    // Only changes of screen fade; selection changes inside the detail stay immediate.
-                    .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: contentKind)
-                }
+        HStack(spacing: 0) {
+            SidebarView(model: model)
+                .frame(width: sidebarWidth)
+            Rectangle().fill(Palette.separator).frame(width: 1)
+            ZStack {
+                content.id(contentKind).transition(.opacity)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Palette.background)
+            // Only changes of screen fade; selection changes inside the detail stay immediate.
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: contentKind)
         }
         .overlay(alignment: .top) {
             if let message = model.storageMessage {
@@ -45,7 +38,7 @@ struct InventoryView: View {
             if let toast = model.toast {
                 ToastView(message: toast)
                     .padding(.leading, sidebarWidth)
-                    .padding(.bottom, model.route == .setup ? 80 : 72)
+                    .padding(.bottom, 72)
                     .transition(.opacity)
                     .accessibilityIdentifier("inventory.toast")
             }
@@ -59,7 +52,7 @@ struct InventoryView: View {
     }
 
     private enum ContentKind: Hashable {
-        case empty(EmptyInventoryState.Kind), coverage, detail, noSelection, settings(SettingsPage), setup
+        case empty(EmptyInventoryState.Kind), coverage, detail, noSelection, settings(SettingsPage)
     }
 
     /// The screen shown beside the sidebar. With nothing in the inventory, coverage is the first screen.
@@ -70,7 +63,6 @@ struct InventoryView: View {
             return model.selectedSummary == nil ? .noSelection : .detail
         case .coverage: return .coverage
         case .settings(let page): return .settings(page)
-        case .setup: return .setup
         }
     }
 
@@ -88,8 +80,6 @@ struct InventoryView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .settings(let page):
             SettingsView(model: model, page: page)
-        case .setup:
-            EmptyView()
         }
     }
 }

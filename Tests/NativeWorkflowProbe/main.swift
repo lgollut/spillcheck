@@ -450,13 +450,17 @@ private struct NativeWorkflowProbe {
             }
             checks.append("single-short-item-stays-idle")
 
+            // A catch-up lasts exactly as long as history work is queued; live work alone doesn't extend it.
             let catchUpModel = AppModel()
             catchUpModel.beginCatchUp()
             try require(catchUpModel.catchingUp && catchUpModel.processingText == "Reading recent history", "catch-up-not-shown")
-            catchUpModel.updatePipeline(PipelineActivity(processing: false, pendingCount: 0))
+            catchUpModel.updatePipeline(PipelineActivity(processing: true, pendingCount: 4))
+            catchUpModel.updateHistoryWork(queued: 1)
             try await Task.sleep(for: .milliseconds(Int(AppModel.idleDelay * 1000) + 400))
-            try require(!catchUpModel.catchingUp, "catch-up-never-ends")
-            checks.append("catch-up-ends-after-queue-drains")
+            try require(catchUpModel.catchingUp, "catch-up-ended-early")
+            catchUpModel.updateHistoryWork(queued: 0)
+            try require(!catchUpModel.catchingUp, "catch-up-held-by-live-work")
+            checks.append("catch-up-follows-queued-history")
 
             let output: [String: Any] = ["passed": true, "checks": checks, "checkCount": checks.count,
                 "systemAuthentication": "not-exercised-synthetic-private-key", "systemNotifications": "injected-backend",

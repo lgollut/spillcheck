@@ -128,21 +128,26 @@ enum AppNotificationState {
 }
 
 enum MainRoute: Equatable {
-    case inventory, coverage, setup, settings(SettingsPage)
+    case inventory, coverage, settings(SettingsPage)
 }
 
-/// Guided setup: what Spillcheck does, which agents to connect, a test session per agent, then options.
-enum SetupStep: Int, CaseIterable {
-    case welcome, connect, confirm, ready
+/// The setup assistant: what Spillcheck does, which agents to connect, a test session per agent,
+/// alert preferences, then a summary.
+enum OnboardingStep: Int, CaseIterable, Comparable {
+    case welcome, howItWorks, chooseAgents, connect, preferences, ready
 
     var title: String {
         switch self {
         case .welcome: "Welcome"
+        case .howItWorks: "How it works"
+        case .chooseAgents: "Choose agents"
         case .connect: "Connect"
-        case .confirm: "Confirm"
+        case .preferences: "Preferences"
         case .ready: "Ready"
         }
     }
+
+    static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
 }
 
 enum SettingsPage: String, CaseIterable {
@@ -307,6 +312,8 @@ final class AppModel {
     @ObservationIgnored var onMonitoringChanged: (() -> Void)?
     @ObservationIgnored var onMonitoringRequested: ((Bool) -> Void)?
     var storageReady = false
+    /// Protected storage couldn't open; `storageMessage` says why.
+    var storageFailed = false
     var storageMessage: String? = "Opening protected storage…"
     var monitoringTransition = false
     private var queueProcessing = false
@@ -386,11 +393,8 @@ final class AppModel {
     var historicalSummaries: [HistoricalAuditSummary] = []
     var isDemo = false
     var windowVisible = false
-    var setupStep: SetupStep = .welcome
-    /// Agents the user unticked in guided setup. Newly detected agents start ticked.
+    /// Agents the user unticked in the setup assistant. Newly detected agents start ticked.
     var setupDeselected: Set<AgentProvider> = []
-    /// Agents chosen in guided setup, listed for confirmation even before their hooks are added.
-    var setupConnecting: Set<AgentProvider> = []
     var agentProfiles: [AgentProvider: AgentProfileDraft] = [:]
     var agentSetupStates: [AgentProvider: AgentSetupState] = [:]
     var agentSetupMessages: [AgentProvider: String] = [:]
@@ -402,6 +406,8 @@ final class AppModel {
     var notificationBusy = false
     var notificationIndicatorCount = 0
     var launchAtLogin = false
+    /// Launch at login needs an installed app; a development build elsewhere can't register.
+    var loginAvailable = true
     var loginBusy = false
     var loginMessage: String?
     @ObservationIgnored var onDetectAgents: (() -> Void)?
@@ -415,6 +421,9 @@ final class AppModel {
     @ObservationIgnored var onRequestNotificationPermission: (() -> Void)?
     @ObservationIgnored var onLaunchAtLoginRequested: ((Bool) -> Void)?
     @ObservationIgnored var onOpenNotificationSettings: (() -> Void)?
+    @ObservationIgnored var onOpenSetup: ((OnboardingStep) -> Void)?
+    /// Rereads permissions that only System Settings changes.
+    @ObservationIgnored var onRefreshPreferences: (() -> Void)?
     @ObservationIgnored var onQuit: (() -> Void)?
     var monitoringEnabled: Bool { monitoring.runState == .running && monitoring.mode == .enabled }
     var stopped: Bool { monitoring.runState == .stopped }
@@ -561,34 +570,32 @@ final class AppModel {
     /// A remembered connection proof is separate from recent collection and analyzed coverage.
     var monitoringProven: Bool { routes.contains(where: \.collecting) }
 
-    /// Opens guided setup at the first step that still needs the user.
-    func openSetup() {
-        let current = routes
-        if current.contains(where: { $0.state == .installedUnverified }) { setupStep = .confirm }
-        else if current.contains(where: \.hooksAdded) { setupStep = monitoringProven ? .ready : .connect }
-        else { setupStep = .welcome }
-        setupConnecting = []
-        route = .setup
+    /// Opens the setup assistant at `step`, or where the user still has something to do: confirming
+    /// hooks that are already added, otherwise choosing agents.
+    func openSetup(at step: OnboardingStep? = nil) {
+        onOpenSetup?(step ?? (routes.contains { $0.state == .installedUnverified } ? .connect : .chooseAgents))
     }
 
-    /// Leaves guided setup for the main window, which shows coverage until something is found.
-    func closeSetup() {
-        setupConnecting = []
+    /// Leaves the setup assistant for the main window, which shows coverage until something is found.
+    func finishSetup() {
         route = .inventory
         if selectedEntryID == nil { selectedEntryID = navigableEntries.first?.id }
     }
 
-    /// Agents ticked for connection in guided setup.
+    /// Agents ticked for connection in the setup assistant.
     var setupSelection: [AgentRoute] {
         routes.filter { $0.connectable && !setupDeselected.contains($0.provider) }
     }
 
-    func connectSelectedAgents() {
+    /// Adds hooks to the ticked agents one after another, each followed by its delivery check.
+    /// Returns the agents being connected.
+    @discardableResult
+    func connectSelectedAgents() -> Set<AgentProvider> {
         let drafts = setupSelection.compactMap(\.profile)
-        guard !drafts.isEmpty else { return }
-        setupConnecting.formUnion(drafts.map(\.provider))
-        onConnectAgents?(drafts)
-        setupStep = .confirm
+        guard !drafts.isEmpty else { return [] }
+        if isDemo { DemoInventory.simulateConnection(self, providers: drafts.map(\.provider)) }
+        else { onConnectAgents?(drafts) }
+        return Set(drafts.map(\.provider))
     }
 
     func setupCommand(for provider: AgentProvider) -> SetupCheckCommand? {
@@ -690,7 +697,7 @@ final class AppModel {
     /// Shown activity changes only after the pipeline has worked for `busyDelay`, and returns to idle
     /// only after `idleDelay` without work. A burst of short items reads as one steady state.
     private(set) var busy = false
-    /// From a recent-history request until the queue next stays empty.
+    /// While recent-history work is queued. Live activity alone never counts as catching up.
     private(set) var catchingUp = false
     @ObservationIgnored private var burstStart: Date?
     @ObservationIgnored private var lastActiveAt: Date?
@@ -701,6 +708,11 @@ final class AppModel {
     func beginCatchUp() {
         if !catchingUp { catchingUp = true }
         settleActivity(active: true)
+    }
+
+    /// The store's count of queued recent-history work, which ends a catch-up when it reaches zero.
+    func updateHistoryWork(queued: Int) {
+        if catchingUp != (queued > 0) { catchingUp = queued > 0 }
     }
 
     private func settleActivity(active: Bool, now: Date = Date()) {
@@ -714,7 +726,6 @@ final class AppModel {
         let lasting = burstStart.flatMap { start in lastActiveAt.map { $0.timeIntervalSince(start) >= Self.busyDelay } } ?? false
         let nextBusy = recent && (busy || lasting)
         if busy != nextBusy { busy = nextBusy }
-        if !recent, catchingUp { catchingUp = false }
         settleTask?.cancel()
         guard recent, let lastActiveAt else { return }
         // Re-evaluate when the burst is long enough to show, or when it has been quiet long enough.
@@ -758,16 +769,14 @@ final class AppModel {
         actionMessage = "Sample mode. Revealing and changing values are disabled."
     }
 
-    /// Sample guided-setup state matching a first launch: Codex found, Claude Code at an untested
+    /// Sample setup-assistant state matching a first launch: Codex found, Claude Code at an untested
     /// version. Nothing is installed and no session is started.
-    func loadSetupDemo(step: SetupStep) {
+    func loadSetupDemo(step: OnboardingStep) {
         isDemo = true
         storageReady = true
         storageMessage = nil
         presentation = try? InventoryPresentation(snapshot: InventorySnapshot())
         DemoInventory.configureSetup(self, step: step)
-        route = .setup
-        setupStep = step
     }
 
     /// Sample connected monitoring that has analyzed content and found nothing.
@@ -940,24 +949,45 @@ private enum DemoInventory {
         return ledger.snapshot
     }
 
-    @MainActor static func configureSetup(_ model: AppModel, step: SetupStep) {
+    @MainActor static func configureSetup(_ model: AppModel, step: OnboardingStep) {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let codex = AgentProfileDraft(provider: .codex, profileID: "sample", executablePath: home + "/.local/bin/codex",
                                       homePath: home + "/.codex", version: CodexAdapter.validatedAgentVersion,
-                                      installed: step == .confirm || step == .ready)
+                                      installed: step >= .connect)
         let claude = AgentProfileDraft(provider: .claudeCode, profileID: "sample", executablePath: home + "/.local/bin/claude",
                                        homePath: home + "/.claude", interface: .desktopCode, version: "2.1.295")
         model.agentProfiles = [.codex: codex, .claudeCode: claude]
         let codexState: AgentSetupState = switch step {
-        case .welcome, .connect: .detected
-        case .confirm: .installedUnverified
-        case .ready: .connected
+        case .welcome, .howItWorks, .chooseAgents: .detected
+        case .connect: .installedUnverified
+        case .preferences, .ready: .connected
         }
         model.agentSetupStates = [.codex: codexState, .claudeCode: .unsupported]
         model.agentSetupMessages = [.claudeCode: claude.unsupportedMessage]
-        model.verificationPrompts = step == .confirm ? [.codex: SetupVerificationPrompt.make()] : [:]
+        model.verificationPrompts = step == .connect ? [.codex: SetupVerificationPrompt.make()] : [:]
         model.notificationState = .notRequested
         model.updateCoverage(.complete)
+    }
+
+    /// Plays a connection in sample mode: hooks are added, then the test prompt "arrives" a few
+    /// seconds later. Nothing is written to any agent profile.
+    @MainActor static func simulateConnection(_ model: AppModel, providers: [AgentProvider]) {
+        Task { @MainActor [weak model] in
+            for provider in providers {
+                guard let model else { return }
+                model.agentSetupBusy.insert(provider)
+                try? await Task.sleep(for: .seconds(1.4))
+                model.agentProfiles[provider]?.installed = true
+                model.agentSetupStates[provider] = .installedUnverified
+                model.verificationPrompts[provider] = SetupVerificationPrompt.make()
+                model.agentSetupBusy.remove(provider)
+            }
+            try? await Task.sleep(for: .seconds(4))
+            for provider in providers {
+                model?.verificationPrompts.removeValue(forKey: provider)
+                model?.agentSetupStates[provider] = .connected
+            }
+        }
     }
 
     @MainActor static func configure(_ model: AppModel) {

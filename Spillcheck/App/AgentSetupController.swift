@@ -368,16 +368,16 @@ private enum ProviderVersionProbe {
         if process.isRunning {
             process.terminate()
             Thread.sleep(forTimeInterval: 0.1)
-            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            process.forceStop()
         }
-        process.waitUntilExit()
         pipe.fileHandleForReading.readabilityHandler = nil
         if let remaining = try? pipe.fileHandleForReading.readToEnd() { output.append(remaining) }
         try? pipe.fileHandleForReading.close()
         let text = output.text().trimmingCharacters(in: .whitespacesAndNewlines)
         let pattern = provider == .codex ? #"^codex-cli ([0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?)$"#
             : #"^([0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?) \(Claude Code\)$"#
-        guard process.terminationStatus == 0,
+        // Reading the status of a process that hasn't exited raises.
+        guard !process.isRunning, process.terminationStatus == 0,
               text.range(of: pattern, options: .regularExpression) != nil,
               let range = text.range(of: #"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?"#, options: .regularExpression) else { return nil }
         return String(text[range])

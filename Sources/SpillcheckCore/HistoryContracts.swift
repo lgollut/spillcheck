@@ -51,7 +51,7 @@ public struct CollectionAuthorityChoice: Codable, Hashable, Sendable {
 public typealias SourceAuthorityLookup = @Sendable (SessionIdentity) async throws -> CollectionAuthorityChoice?
 public typealias SourceAuthorityRecorder = @Sendable (CollectionAuthorityChoice) async throws -> Void
 
-public struct StoredHistoricalProgress: Codable, Sendable {
+public struct StoredHistoricalProgress: Codable, Equatable, Sendable {
     public let provider: AgentProvider
     public let profileID: String
     public let progress: HistoricalReadProgress

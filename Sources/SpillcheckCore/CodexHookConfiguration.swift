@@ -141,7 +141,7 @@ public actor CodexHookSetup {
 
     public func beginVerification() throws -> CodexSetupChallenge {
         guard try check() == .installedUnverified || state == .connected else { throw CodexSetupError.verificationFailed }
-        let prompt = "SPILLCHECK_SETUP_SYNTHETIC_\(UUID().uuidString)"
+        let prompt = SetupVerificationPrompt.make()
         challenge = prompt; state = .installedUnverified
         return CodexSetupChallenge(prompt: prompt, profileID: configuration.profileID, configuration: configuration)
     }

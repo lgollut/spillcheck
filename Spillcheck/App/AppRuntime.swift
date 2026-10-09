@@ -117,6 +117,9 @@ final class AppRuntime {
     private var monitoringRequested = true
     private var inventoryMutationActive = false
     private var actions: [UUID: Task<Void, Never>] = [:]
+    /// The inventory revision and day last published, so an unchanged store isn't republished every second.
+    private var publishedRevision: Int64?
+    private var publishedDay: Date?
     var onShowInventory: (() -> Void)?
     #if DEBUG
     private var acceptanceReportURL: URL?
@@ -251,6 +254,8 @@ final class AppRuntime {
             }
             model.storageReady = true
             model.storageMessage = nil
+            // Until an agent is verified, the window opens on guided setup rather than an empty list.
+            if !model.monitoringProven, !model.hasEntries, model.route == .inventory { model.openSetup() }
             await startCollection(directory: directory, store: opened, cryptography: services.background)
             await refresh()
             refreshTask = Task { [weak self] in
@@ -303,7 +308,7 @@ final class AppRuntime {
             try await ownedSetup.verify(.claudeCode)
         }
         #endif
-        model.loadSnapshot(await store.snapshot())
+        await publishSnapshot(from: store)
         await refreshSetup(updateProfiles: true)
         notifications.navigationIsCurrent = { target in await store.notificationTargetExists(target) }
         notifications.onNavigate = { [weak self] target in
@@ -391,6 +396,18 @@ final class AppRuntime {
         }
         model.onInstallAgent = { [weak self] provider, draft in
             self?.performAction { runtime in await runtime.editSetup(provider: provider, action: .install(draft)) }
+        }
+        model.onConnectAgents = { [weak self] drafts in
+            // Setup edits are exclusive, so several agents connect one after another.
+            self?.performAction { runtime in
+                for draft in drafts { await runtime.editSetup(provider: draft.provider, action: .install(draft)) }
+            }
+        }
+        model.onOpenSetupTerminal = { [weak self] provider in
+            guard let self, let command = self.model.setupCommand(for: provider) else { return }
+            if !SetupTerminal.open(command) {
+                self.model.showToast("Terminal couldn’t be opened. Copy the command and run it in any terminal.")
+            }
         }
         model.onRepairAgent = { [weak self] provider in
             self?.performAction { runtime in
@@ -622,9 +639,14 @@ final class AppRuntime {
                 guard draft.provider == provider else { return }
                 try await setup.install(draft)
                 await restartCollection()
+                // Adding hooks and checking delivery are one step for the user: start the check now,
+                // unless a repair kept an earlier test session that still applies to these hooks.
+                if model.monitoringEnabled, await setup.snapshot().states[provider] != .connected {
+                    try await setup.verify(provider)
+                }
             case .verify:
                 guard model.monitoringEnabled else {
-                    model.agentSetupMessages[provider] = "Resume monitoring before verifying a synthetic prompt."
+                    model.agentSetupMessages[provider] = "Resume monitoring before running the test session."
                     return
                 }
                 try await setup.verify(provider)
@@ -670,9 +692,10 @@ final class AppRuntime {
                 }
             }
         }
-        model.agentSetupStates = snapshot.states
-        model.agentSetupMessages = snapshot.messages
-        model.verificationPrompts = snapshot.verificationPrompts
+        // Unchanged values are not reassigned, so views reading them aren't invalidated every second.
+        if model.agentSetupStates != snapshot.states { model.agentSetupStates = snapshot.states }
+        if model.agentSetupMessages != snapshot.messages { model.agentSetupMessages = snapshot.messages }
+        if model.verificationPrompts != snapshot.verificationPrompts { model.verificationPrompts = snapshot.verificationPrompts }
         for provider in changed where model.monitoringEnabled {
             await enqueueHistory(provider: provider, reassessing: true)
         }
@@ -787,7 +810,7 @@ final class AppRuntime {
             var gaps = Array(Set(recentGaps.filter { $0.recovery == nil } + omissions.map(\.gap)))
             model.collectionLimitations = gaps
             let progress = try await store.historicalProgress()
-            model.historyProgress = progress
+            if model.historyProgress != progress { model.historyProgress = progress }
             model.updateQueue(count: statistics.count)
             let latestAudits = Dictionary(grouping: progress, by: { "\($0.provider.rawValue)\u{0}\($0.profileID)" })
                 .compactMap { $0.value.max { $0.progress.audit.end < $1.progress.audit.end } }
@@ -802,7 +825,7 @@ final class AppRuntime {
             model.updateCoverage(gaps.isEmpty && !unreadHistory
                 ? (collectionObserved ? .complete : .notConfigured)
                 : .partial(gaps.isEmpty ? [.init(reason: .budgetExhausted)] : gaps))
-            model.loadSnapshot(await store.snapshot())
+            await publishSnapshot(from: store)
             await deliverNotifications()
             #if DEBUG
             await writeAcceptanceReport(statistics: statistics, gaps: gaps)
@@ -810,6 +833,16 @@ final class AppRuntime {
         } catch {
             model.storageMessage = Self.storageFailureMessage(error)
         }
+    }
+
+    /// Republishes the inventory after a committed change, or when the day changes the 7-day window.
+    private func publishSnapshot(from store: ProtectedStore) async {
+        let revision = await store.stateRevision()
+        let day = Calendar.current.startOfDay(for: .now)
+        guard revision != publishedRevision || day != publishedDay else { return }
+        model.loadSnapshot(await store.snapshot())
+        publishedRevision = revision
+        publishedDay = day
     }
 
     #if DEBUG
@@ -1277,6 +1310,7 @@ final class AppRuntime {
         do {
             let audit = try HistoricalAuditContext(id: reassessing ? UUID() : scope.catchupAuditID ?? UUID(),
                 reason: reassessing ? .resume : scope.catchupReason, endingAt: reassessing ? .now : scope.startedAt)
+            if historyProducers.contains(where: { provider == nil || $0.provider == provider }) { model.beginCatchUp() }
             for route in historyProducers where provider == nil || route.provider == provider {
                 do {
                     let packet = try await route.producer.initialHistoricalCapture(audit: audit)
@@ -1355,5 +1389,30 @@ final class AppRuntime {
             }
         }
         return "Protected storage could not be opened. Monitoring is paused."
+    }
+}
+
+/// Opens Terminal on a short script holding the setup command, so starting the test session takes one
+/// click. The script holds no credential, is readable only by this user, and is replaced on each use.
+@MainActor
+private enum SetupTerminal {
+    static func open(_ command: SetupCheckCommand) -> Bool {
+        guard let terminal = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Terminal") else { return false }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(AppIdentity.name, isDirectory: true)
+        let script = directory.appendingPathComponent("setup-check-\(command.provider.rawValue).command")
+        let body = """
+            #!/bin/zsh
+            # \(AppIdentity.name) setup check: starts a new \(command.provider.displayName) session that sends one test prompt.
+            \(command.line)
+
+            """
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+                                                    attributes: [.posixPermissions: 0o700])
+            try Data(body.utf8).write(to: script, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
+        } catch { return false }
+        NSWorkspace.shared.open([script], withApplicationAt: terminal, configuration: NSWorkspace.OpenConfiguration())
+        return true
     }
 }

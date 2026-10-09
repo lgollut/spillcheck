@@ -10,6 +10,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var statusItem: NSStatusItem?
     private var statusPanel: MenuBarPanel?
     private var lifecycleLogURL: URL?
+    /// The status item image is redrawn only when its attention dot changes.
+    private var statusAttention: Bool?
     private var lifecycleEvents: [[String: String]] = []
 
     static func main() {
@@ -35,6 +37,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         // Sample mode never opens the vault or starts collection, so the UI can be reviewed safely.
         if args.contains("--demo") { model.loadDemo(); previewOnly = true }
+        if let i = args.firstIndex(of: "--demo-setup"), args.indices.contains(i + 1) {
+            let step = SetupStep.allCases.first { $0.title.lowercased() == args[i + 1] } ?? .welcome
+            model.loadSetupDemo(step: step)
+            previewOnly = true
+        }
+        if args.contains("--demo-quiet") { model.loadQuietDemo(); previewOnly = true }
         if let i = args.firstIndex(of: "--lifecycle-log"), args.indices.contains(i + 1) {
             lifecycleLogURL = URL(fileURLWithPath: args[i + 1])
         }
@@ -254,8 +262,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func refreshStatusItem() {
         guard let button = statusItem?.button else { return }
         let attention = !model.needsReview.isEmpty || model.notificationIndicatorCount > 0
-        button.image = Self.statusImage(attention: attention)
-        button.toolTip = "\(AppIdentity.name) · \(model.processingText)"
+        if statusAttention != attention {
+            statusAttention = attention
+            button.image = Self.statusImage(attention: attention)
+        }
+        let tip = "\(AppIdentity.name) · \(model.processingText)"
+        if button.toolTip != tip { button.toolTip = tip }
         button.setAccessibilityLabel(attention ? "\(AppIdentity.name), values need review" : AppIdentity.name)
     }
 

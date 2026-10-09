@@ -224,6 +224,8 @@ public actor ProtectedStore {
         monitoringEnabled && !closed ? StoreProcessingPermit(generation: generation) : nil
     }
     public func snapshot() -> InventorySnapshot { ledger.snapshot }
+    /// Every committed inventory change increments this value. Equal revisions have equal snapshots.
+    public func stateRevision() -> Int64 { revision }
 
     public func pendingLiveAlerts() -> [AlertDecision] {
         guard monitoringEnabled, !closed else { return [] }

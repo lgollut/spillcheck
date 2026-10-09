@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0887B6F4FC84D2E3CF9C56CA /* SetupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC38D52DB6C99BF7768E9ECB /* SetupView.swift */; };
 		08BDF76608D5FACBD234235A /* MenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17CA1A1EF4EFC6A19958BBF /* MenuBarView.swift */; };
 		1A768BC217199FA530DE8C5B /* CoverageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19ED623A19C443D332F0B3F2 /* CoverageView.swift */; };
 		276AC0BE0533CC3AC5D86FC4 /* SignedRecoveryVaultOwner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4160819F63DB83EC741C221F /* SignedRecoveryVaultOwner.swift */; };
@@ -46,17 +47,18 @@
 		19ED623A19C443D332F0B3F2 /* CoverageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoverageView.swift; sourceTree = "<group>"; };
 		4160819F63DB83EC741C221F /* SignedRecoveryVaultOwner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SignedRecoveryVaultOwner.swift; sourceTree = "<group>"; };
 		4443654EA8FD4A679416B077 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
-		4B8883194A9A1A966BD4733C /* spillcheck */ = {isa = PBXFileReference; lastKnownFileType = folder; name = spillcheck; path = .; sourceTree = SOURCE_ROOT; };
 		72754F890706FE3AC08E917C /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		74A3255C75EE42AE8E85AF2A /* spillcheck-hook */ = {isa = PBXFileReference; includeInIndex = 0; path = "spillcheck-hook"; sourceTree = BUILT_PRODUCTS_DIR; };
 		79D89CB9AE08F6FD4E4F264D /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		896F4E4526F40D157E21FD55 /* LoginItemController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginItemController.swift; sourceTree = "<group>"; };
 		9053ADDA32DBF8D9584BF727 /* AppRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppRuntime.swift; sourceTree = "<group>"; };
 		A17CA1A1EF4EFC6A19958BBF /* MenuBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarView.swift; sourceTree = "<group>"; };
+		A4C4067BB18B9765620100D6 /* t3-e4dfde41 */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "t3-e4dfde41"; path = .; sourceTree = SOURCE_ROOT; };
 		AC1789CC5171F1D9793BBF1B /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		AD665126341D3C4D0E4FA87C /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		AECF9EEC9C73FB77DD618373 /* InventoryDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InventoryDetailView.swift; sourceTree = "<group>"; };
 		B038F902F01EA4B9AE97AA68 /* InventoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InventoryView.swift; sourceTree = "<group>"; };
+		BC38D52DB6C99BF7768E9ECB /* SetupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupView.swift; sourceTree = "<group>"; };
 		C83519DE92F4C49EC8CB4A08 /* NotificationController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationController.swift; sourceTree = "<group>"; };
 		CEC4CD27AE13CA0B0B10E654 /* ThirdPartyLicenses */ = {isa = PBXFileReference; lastKnownFileType = folder; name = ThirdPartyLicenses; path = Spillcheck/Resources/ThirdPartyLicenses; sourceTree = SOURCE_ROOT; };
 		E58EEA7BDD7529F15719ECBA /* SourceOpeningController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceOpeningController.swift; sourceTree = "<group>"; };
@@ -112,6 +114,7 @@
 				A17CA1A1EF4EFC6A19958BBF /* MenuBarView.swift */,
 				C83519DE92F4C49EC8CB4A08 /* NotificationController.swift */,
 				79D89CB9AE08F6FD4E4F264D /* SettingsView.swift */,
+				BC38D52DB6C99BF7768E9ECB /* SetupView.swift */,
 				4160819F63DB83EC741C221F /* SignedRecoveryVaultOwner.swift */,
 				E58EEA7BDD7529F15719ECBA /* SourceOpeningController.swift */,
 				AC1789CC5171F1D9793BBF1B /* Theme.swift */,
@@ -142,7 +145,7 @@
 		F10847EA13B548C5C69D2AC9 /* Packages */ = {
 			isa = PBXGroup;
 			children = (
-				4B8883194A9A1A966BD4733C /* spillcheck */,
+				A4C4067BB18B9765620100D6 /* t3-e4dfde41 */,
 			);
 			name = Packages;
 			sourceTree = "<group>";
@@ -313,6 +316,7 @@
 				08BDF76608D5FACBD234235A /* MenuBarView.swift in Sources */,
 				E634A2A7819D7E4E70DB1CC0 /* NotificationController.swift in Sources */,
 				B7ABC4164B31F5D198A9AF92 /* SettingsView.swift in Sources */,
+				0887B6F4FC84D2E3CF9C56CA /* SetupView.swift in Sources */,
 				276AC0BE0533CC3AC5D86FC4 /* SignedRecoveryVaultOwner.swift in Sources */,
 				ABBD7F8E265DDD0D2825A58E /* SourceOpeningController.swift in Sources */,
 				BD67C7384D09A5B7B3603CC7 /* Theme.swift in Sources */,

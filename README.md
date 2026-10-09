@@ -54,10 +54,14 @@ After building, open the signed development app from the repository root:
 open .build/app/Build/Products/Debug/Spillcheck.app
 ```
 
-Open Settings to detect agents and explicitly select profiles. Finding an
-executable does not establish a verified connection. Setup installs owned hooks
-and requires a synthetic verification event. Launch at login is off by default.
-Enable notifications in macOS to receive masked alerts.
+Until an agent is verified, the window opens on guided setup: choose detected
+agents, add owned hooks, then run one test session from the shown command. The
+command starts the selected executable with a bounded test prompt; Codex still
+asks you to trust the hooks. Finding an executable does not establish a verified
+connection. A verification persists until the hooks change, the executable
+version changes, or the hooks are reinstalled. Settings › Agents offers the same
+actions and manual profile selection. Launch at login is off by default. Enable
+notifications in macOS to receive masked alerts.
 CLI and T3 share an authorized native home and owned registration. Settings shows
 their observed collection separately; verifying the shared hook does not identify
 the producer host.

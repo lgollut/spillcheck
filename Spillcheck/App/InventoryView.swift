@@ -6,15 +6,29 @@ let windowHeaderHeight: CGFloat = 52
 
 struct InventoryView: View {
     let model: AppModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// Guided setup fills the window; everything else sits beside the sidebar.
+    private var sidebarWidth: CGFloat { model.route == .setup ? 0 : 320 }
 
     var body: some View {
-        HStack(spacing: 0) {
-            SidebarView(model: model)
-                .frame(width: 320)
-            Rectangle().fill(Palette.separator).frame(width: 1)
-            content
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Palette.background)
+        Group {
+            if model.route == .setup {
+                SetupView(model: model)
+            } else {
+                HStack(spacing: 0) {
+                    SidebarView(model: model)
+                        .frame(width: 320)
+                    Rectangle().fill(Palette.separator).frame(width: 1)
+                    ZStack {
+                        content.id(contentKind).transition(.opacity)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Palette.background)
+                    // Only changes of screen fade; selection changes inside the detail stay immediate.
+                    .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: contentKind)
+                }
+            }
         }
         .overlay(alignment: .top) {
             if let message = model.storageMessage {
@@ -24,14 +38,14 @@ struct InventoryView: View {
                     .padding(.horizontal, 12).padding(.vertical, 8)
                     .background(Palette.amberSoft, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .padding(.top, windowHeaderHeight + 8)
-                    .padding(.leading, 320)
+                    .padding(.leading, sidebarWidth)
             }
         }
         .overlay(alignment: .bottom) {
             if let toast = model.toast {
                 ToastView(message: toast)
-                    .padding(.leading, 320)
-                    .padding(.bottom, 72)
+                    .padding(.leading, sidebarWidth)
+                    .padding(.bottom, model.route == .setup ? 80 : 72)
                     .transition(.opacity)
                     .accessibilityIdentifier("inventory.toast")
             }
@@ -44,22 +58,38 @@ struct InventoryView: View {
         .accessibilityIdentifier("inventory.window")
     }
 
-    @ViewBuilder
-    private var content: some View {
+    private enum ContentKind: Hashable {
+        case empty(EmptyInventoryState.Kind), coverage, detail, noSelection, settings(SettingsPage), setup
+    }
+
+    /// The screen shown beside the sidebar. With nothing in the inventory, coverage is the first screen.
+    private var contentKind: ContentKind {
         switch model.route {
         case .inventory:
-            if let empty = EmptyInventoryState(model: model) {
-                EmptyStateView(state: empty, model: model)
-            } else if let summary = model.selectedSummary {
-                InventoryDetailView(model: model, summary: summary).id(summary.id)
-            } else {
-                Text("Select a value.").foregroundStyle(Palette.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
+            if let empty = EmptyInventoryState(model: model) { return empty.kind == .nothingFound ? .coverage : .empty(empty.kind) }
+            return model.selectedSummary == nil ? .noSelection : .detail
+        case .coverage: return .coverage
+        case .settings(let page): return .settings(page)
+        case .setup: return .setup
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch contentKind {
+        case .empty:
+            if let empty = EmptyInventoryState(model: model) { EmptyStateView(state: empty, model: model) }
         case .coverage:
             CoverageView(model: model)
+        case .detail:
+            if let summary = model.selectedSummary { InventoryDetailView(model: model, summary: summary).id(summary.id) }
+        case .noSelection:
+            Text("Select a value.").foregroundStyle(Palette.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .settings(let page):
             SettingsView(model: model, page: page)
+        case .setup:
+            EmptyView()
         }
     }
 }
@@ -265,10 +295,16 @@ private struct SidebarView: View {
         .accessibilityValue(open ? "Expanded" : "Collapsed")
     }
 
+    /// Coverage is on screen, either chosen or as the first screen of an empty inventory.
+    private var showsCoverage: Bool {
+        model.route == .coverage
+            || (model.route == .inventory && EmptyInventoryState(model: model)?.kind == .nothingFound)
+    }
+
     private var footer: some View {
         HStack(spacing: 6) {
             Button {
-                model.route = model.route == .coverage ? .inventory : .coverage
+                model.route = model.route == .coverage && model.hasEntries ? .inventory : .coverage
             } label: {
                 HStack(spacing: 7) {
                     CoverageGlyph(word: model.coverageWord)
@@ -281,11 +317,11 @@ private struct SidebarView: View {
                 .padding(.horizontal, 10)
                 .frame(height: 28)
                 .contentShape(Rectangle())
-                .hoverFill(model.route == .coverage ? Palette.shade.opacity(0.08) : .clear, hover: Palette.shade.opacity(0.06))
+                .hoverFill(showsCoverage ? Palette.shade.opacity(0.08) : .clear, hover: Palette.shade.opacity(0.06))
             }
             .buttonStyle(.plain)
             .accessibilityLabel("\(model.coverageStateText). Open coverage details.")
-            .accessibilityAddTraits(model.route == .coverage ? .isSelected : [])
+            .accessibilityAddTraits(showsCoverage ? .isSelected : [])
             .accessibilityIdentifier("inventory.coverage")
 
             Button { model.route = .settings(.general) } label: {
@@ -518,12 +554,13 @@ extension View {
 // MARK: - Empty states
 
 struct EmptyInventoryState {
-    enum Kind { case setup, scanning, nothingFound, noMatch }
+    enum Kind: Hashable { case setup, nothingFound, noMatch }
     let kind: Kind
     let title: String
     let body: String
 
-    /// Distinguishes unfinished setup, an active scan, no detections, and filters matching nothing.
+    /// Distinguishes unfinished setup, no detections, and filters matching nothing. With no detections
+    /// the coverage screen is shown, which also reports a catch-up in progress.
     @MainActor init?(model: AppModel) {
         if model.hasEntries {
             guard model.groups.isEmpty, model.filtersActive else { return nil }
@@ -538,12 +575,8 @@ struct EmptyInventoryState {
             kind = .setup
             title = "Monitoring isn’t proven yet"
             body = model.routes.contains { $0.state == .installedUnverified }
-                ? "Hooks are installed, but no event has arrived yet. An empty list doesn’t mean nothing leaked."
+                ? "Hooks are added, but no test prompt has arrived yet. An empty list doesn’t mean nothing leaked."
                 : "No agent is connected yet. Until one is, nothing is checked, and an empty list doesn’t mean nothing leaked."
-        } else if model.processing {
-            kind = .scanning
-            title = "Reading recent history"
-            body = "No detections so far in \(connected.joined(separator: " and "))."
         } else {
             kind = .nothingFound
             title = "Nothing found in analyzed content"
@@ -565,9 +598,6 @@ private struct EmptyStateView: View {
             Text(state.body)
                 .font(.system(size: 13)).lineSpacing(3).foregroundStyle(Palette.secondary)
                 .multilineTextAlignment(.center)
-            if state.kind == .scanning {
-                ProgressView().progressViewStyle(.linear).frame(width: 240).tint(Palette.green)
-            }
             if let action {
                 Button(action.label, action: action.perform)
                     .buttonStyle(FilledButtonStyle(height: 28))
@@ -582,7 +612,6 @@ private struct EmptyStateView: View {
     private var glyph: some View {
         let (symbol, background, foreground): (String, Color, Color) = switch state.kind {
         case .setup: ("exclamationmark", Color(oklch: 0.94, 0.05, 80, dark: 0.33), Palette.amberText)
-        case .scanning: ("ellipsis", Color(oklch: 0.94, 0.022, 150, dark: 0.32), Color(oklch: 0.42, 0.06, 152, dark: 0.8))
         case .nothingFound: ("circle", Palette.chip, Palette.ink2)
         case .noMatch: ("line.3.horizontal.decrease", Palette.chip, Palette.ink2)
         }
@@ -596,10 +625,9 @@ private struct EmptyStateView: View {
 
     private var action: (label: String, perform: () -> Void)? {
         switch state.kind {
-        case .setup: ("Finish setup", { model.route = .settings(.agents) })
+        case .setup: ("Continue setup", { model.openSetup() })
         case .nothingFound: ("Agents & coverage", { model.route = .coverage })
         case .noMatch: ("Clear search and filters", { model.clearFilters() })
-        case .scanning: nil
         }
     }
 }

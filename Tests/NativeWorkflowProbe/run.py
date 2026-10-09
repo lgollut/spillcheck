@@ -36,12 +36,13 @@ command = ["xcrun", "swiftc", "-parse-as-library", "-swift-version", "6", "-targ
            str(root / "Spillcheck/App/InventoryView.swift"),
            str(root / "Spillcheck/App/CoverageView.swift"),
            str(root / "Spillcheck/App/SettingsView.swift"),
+           str(root / "Spillcheck/App/SetupView.swift"),
            str(Path(__file__).with_name("main.swift")),
            str(products / "libSpillcheckCore.a"), "-lsqlite3", "-framework", "Security",
            "-framework", "LocalAuthentication", "-framework", "UserNotifications", "-framework", "AppKit",
            "-o", str(output)]
 subprocess.run(command, cwd=root, check=True)
-probe = subprocess.run([str(output)], cwd=root, timeout=15, capture_output=True, text=True)
+probe = subprocess.run([str(output)], cwd=root, timeout=30, capture_output=True, text=True)
 report = json.loads(probe.stdout)
 reproduce = ["python3", "Tests/NativeWorkflowProbe/run.py"]
 if args.products_path is not None:

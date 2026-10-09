@@ -106,7 +106,7 @@ private struct SettingsSection<Content: View>: View {
     }
 }
 
-private struct SettingRow<Control: View>: View {
+struct SettingRow<Control: View>: View {
     let title: String
     let detail: String
     var divider = false
@@ -216,8 +216,18 @@ private struct AgentSettings: View {
                     AgentRow(model: model, route: route, divider: index > 0) { configuring = route.provider }
                 }
             }
-            Text("\(AppIdentity.name) only adds and removes its own hooks. Codex asks you to trust them on next start.")
-                .font(.system(size: 12)).foregroundStyle(Palette.tertiary).padding(.horizontal, 2)
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text("\(AppIdentity.name) only adds and removes its own hooks. Codex asks you to trust them on next start.")
+                    .font(.system(size: 12)).foregroundStyle(Palette.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+                Button("Open guided setup") { model.openSetup() }
+                    .buttonStyle(QuietButtonStyle(foreground: Palette.link, height: 24))
+                    .fixedSize()
+                    .disabled(model.isDemo)
+                    .accessibilityIdentifier("settings.guided-setup")
+            }
+            .padding(.horizontal, 2)
             Text("An owned registration can serve CLI and T3 in the same authorized home. Its verification does not identify the producer host; each host's observed collection and acceptance evidence are shown separately. GUI collection is still awaiting its required gates.")
                 .font(.system(size: 12)).foregroundStyle(Palette.tertiary).padding(.horizontal, 2)
             ForEach(model.routes) { route in
@@ -243,7 +253,7 @@ private struct AgentSettings: View {
     }
 }
 
-private struct ConfigureTarget: Identifiable {
+struct ConfigureTarget: Identifiable {
     let provider: AgentProvider
     var id: AgentProvider { provider }
 }
@@ -258,36 +268,31 @@ private struct AgentRow: View {
     private var disabled: Bool { !model.storageReady || model.isDemo || busy }
 
     private var configuration: String {
-        guard let profile = route.profile, !profile.executablePath.isEmpty else {
-            return "Searched ~/.local/bin, /opt/homebrew/bin, /usr/local/bin"
-        }
-        let command = route.provider == .codex ? "codex" : "claude"
-        return [profile.version.isEmpty ? command : "\(command) \(profile.version)", profile.executablePath,
-                profile.homePath.isEmpty ? nil : "profile \(profile.homePath)"].compactMap { $0 }.joined(separator: " · ")
+        AgentConfigurationLine(route: route).text ?? "Searched ~/.local/bin, /opt/homebrew/bin, /usr/local/bin"
     }
 
     private var detail: String {
         if route.waitingForEvent {
-            return "Start a new conversation with \(route.name) and send the prompt below. \(AppIdentity.name) confirms as soon as the hook event arrives."
+            return "Hooks added. Run the test session below; \(AppIdentity.name) confirms as soon as its prompt arrives."
         }
         if let message = model.agentSetupMessages[route.provider] { return message }
         return switch route.state {
         case .notDetected, .notChecked: "Not found in the usual locations."
-        case .detected: "Executable found. Not connected yet."
-        case .installedUnverified: "Hooks are installed. No event has arrived from a fresh session yet, so monitoring isn’t proven."
-        case .connected: "Owned hooks verified. Recent activity and content coverage are shown separately."
-        case .unsupported: "This collection route has not been established."
-        case .unavailable: "Hook configuration needs repair."
+        case .detected: "Found on this Mac. Not connected yet."
+        case .installedUnverified: "Hooks are added, but no test prompt has arrived yet, so monitoring isn’t proven."
+        case .connected: "Hooks verified. Recent activity and coverage are shown separately."
+        case .unsupported: route.profile?.unsupportedMessage ?? "This collection route has not been established."
+        case .unavailable: "\(AppIdentity.name)’s hooks need repair."
         }
     }
 
     private var action: (label: String, primary: Bool, perform: () -> Void)? {
         switch route.state {
         case .installedUnverified where !route.waitingForEvent:
-            return ("Check delivery", true, { model.onVerifyAgent?(route.provider) })
+            return ("Test connection", true, { model.onVerifyAgent?(route.provider) })
         case .detected:
             guard let profile = route.profile, profile.isComplete else { return ("Connect…", true, configure) }
-            return ("Connect…", true, { model.onInstallAgent?(route.provider, profile) })
+            return ("Connect", true, { model.onInstallAgent?(route.provider, profile) })
         case .unsupported: return ("Configure…", false, configure)
         case .unavailable: return ("Repair", false, { model.onRepairAgent?(route.provider) })
         case .notDetected, .notChecked: return ("Locate…", false, configure)
@@ -298,11 +303,7 @@ private struct AgentRow: View {
     var body: some View {
         let status = route.status
         HStack(alignment: .top, spacing: 14) {
-            Text(route.monogram)
-                .font(.system(size: 11, weight: .bold)).tracking(0.2).foregroundStyle(Palette.ink2)
-                .frame(width: 32, height: 32)
-                .background(Color(hex: 0xeceeed, dark: 0x292c2a), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .accessibilityHidden(true)
+            AgentMonogram(route: route)
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 10) {
                     Text(route.name).font(.system(size: 13.5, weight: .semibold))
@@ -318,8 +319,8 @@ private struct AgentRow: View {
                     .fixedSize(horizontal: false, vertical: true)
                 Text(configuration).font(.system(size: 11, design: .monospaced)).foregroundStyle(Palette.quaternary)
                     .textSelection(.enabled)
-                if route.waitingForEvent, let prompt = model.verificationPrompts[route.provider] {
-                    VerificationPrompt(provider: route.provider, prompt: prompt)
+                if route.waitingForEvent {
+                    DeliveryCheckSteps(model: model, route: route).padding(.top, 8)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -346,29 +347,7 @@ struct AnyButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View { make(configuration) }
 }
 
-private struct VerificationPrompt: View {
-    let provider: AgentProvider
-    let prompt: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(provider == .codex
-                 ? "Open Codex with this profile, enter /hooks, review the \(AppIdentity.name) helper, trust it, then send this prompt:"
-                 : "Open a fresh Claude Code session with this profile and send this prompt:")
-                .font(.system(size: 12)).foregroundStyle(Palette.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            Text(prompt).font(.system(size: 11.5, design: .monospaced)).textSelection(.enabled)
-                .padding(.horizontal, 10).padding(.vertical, 8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Palette.well, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                .accessibilityIdentifier("settings.\(provider.rawValue).verification-prompt")
-            Text("The prompt contains no credential.").font(.system(size: 11.5)).foregroundStyle(Palette.tertiary)
-        }
-        .padding(.top, 4)
-    }
-}
-
-private struct ConfigureAgentSheet: View {
+struct ConfigureAgentSheet: View {
     let model: AppModel
     let provider: AgentProvider
     @State private var draft: AgentProfileDraft

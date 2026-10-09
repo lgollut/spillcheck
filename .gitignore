@@ -4,3 +4,4 @@ __pycache__/
 *.pyc
 .swiftpm/
 **/xcuserdata/
+node_modules/

@@ -1,0 +1,148 @@
+name: Release PR and tag
+
+on:
+  workflow_call:
+    inputs:
+      tested-sha:
+        description: The main commit whose required CI checks succeeded
+        required: true
+        type: string
+    secrets:
+      CHANGESETS_APP_PRIVATE_KEY:
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  update-release-pr:
+    name: Maintain release PR
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && inputs.tested-sha == github.sha
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # Only the latest pending update matters. The tag job has its own lifetime.
+    concurrency:
+      group: changeset-release-main
+      cancel-in-progress: false
+    steps:
+      - name: Create release App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.CHANGESETS_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CHANGESETS_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Check release App identity
+        env:
+          EXPECTED_SLUG: ${{ vars.CHANGESETS_APP_SLUG }}
+          TOKEN_SLUG: ${{ steps.app-token.outputs.app-slug }}
+        run: |
+          if [[ -z "$EXPECTED_SLUG" || "$TOKEN_SLUG" != "$EXPECTED_SLUG" ]]; then
+            echo '::error::The installation token must belong to CHANGESETS_APP_SLUG.'
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tested-sha }}
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install release tooling
+        run: npm ci
+      - name: Check that the tested commit is still main
+        id: freshness
+        env:
+          TESTED_SHA: ${{ inputs.tested-sha }}
+        run: |
+          git fetch origin +refs/heads/main:refs/remotes/origin/main
+          if [[ "$(git rev-parse origin/main)" == "$TESTED_SHA" ]]; then
+            echo 'current=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'current=false' >> "$GITHUB_OUTPUT"
+            echo 'A newer main commit will maintain the release PR after its CI succeeds.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Create or update the accumulated release PR
+        if: steps.freshness.outputs.current == 'true'
+        id: changesets
+        uses: changesets/action@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          version-script: npm run version:release
+          pr-title: Release Spillcheck
+          commit-message: Release Spillcheck
+          pr-base-branch: main
+          create-github-releases: false
+          push-git-tags: false
+      - name: Describe the app release flow
+        if: steps.changesets.outputs.pr-number != ''
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_PR_NUMBER: ${{ steps.changesets.outputs.pr-number }}
+        run: |
+          body_path="$RUNNER_TEMP/spillcheck-release-pr-body.md"
+          export RELEASE_PR_BODY_PATH="$body_path"
+          gh pr view "$RELEASE_PR_NUMBER" --json body --jq .body > "$body_path"
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          const file = process.env.RELEASE_PR_BODY_PATH;
+          const body = readFileSync(file, 'utf8');
+          const heading = body.indexOf('# Releases\n');
+          if (heading < 0) throw new Error('Changesets PR body is missing its release notes heading.');
+          const explanation = 'Merge this PR when its version and changelog are ready. Successful main CI will tag that commit and publish a GitHub Release with the changelog. Releases currently contain notes only, with no app assets.\n\nNew merges into main refresh this PR. The version and app build number are generated; submit corrections on a feature branch.\n\n';
+          writeFileSync(file, explanation + body.slice(heading));
+          NODE
+          gh pr edit "$RELEASE_PR_NUMBER" --body-file "$body_path"
+
+  tag-release:
+    name: Tag tested release merge
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && inputs.tested-sha == github.sha
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Create release App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.CHANGESETS_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CHANGESETS_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Check release App identity
+        env:
+          EXPECTED_SLUG: ${{ vars.CHANGESETS_APP_SLUG }}
+          TOKEN_SLUG: ${{ steps.app-token.outputs.app-slug }}
+        run: |
+          if [[ -z "$EXPECTED_SLUG" || "$TOKEN_SLUG" != "$EXPECTED_SLUG" ]]; then
+            echo '::error::The installation token must belong to CHANGESETS_APP_SLUG.'
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tested-sha }}
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install release tooling
+        run: npm ci
+      - name: Validate release metadata
+        run: npm run release:check
+      - name: Tag this exact tested release commit
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          CI_READ_TOKEN: ${{ github.token }}
+          CHANGESETS_APP_SLUG: ${{ vars.CHANGESETS_APP_SLUG }}
+        run: node scripts/github-release.mjs tag

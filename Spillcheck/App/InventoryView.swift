@@ -14,7 +14,7 @@ struct InventoryView: View {
             Rectangle().fill(Palette.separator).frame(width: 1)
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color.white)
+                .background(Palette.background)
         }
         .overlay(alignment: .top) {
             if let message = model.storageMessage {
@@ -39,8 +39,8 @@ struct InventoryView: View {
         .animation(.easeOut(duration: 0.16), value: model.toast)
         .ignoresSafeArea()
         .frame(minWidth: 900, minHeight: 560)
-        .environment(\.colorScheme, .light)
-        .tint(Palette.accent)
+        .tint(Palette.link)
+        .focusVisible()
         .accessibilityIdentifier("inventory.window")
     }
 
@@ -128,7 +128,7 @@ private struct SidebarView: View {
             }
             .padding(.horizontal, 10)
             .frame(height: 30)
-            .background(Color.black.opacity(0.05), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .background(Palette.shade.opacity(0.05), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
 
             Menu {
                 Picker("Agent", selection: $model.agentFilter) {
@@ -139,14 +139,16 @@ private struct SidebarView: View {
             } label: {
                 Image(systemName: model.agentFilter == nil ? "line.3.horizontal.decrease" : "line.3.horizontal.decrease.circle.fill")
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(model.agentFilter == nil ? Palette.secondary : Color(oklch: 0.45, 0.13, 255))
+                    .foregroundStyle(model.agentFilter == nil ? Palette.secondary : Color(oklch: 0.42, 0.06, 152, dark: 0.8))
                     .frame(width: 30, height: 30)
-                    .background(model.agentFilter == nil ? Color.clear : Color(oklch: 0.93, 0.035, 255),
+                    .background(model.agentFilter == nil ? Color.clear : Color(oklch: 0.94, 0.022, 150, dark: 0.32),
                                 in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .contentShape(Rectangle())
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
+            // Borderless menus draw their label in the tint, not its foreground style.
+            .tint(model.agentFilter == nil ? Palette.secondary : Color(oklch: 0.42, 0.06, 152, dark: 0.8))
             .fixedSize()
             .help("Filter: \(model.agentFilter?.displayName ?? "All agents")")
             .accessibilityLabel("Filter by agent")
@@ -163,12 +165,13 @@ private struct SidebarView: View {
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(model.sortOrder == .confidence ? Palette.ink : Palette.secondary)
                     .frame(width: 30, height: 30)
-                    .background(model.sortOrder == .confidence ? Color.black.opacity(0.08) : .clear,
+                    .background(model.sortOrder == .confidence ? Palette.shade.opacity(0.08) : .clear,
                                 in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .contentShape(Rectangle())
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
+            .tint(model.sortOrder == .confidence ? Palette.ink : Palette.secondary)
             .fixedSize()
             .help(model.sortOrder == .confidence ? "Sorted by confidence" : "Sorted by latest")
             .accessibilityLabel("Sort values")
@@ -197,7 +200,7 @@ private struct SidebarView: View {
                             }
                             .font(.system(size: 12)).foregroundStyle(Palette.secondary)
                             .padding(12).frame(maxWidth: .infinity, alignment: .leading)
-                            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color(hex: 0xd6d6d2), style: StrokeStyle(lineWidth: 1.5, dash: [4, 3])))
+                            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color(hex: 0xd3d9d6, dark: 0x404341), style: StrokeStyle(lineWidth: 1.5, dash: [4, 3])))
                             .padding(.horizontal, 2)
                         }
                         if !groups.notSecrets.isEmpty {
@@ -255,7 +258,7 @@ private struct SidebarView: View {
             .padding(.horizontal, 10)
             .frame(height: 32)
             .contentShape(Rectangle())
-            .hoverFill(hover: Color.black.opacity(0.04), radius: 8)
+            .hoverFill(hover: Palette.shade.opacity(0.04), radius: 8)
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 2)
@@ -278,7 +281,7 @@ private struct SidebarView: View {
                 .padding(.horizontal, 10)
                 .frame(height: 28)
                 .contentShape(Rectangle())
-                .hoverFill(model.route == .coverage ? Color.black.opacity(0.08) : .clear, hover: Color.black.opacity(0.06))
+                .hoverFill(model.route == .coverage ? Palette.shade.opacity(0.08) : .clear, hover: Palette.shade.opacity(0.06))
             }
             .buttonStyle(.plain)
             .accessibilityLabel("\(model.coverageStateText). Open coverage details.")
@@ -290,7 +293,7 @@ private struct SidebarView: View {
                     .foregroundStyle(Palette.secondary)
                     .frame(width: 28, height: 28)
                     .contentShape(Rectangle())
-                    .hoverFill(hover: Color.black.opacity(0.06))
+                    .hoverFill(hover: Palette.shade.opacity(0.06))
             }
             .buttonStyle(.plain)
             .help("Settings")
@@ -302,7 +305,7 @@ private struct SidebarView: View {
                 Button { model.maskNow() } label: {
                     Label("Hide values", systemImage: "lock.open.fill")
                         .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Palette.onAccent)
                         .padding(.horizontal, 11)
                         .frame(height: 28)
                         .background(Palette.accent, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
@@ -405,14 +408,12 @@ private struct ActiveValueRow: View {
                 }
                 Spacer(minLength: 0)
                 SignalBars(strong: summary.strong)
-                    .frame(maxHeight: .infinity, alignment: .top)
-                    .padding(.top, 3)
                     .help(summary.strong ? "Strong match" : "Ambiguous match")
             }
             .foregroundStyle(Palette.ink)
             .padding(10)
             .contentShape(Rectangle())
-            .hoverFill(selected ? Palette.selection : .clear, hover: selected ? Palette.selection : Color.black.opacity(0.04), radius: 10)
+            .hoverFill(selected ? Palette.selection : .clear, hover: selected ? Palette.selection : Palette.shade.opacity(0.04), radius: 10)
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
@@ -443,7 +444,7 @@ private struct CompactValueRow: View {
             .padding(.horizontal, 10)
             .frame(height: 34)
             .contentShape(Rectangle())
-            .hoverFill(selected ? Palette.selection : .clear, hover: selected ? Palette.selection : Color.black.opacity(0.04), radius: 8)
+            .hoverFill(selected ? Palette.selection : .clear, hover: selected ? Palette.selection : Palette.shade.opacity(0.04), radius: 8)
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
@@ -476,12 +477,12 @@ private struct CatchUpBanner: View {
                     .chip(background: Palette.amberSoft, foreground: Palette.amberSoftText)
                 }
                 if model.notificationState == .denied {
-                    Text("Notifications off · none announced").chip(background: Color(hex: 0xf0f0ee), foreground: Palette.ink2)
+                    Text("Notifications off · none announced").chip(background: Color(hex: 0xeef1ef, dark: 0x292c2a), foreground: Palette.ink2)
                 }
                 if !model.coverageGaps.isEmpty {
                     Button { model.route = .coverage } label: {
                         HStack(spacing: 4) { Text(plural(model.coverageGaps.count, "gap")); Text("›") }
-                            .chip(background: Color(hex: 0xf0f0ee), foreground: Palette.link)
+                            .chip(background: Color(hex: 0xeef1ef, dark: 0x292c2a), foreground: Palette.link)
                     }
                     .buttonStyle(.plain)
                 }
@@ -565,7 +566,7 @@ private struct EmptyStateView: View {
                 .font(.system(size: 13)).lineSpacing(3).foregroundStyle(Palette.secondary)
                 .multilineTextAlignment(.center)
             if state.kind == .scanning {
-                ProgressView().progressViewStyle(.linear).frame(width: 240).tint(Palette.accent)
+                ProgressView().progressViewStyle(.linear).frame(width: 240).tint(Palette.green)
             }
             if let action {
                 Button(action.label, action: action.perform)
@@ -580,8 +581,8 @@ private struct EmptyStateView: View {
 
     private var glyph: some View {
         let (symbol, background, foreground): (String, Color, Color) = switch state.kind {
-        case .setup: ("exclamationmark", Color(oklch: 0.94, 0.05, 80), Palette.amberText)
-        case .scanning: ("ellipsis", Color(oklch: 0.94, 0.03, 255), Color(oklch: 0.45, 0.13, 255))
+        case .setup: ("exclamationmark", Color(oklch: 0.94, 0.05, 80, dark: 0.33), Palette.amberText)
+        case .scanning: ("ellipsis", Color(oklch: 0.94, 0.022, 150, dark: 0.32), Color(oklch: 0.42, 0.06, 152, dark: 0.8))
         case .nothingFound: ("circle", Palette.chip, Palette.ink2)
         case .noMatch: ("line.3.horizontal.decrease", Palette.chip, Palette.ink2)
         }

@@ -29,8 +29,8 @@ struct SettingsNavigation: View {
                         .padding(.horizontal, 10)
                         .frame(height: 32)
                         .contentShape(Rectangle())
-                        .hoverFill(page == item ? Color.black.opacity(0.075) : .clear,
-                                   hover: page == item ? Color.black.opacity(0.075) : Color.black.opacity(0.04))
+                        .hoverFill(page == item ? Palette.shade.opacity(0.075) : .clear,
+                                   hover: page == item ? Palette.shade.opacity(0.075) : Palette.shade.opacity(0.04))
                     }
                     .buttonStyle(.plain)
                     .accessibilityAddTraits(page == item ? [.isButton, .isSelected] : .isButton)
@@ -134,8 +134,8 @@ struct DesignSwitchStyle: ToggleStyle {
     func makeBody(configuration: Configuration) -> some View {
         Button { configuration.isOn.toggle() } label: {
             ZStack(alignment: configuration.isOn ? .trailing : .leading) {
-                Capsule().fill(configuration.isOn ? Palette.switchOn : Color(hex: 0xd6d6d3))
-                Circle().fill(.white).shadow(color: .black.opacity(0.25), radius: 1, y: 1)
+                Capsule().fill(configuration.isOn ? Palette.switchOn : Color(hex: 0xd3d9d6, dark: 0x4a4e4c))
+                Circle().fill(.white).shadow(color: Palette.shadow.opacity(0.25), radius: 1, y: 1)
                     .frame(width: 18, height: 18).padding(2)
             }
             .frame(width: 38, height: 22)
@@ -294,7 +294,7 @@ private struct AgentRow: View {
             Text(route.monogram)
                 .font(.system(size: 11, weight: .bold)).tracking(0.2).foregroundStyle(Palette.ink2)
                 .frame(width: 32, height: 32)
-                .background(Color(hex: 0xefefec), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .background(Color(hex: 0xeceeed, dark: 0x292c2a), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 10) {
@@ -329,7 +329,7 @@ private struct AgentRow: View {
             .disabled(disabled)
         }
         .padding(16)
-        .overlay(alignment: .top) { if divider { Rectangle().fill(Color(hex: 0xe6e6e3)).frame(height: 1) } }
+        .overlay(alignment: .top) { if divider { Rectangle().fill(Color(hex: 0xe3e8e5, dark: 0x2e312f)).frame(height: 1) } }
     }
 }
 
@@ -425,7 +425,7 @@ private struct ConfigureAgentSheet: View {
         }
         .padding(22)
         .frame(width: 480)
-        .environment(\.colorScheme, .light)
+        .focusVisible()
         .confirmationDialog("Remove \(AppIdentity.name) hooks?", isPresented: $confirmRemoval) {
             Button("Remove \(AppIdentity.name) hooks", role: .destructive) {
                 model.onRemoveAgent?(provider)

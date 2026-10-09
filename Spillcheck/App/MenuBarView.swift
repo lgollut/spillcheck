@@ -18,7 +18,6 @@ final class MenuBarPanel: NSPanel {
         backgroundColor = .clear
         isOpaque = false
         hasShadow = true
-        appearance = NSAppearance(named: .aqua)
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient, .ignoresCycle]
     }
 
@@ -107,15 +106,14 @@ struct MenuBarView: View {
         }
         .padding(5)
         .frame(width: 296)
-        .background(Color(hex: 0xfafaf9), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.black.opacity(0.12), lineWidth: 0.5))
+        .background(Color(hex: 0xf9fbfa, dark: 0x1f2321), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Palette.shade.opacity(0.12), lineWidth: 0.5))
         // Like a menu, the panel is pointer-driven; the first button shouldn't wear a focus ring.
         .focusEffectDisabled()
-        .environment(\.colorScheme, .light)
     }
 
     private var divider: some View {
-        Rectangle().fill(Color.black.opacity(0.08)).frame(height: 1).padding(.horizontal, 8).padding(.vertical, 4)
+        Rectangle().fill(Palette.shade.opacity(0.08)).frame(height: 1).padding(.horizontal, 8).padding(.vertical, 4)
     }
 
     private var header: some View {
@@ -162,9 +160,9 @@ struct MenuBarView: View {
             }
             .padding(10)
             .contentShape(Rectangle())
-            .hoverFill(.white, hover: Color(hex: 0xf4f4f2), radius: 8)
-            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Color.black.opacity(0.1), lineWidth: 0.5))
-            .shadow(color: .black.opacity(0.05), radius: 1, y: 1)
+            .hoverFill(Color(hex: 0xffffff, dark: 0x292c2a), hover: Color(hex: 0xf2f5f3, dark: 0x2e312f), radius: 8)
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Palette.shade.opacity(0.1), lineWidth: 0.5))
+            .shadow(color: Palette.shadow.opacity(0.05), radius: 1, y: 1)
         }
         .buttonStyle(.plain)
         .padding(.top, 2).padding(.bottom, 4)
@@ -191,8 +189,8 @@ struct MenuBarView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(10)
                     .contentShape(Rectangle())
-                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color(hex: 0xcfcfcb), style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
-                    .hoverFill(hover: Color.black.opacity(0.04), radius: 8)
+                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color(hex: 0xcdd3d0, dark: 0x404341), style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+                    .hoverFill(hover: Palette.shade.opacity(0.04), radius: 8)
                 }
                 .buttonStyle(.plain)
                 .padding(.horizontal, 4)
@@ -210,7 +208,7 @@ struct MenuBarView: View {
                     }
                     .padding(.horizontal, 8).padding(.vertical, 5)
                     .contentShape(Rectangle())
-                    .hoverFill(hover: Color.black.opacity(0.05), radius: 6)
+                    .hoverFill(hover: Palette.shade.opacity(0.05), radius: 6)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("\(route.name): \(status.text)")
@@ -243,7 +241,7 @@ private struct MenuRow: View {
             .foregroundStyle(hovering && enabled ? .white : Palette.ink.opacity(enabled ? 1 : 0.4))
             .padding(.horizontal, 8)
             .frame(height: 24)
-            .background(hovering && enabled ? Color(oklch: 0.55, 0.13, 255) : .clear, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+            .background(hovering && enabled ? Color(oklch: 0.47, 0.06, 152) : .clear, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
             .contentShape(Rectangle())
             .onHover { hovering = $0 }
         }

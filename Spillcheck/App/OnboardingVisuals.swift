@@ -14,7 +14,8 @@ enum Brand {
     static let halo = Color(oklch: 0.72, 0.14, 158, opacity: 0.25)
     static let selectedFill = Color(oklch: 0.975, 0.022, 158, dark: 0.27)
     static let selectedHover = Color(oklch: 0.96, 0.03, 158, dark: 0.3)
-    static let selectedRing = Color(oklch: 0.66, 0.14, 159, dark: 0.7)
+    /// Close to `green` so a chosen row's ring and checkbox read as one color.
+    static let selectedRing = Color(oklch: 0.8, 0.1, 158, dark: 0.55)
     static let verifiedFill = Color(oklch: 0.98, 0.02, 158, dark: 0.25)
     static let verifiedRing = Color(oklch: 0.87, 0.07, 158, dark: 0.4)
     static let calloutFill = Color(oklch: 0.97, 0.025, 158, dark: 0.26)

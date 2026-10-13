@@ -1,6 +1,8 @@
 # macOS application for auditing secrets in agentic sessions
 
-Status: consolidated product specification following the interview. Confirmed choices are distinguished from technical proposals and capabilities that require prototype validation. Updated: October 9, 2026.
+This document defines product requirements. [Architecture](ARCHITECTURE.md) describes the implementation; [beta readiness](BETA_READINESS.md) records current acceptance and remaining release gates. A requirement here is not a claim that every provider and host has passed acceptance.
+
+The [scoped early Codex beta](adr/0007-codex-beta-scope.md), accepted on October 12, 2026, has a narrower collection promise and separate entry gates. The full product requirements below remain the target for the completed version; passing that scoped beta does not establish the full provider/host matrix.
 
 ## Problem and expected outcome
 
@@ -45,7 +47,7 @@ These choices are recorded in the [local analysis](adr/0001-local-analysis.md) a
 
 ## First-version workflow
 
-The workflow implements the confirmed behaviors. Adapter mechanisms still need validation against the targeted interfaces and versions.
+The workflow implements the confirmed behaviors. Advertised adapter coverage must be validated against the targeted interfaces and versions.
 
 1. Receive session content through Codex and Claude Code adapters.
 2. Place events in a protected local queue, then return control to the agent promptly.
@@ -56,19 +58,19 @@ The workflow implements the confirmed behaviors. Adapter mechanisms still need v
 7. Present uncertain cases for review and allow them to be confirmed as secrets or marked as false positives.
 8. Record the user's acknowledgement of rotation or revocation and classify later appearances of the same value as obsolete.
 
-Analysis of the last seven days supplements event collection at first launch and during catch-up when the application reopens. The exact reading mechanism and its coverage still need validation.
+Analysis of the last seven days supplements event collection at first launch and during catch-up when the application reopens. The actual period read and analyzed must remain visible.
 
 The main window presents the inventory and its detail views. The menu bar provides access to the inventory and monitoring status.
 
 ## Collection and coverage
 
-The intended coverage includes tool outputs, user messages, and intermediate or final model responses. Adapters must state which interfaces, versions, and content types have actually been validated. Any missing type remains a visible product limitation and an issue to resolve in the prototype.
+The intended coverage includes tool outputs, user messages, and intermediate or final model responses. Adapters must state which interfaces, versions, and content types have actually been validated. Any missing type remains a visible product limitation.
 
-GUI collection is required for the completed version and remains unverified in
-the current implementation. Opening a CLI conversation in a GUI does not
-establish coverage of sessions created or running inside that GUI. The
-[compatibility plan](HARNESS_COMPATIBILITY_PLAN.md) records the implementation
-and acceptance gates for simultaneous CLI, T3, and GUI collection.
+GUI collection is required for the completed version. Opening a CLI conversation
+in a GUI does not establish coverage of sessions created or running inside that
+GUI. [Codex beta scope](CODEX_BETA.md) and [Claude beta scope](CLAUDE_BETA.md)
+record current host and content limits. [ADR 0005](adr/0005-observed-collection-compatibility.md)
+defines compatibility checks and simultaneous host support.
 
 Each event should include the originating agent, session identifier, message or tool call identifier when available, observation time, content type, and a location that allows the context to be found.
 
@@ -82,7 +84,7 @@ The documentation exposes `PostToolUse` for successful results, `PostToolUseFail
 
 The documentation exposes `PostToolUse`, `UserPromptSubmit`, and `Stop`. `Stop` provides the last assistant message when available, which is insufficient to guarantee coverage of all intermediate messages. [Codex hooks reference](https://learn.chatgpt.com/docs/hooks).
 
-The app-server protocol exposes `item/agentMessage/delta` and `item/completed`, among other events. `thread/read` can read history without resuming the thread or subscribing to its events. `thread/turns/list` offers experimental paginated reading. These capabilities do not establish that an independent application can observe all sessions already in use in the Codex app and CLI. This connection still needs validation. [App-server protocol](https://learn.chatgpt.com/docs/app-server).
+The app-server protocol exposes `item/agentMessage/delta` and `item/completed`, among other events. `thread/read` can read history without resuming the thread or subscribing to its events. `thread/turns/list` offers experimental paginated reading. These capabilities alone do not establish that an independent application can observe all sessions already in use in the Codex app and CLI. Collection claims require the host-specific acceptance described in [Codex beta scope](CODEX_BETA.md). [App-server protocol](https://learn.chatgpt.com/docs/app-server).
 
 Tool hooks do not cover every execution path. The Codex documentation distinguishes hosted tools in particular. Local transcripts are not a stable interface. The MVP must therefore not claim exhaustive coverage without measurement.
 
@@ -92,9 +94,9 @@ Total latency includes the time before the agent provides the content, time spen
 
 Replayed events must not create duplicate occurrences or alerts. A stable event identifier or a computed equivalent distinguishes a replay from an actual new appearance.
 
-Temporary data containing outputs is encrypted at rest and deleted after processing. The queue has size and age limits to establish in the prototype. Queue saturation, an unavailable source, or lost content must appear in the coverage status and must not block the agent. Hooks do not return captured content in their own diagnostic outputs.
+Temporary data containing outputs is encrypted at rest and deleted after processing. The queue must have bounded size and age. Queue saturation, an unavailable source, or lost content must appear in the coverage status and must not block the agent. Hooks do not return captured content in their own diagnostic outputs.
 
-Proposed measurement: aim for latency below two minutes for 95% of available content under a representative workload, with the corpus and volumes stated in the prototype report. Measure separately the delay introduced by the agent before making content observable. This threshold is a technical target, not an observed performance result.
+Performance target: latency below two minutes for 95% of available content under a representative workload, with the corpus and volumes stated alongside measurements. Measure separately the delay introduced by the agent before making content observable. This threshold is a technical target, not an observed performance result.
 
 ### Returning to the source conversation
 
@@ -106,23 +108,23 @@ The workflow distinguishes opening in the application, resuming in the terminal,
 
 ### Historical window
 
-The window applies to the date of the content to analyze. An old conversation that receives a recent message may therefore fall within scope. This rule is a technical proposal to validate against the available data, whose timestamps and reading mechanisms vary by agent.
+The window applies to the date of the content to analyze. An old conversation that receives a recent message may therefore fall within scope. Timestamps and reading mechanisms vary by agent; each adapter must preserve its source's time semantics.
 
-The prototype must measure the cost of finding this content without reading gigabytes of history every time the application opens. A short detection window is insufficient if selecting its content requires rereading every source. An index, pagination, or a bounded read may support this selection, depending on the adapter.
+Measure the cost of finding this content without reading gigabytes of history every time the application opens. A short detection window is insufficient if selecting its content requires rereading every source. An index, pagination, or a bounded read may support this selection, depending on the adapter.
 
-Technical proposal: retain a read checkpoint for each source and reprocess only new or modified content, with catch-up limited to seven days. An older backlog must not silently trigger a full scan. Newly captured events continue to be analyzed in the background. The workflow must clearly indicate the period actually covered.
+Retain read checkpoints and process eligible new or changed content within each reader's supported mutation contract, with catch-up limited to seven days. An older backlog must not silently trigger a full scan. Newly captured events continue to be analyzed in the background. The workflow must clearly indicate the period actually covered. [Session reader guidance](SESSION_READER_REUSE.md) defines checkpoint and replay requirements.
 
 The depth of the source audit and the retention period for secrets in the inventory are separate parameters. The historical window does not set an automatic expiration for entries already detected.
 
 ## Detection
 
-The engine uses local rules. The prototype will compare an existing scanner with the additional rules needed for conversations and tool outputs.
+The engine uses local rules. The implementation combines a pinned scanner with additional native rules for conversations and tool outputs.
 
 The confirmed categories are API keys, tokens, passwords, private keys, and credentials in connection strings. Possible signals include known formats, private key blocks, field names, and value entropy. A signal does not prove that the value is an active secret. Detection of a generic value without context remains uncertain. Choosing to cover a category does not guarantee detection of all its values.
 
 The first version analyzes session content. It does not require importing a secret catalog or reading every project configuration file.
 
-[Betterleaks](https://github.com/betterleaks/betterleaks) is the preferred prototype candidate, with a pinned stable version and reviewed rules. Compare it with [Gitleaks](https://github.com/gitleaks/gitleaks) as a baseline; [TruffleHog](https://github.com/trufflesecurity/trufflehog) is an optional comparison. The [stack proposal](adr/0003-native-macos-stack.md#scanner-choice-and-maintenance) records configuration, versioning, exact extraction, and local-only execution requirements. Service verification is disabled in the MVP.
+[Betterleaks](https://github.com/betterleaks/betterleaks) is the bundled scanner, with a pinned version and reviewed rules. The [stack decision](adr/0003-native-macos-stack.md#scanner-choice-and-maintenance) records configuration, versioning, exact extraction, and local-only execution requirements. Service verification is disabled in the MVP.
 
 ### Signals and review
 
@@ -154,7 +156,7 @@ A detail view allows the exact value to be revealed after macOS authentication a
 
 An obsolete reappearance after content deletion has no retained value or excerpt to reveal. Its detail view shows the source reference, timestamp, and obsolete label and offers source opening when available. If the source disappears, no context fallback exists for that metadata-only occurrence.
 
-Proposed unlocking behavior: a viewing session expires after five minutes of inactivity and locks when the window closes, the Mac sleeps, or the macOS session locks. An action immediately masks values. Before authentication, the value and raw excerpts stay masked. Canceled or failed authentication reveals no protected content. A dedicated copy function may be added later. It is not required for the MVP workflow.
+A viewing session expires after five minutes of inactivity and locks when the window closes, the Mac sleeps, or the macOS session locks. An action immediately masks values. Before authentication, the value and raw excerpts stay masked. Canceled or failed authentication reveals no protected content. A dedicated copy function may be added later. It is not required for the MVP workflow.
 
 Detections that could not be located must be presented as such, without inventing a value. Conversation opening methods need validation for each agent and interface. A path to a transcript file is not equivalent to a direct link in the agent's application.
 
@@ -184,9 +186,9 @@ Quitting the application stops monitoring. A hook called while monitoring is sto
 
 Launching at Mac login is a preference disabled by default. Initial setup shows which agents are detected and which are actually connected. The presence of an agent executable is insufficient to declare its monitoring active.
 
-## Prototype acceptance criteria
+## Acceptance criteria
 
-These criteria will be used to validate a future implementation. No application tests were run while writing this specification.
+These criteria define the required behavior. [Test guidance](../Tests/README.md) identifies the relevant checks; [beta readiness](BETA_READINESS.md) distinguishes completed acceptance from remaining gates.
 
 1. Using annotated fixtures, test successful tool outputs, errors, user messages, and intermediate or final responses separately. Document coverage by agent and interface.
 2. Find recent content in an old conversation, exclude content older than seven days during the historical audit, and avoid rereading everything each time the application reopens.
@@ -200,14 +202,13 @@ These criteria will be used to validate a future implementation. No application 
 10. Measure latency, memory, temporary storage, and the volume actually read from a large history. Document limits, any losses, and the period covered.
 11. Mark a value as rotated or revoked, delete its retained content, and restart. A replay adds no occurrence; a genuinely new appearance of the same value is obsolete and silent, with no newly retained value or excerpt; a different replacement value in the same conversation follows normal alerts. Explicitly forgetting the marker restores ordinary evaluation for later new appearances.
 
-## Technical issues to resolve before promising coverage
+## Validation required before expanding coverage
 
-- Passive connection to Codex sessions already in use in Desktop and the CLI, or a validated supplementary collection strategy.
-- Coverage of intermediate messages and tool execution paths that do not trigger generic hooks.
-- Availability of Claude Code events by interface and version, including error results.
-- Actual cost of selecting the last seven days, delays in writing histories, and incremental catch-up.
-- Opening conversations from an independent application, especially Claude sessions that are still active.
-- Scanner selection, rule validation, performance, and configuration without network verification.
-- Encryption mechanism, key protection, authentication, and local queue limits.
+- Genuine source content and stable identities for the provider, host and content types being added.
+- Intermediate messages and tool execution paths that do not trigger generic hooks.
+- Bounded historical discovery, delays in writing histories, and incremental catch-up.
+- Conversation-opening routes, separately from collection support.
+- Rule coverage, exact source mapping and performance with service verification disabled.
+- Signed-app persistence, authenticated viewing and recovery across interruption and restart.
 
-The next technical step is a collection and scanning prototype using test data. The expected result is a coverage and performance matrix to guide adapter selection. The interview produced the specification and decisions. No application or hook has yet been installed or implemented.
+Runtime compatibility checks and synthetic regressions do not grant acceptance to a new provider or host. Use the current provider scope documents and beta readiness gates when making support claims.

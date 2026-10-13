@@ -1,8 +1,8 @@
 # Spillcheck design brief
 
-Working reference for UI design and UX review. Updated October 8, 2026.
+Working reference for UI design and UX review.
 
-This document contains the product context needed to design Spillcheck without reading the repository. Product behavior and current limitations are established facts. Recommendations and open design questions are labeled separately so a proposed layout cannot silently become a product requirement.
+This document contains the product context needed to design Spillcheck. The [specification](SPEC.md) defines required behavior; the provider scope documents define current support. Recommendations and open design questions are labeled separately so a proposed layout cannot silently become a product requirement.
 
 ## What we are building
 
@@ -16,17 +16,17 @@ The audience is developers using coding agents on their own Mac. Familiarity wit
 
 ## Product baseline and scope
 
-The local development MVP already exists. Design iteration can reshape its presentation and interaction while preserving the behavior below. Release validation and distribution remain unfinished. The target is macOS 14 or later on Apple Silicon.
+The app implements the workflows below. Design iteration can reshape their presentation while preserving their behavior. [Beta readiness](BETA_READINESS.md) tracks release gates. The target is macOS 14 or later on Apple Silicon.
 
 - Analysis, detection, and inventory storage happen on the Mac. Spillcheck sends no session content, secrets, or detection results to an external service.
 - The scope includes API keys, tokens, passwords, private keys, and credentials in connection strings.
-- Collection targets Codex and Claude Code through T3, an app that hosts coding-agent conversations, and their standalone CLIs. Support depends on the validated interface and agent version. Desktop collection and direct conversation opening remain unverified.
+- Collection targets Codex and Claude Code through their CLIs, T3 and supported local Desktop sessions. [Codex beta scope](CODEX_BETA.md) and [Claude beta scope](CLAUDE_BETA.md) define host and content limits. Collection support does not establish direct conversation opening.
 - Collection includes user messages, intermediate and final model responses, successful tool output, and tool errors where the adapter supports them. Coverage is bounded and must be described honestly.
 - Monitoring is asynchronous. A delay of tens of seconds to a few minutes is acceptable. Spillcheck discovers appearances after content becomes available; it does not block a secret from entering an agent session.
 - Exact values and context excerpts are retained encrypted until explicitly removed. They remain available if the original conversation disappears.
 - The first version supports review and acknowledgements of rotation or revocation. The user changes credentials at the relevant service themselves.
 
-General personal-data detection, full-history scans, automatic credential changes, service-side validity checks, cloud sync, migration recovery, and additional agents are outside this version. Service-console links, remediation instructions, and a dedicated copy control are possible later additions.
+General personal-data detection, full-history scans, automatic credential changes, service-side validity checks, cloud sync, device-loss recovery, cross-Mac migration and additional agents are outside this version. Local restart and app-update persistence remain required. Service-console links, remediation instructions, and a dedicated copy control are possible later additions.
 
 ## The mental model
 
@@ -51,9 +51,9 @@ Counts must name what they count. "3 values in 12 occurrences" is meaningful. An
 
 ### Connect an agent
 
-The user discovers available agents, chooses a profile and interface, installs Spillcheck's hooks, and verifies delivery from a fresh agent session. A profile identifies the agent configuration and histories the user wants analyzed; the interface is T3 or standalone CLI. Codex's normal hook trust review remains part of setup. Existing agent configuration is preserved, and removal affects only Spillcheck's owned hooks.
+The user discovers available agents, chooses a profile and authorizes its hosts, installs Spillcheck's hooks, and verifies delivery from a fresh agent session. A profile identifies the agent configuration and histories to analyze. CLI, T3 and supported local Desktop sessions may share that profile; a shared hook alone does not identify which host originated an event. Codex's normal hook trust review remains part of setup. Existing agent configuration is preserved, and removal affects only Spillcheck's owned hooks.
 
-Setup must distinguish an executable found, hooks installed but unverified, a verified connection, and an unsupported or unavailable configuration. An unsupported agent update can invalidate a previous connection. Each incomplete state needs an explanation and the appropriate next action, such as verify, repair, or select a supported version.
+Setup must distinguish an executable found, hooks installed but unverified, a verified connection, and an unsupported or unavailable configuration. Changed provider operations or content formats can invalidate a connection; an unfamiliar release number alone does not. Each incomplete state needs an explanation and the appropriate next action, such as verify or repair. Runtime compatibility and measured coverage remain separate facts.
 
 The current settings expose executable paths, profile directories, and versions. A design opportunity is to make the normal detected configuration easy to accept while keeping manual configuration available. A newly installed app needs a useful setup state before it has any inventory data.
 
@@ -183,8 +183,8 @@ This brief synthesizes the confirmed product specification, domain vocabulary, o
 
 - [Product specification](SPEC.md) and [domain vocabulary](../CONTEXT.md).
 - [Obsolete-value retention decision](adr/0004-remember-obsolete-values.md).
-- [Validated collection scope and limitations](implementation/supported-matrix.md).
-- [Native workflow acceptance](implementation/milestone-5.md) and [release limitations](implementation/milestone-6.md).
+- [Codex collection scope](CODEX_BETA.md) and [Claude collection scope](CLAUDE_BETA.md).
+- [Current acceptance and remaining gates](BETA_READINESS.md) and [release procedure](RELEASING.md).
 - Current presentation and interactions in `Spillcheck/App/InventoryView.swift`, `InventoryDetailView.swift`, `SettingsView.swift`, and `Sources/SpillcheckCore/InventoryPresentation.swift`.
 
 Revise the relevant section when a product decision changes or a limitation is validated. Keep proposed UI choices labeled until they are accepted.

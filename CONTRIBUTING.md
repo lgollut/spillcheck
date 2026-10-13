@@ -39,6 +39,7 @@ Run the relevant checks locally before opening a PR:
 ```sh
 make scanner-dependencies
 make test
+python3 Tests/Tooling/run-python-tests.py
 npm run release:check
 npm run test:release
 ```
@@ -53,8 +54,9 @@ and socket probes have short deadlines; run that to reproduce a CI timing failur
 Tests still exercise their own concurrent tasks and races.
 
 CI does not exercise real provider sessions, production Keychain authentication,
-the GUI, notarization, or installed-app acceptance. Follow the recorded
-[release requirements](docs/implementation/release-checks.json) for that work.
+the GUI, notarization, or installed-app acceptance. Follow the
+[acceptance runbooks](Tests/AppAcceptance/README.md) and
+[release guide](docs/RELEASING.md) for that work.
 
 Merge the feature PR after review and successful checks. Automation accumulates
 pending bumps and notes in one release PR. The

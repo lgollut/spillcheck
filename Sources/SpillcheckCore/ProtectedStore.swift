@@ -2132,7 +2132,8 @@ public actor ProtectedStore {
                                           continuationQueued: Bool = false, workID: UUID? = nil,
                                           recoveryContext: CollectionWorkContext? = nil) async throws -> PreparedCoverageSettlement {
         guard now.timeIntervalSince1970.isFinite else { throw StorageError.invalidTime }
-        guard gaps.count <= 4096, recoveredReferences.count <= 4096 else { throw StorageError.stateTooLarge }
+        guard gaps.count <= CollectionBatch.maximumRecoveryEntries,
+              recoveredReferences.count <= CollectionBatch.maximumRecoveryEntries else { throw StorageError.stateTooLarge }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         var prepared = PreparedCoverageSettlement()

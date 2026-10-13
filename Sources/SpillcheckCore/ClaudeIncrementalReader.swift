@@ -67,11 +67,13 @@ extension ClaudeAdapter {
         path: String, expectedSessionID: String? = nil, interface: AgentInterface,
         checkpoint: SourceCheckpoint? = nil, observedAt: Date = Date(),
         provenance: SourceProvenance = .live, context: RetainedSourceContext? = nil,
-        maximumBytes: Int? = nil, cryptography: BackgroundCryptography
+        maximumBytes: Int? = nil, maximumRows: Int? = nil, cryptography: BackgroundCryptography
     ) async throws -> ClaudeIncrementalRead {
         try Task.checkCancellation()
         let budget = min(limits.maximumBytes, maximumBytes ?? limits.maximumBytes)
-        guard budget > 0 else { throw ClaudeCollectionError.invalidConfiguration }
+        let rowBudget = min(limits.maximumRows, maximumRows ?? limits.maximumRows,
+            CollectionBatch.maximumRecoveryEntries - Self.recoveryEntryReserve)
+        guard budget > 0, rowBudget > 0 else { throw ClaudeCollectionError.invalidConfiguration }
         let documentID = try await documentIdentity(path, cryptography: cryptography)
         let scope = CollectionScope(provider: .claudeCode, profileID: profileID, interface: interface, path: .versionedTranscript)
         func gap(_ reason: CoverageGapReason, diagnostic: CoverageDiagnosticCode? = nil) -> CoverageGap {
@@ -234,16 +236,17 @@ extension ClaudeAdapter {
             var newlineCount = 0
             for index in selected.indices.reversed() where selected[index] == 10 {
                 newlineCount += 1
-                if newlineCount > limits.maximumRows {
+                if newlineCount > rowBudget {
                     let cut = index + 1
                     start += UInt64(cut); selected = Data(selected.dropFirst(cut)); break
                 }
             }
         }
+        let page = try transcriptPage(selected, maximumRows: rowBudget)
         var imported = try await importTranscript(selected, documentID: documentID, interface: interface,
             observedAt: observedAt, provenance: provenance, cryptography: cryptography,
             expectedSessionID: expectedSessionID, context: context ?? .init(sessionIdentifier: expectedSessionID ?? "", transcriptPath: path),
-            startingByteOffset: start)
+            startingByteOffset: start, maximumRows: rowBudget, parsedPage: page)
         let consumed = imported.checkpoints.first?.byteOffset ?? 0
         // A row-limited import can leave complete rows before an unfinished tail.
         // Keep draining those rows before the unchanged-file shortcut may wait for an append.
@@ -261,17 +264,15 @@ extension ClaudeAdapter {
                 gaps.append(gap(.budgetExhausted, diagnostic: .oversizedRecord))
             }
         }
-        // A reverse page may contain more physical rows than the adapter row budget. Reparse only
-        // the accepted byte prefix on later pages; do not declare this source caught up.
+        // Only consumed rows may satisfy a later hook or advance the date watermark.
         let session = expectedSessionID ?? imported.sources.first?.record.metadata.identity.session.sessionID
         if let session {
-            let accepted = Data(selected.prefix(Int(consumed)))
-            state.toolIDs = Array(Set(state.toolIDs).union(toolResultIDs(accepted, sessionID: session))).sorted().suffix(2048).map { $0 }
-            state.promptIDs = Array(Set(state.promptIDs).union(promptIDs(accepted, sessionID: session))).sorted().suffix(2048).map { $0 }
+            state.toolIDs = Array(Set(state.toolIDs).union(toolResultIDs(page, through: Int(consumed), sessionID: session))).sorted().suffix(2048).map { $0 }
+            state.promptIDs = Array(Set(state.promptIDs).union(promptIDs(page, through: Int(consumed), sessionID: session))).sorted().suffix(2048).map { $0 }
         }
         state.hasFinalResponse = state.hasFinalResponse || imported.sources.contains { $0.record.metadata.contentType == .finalResponse }
         state.lastContentTime = ([state.lastContentTime].compactMap { $0 } + imported.sources.map(\.record.metadata.contentTime)).max()
-        let rows = claudeCompleteRowDates(Data(selected.prefix(Int(consumed))))
+        let rows = page.rowDates(through: Int(consumed))
         let dates = rows.map(\.date)
         state.maximumSeenContentTime = ([state.maximumSeenContentTime].compactMap { $0 } + dates).max()
         if case .historical(let audit) = provenance {
@@ -337,21 +338,6 @@ extension ClaudeAdapter {
         let bytes = try await cryptography.revision(canonicalBytes: Data("claude-checkpoint-v2\u{0}\(profileID)\u{0}\(physical)\u{0}\(lane)".utf8)).keyedDigest
         let b = Array(bytes.prefix(16))
         return UUID(uuid: (b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7],b[8],b[9],b[10],b[11],b[12],b[13],b[14],b[15]))
-    }
-}
-
-/// Dated complete rows with their byte offsets in `data`.
-private func claudeCompleteRowDates(_ data: Data) -> [(offset: Int, date: Date)] {
-    let fraction = ISO8601DateFormatter(); fraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    let seconds = ISO8601DateFormatter()
-    var offset = 0
-    return data.split(separator: 10, omittingEmptySubsequences: false).compactMap { line in
-        let start = offset
-        offset += line.count + 1
-        guard let row = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
-              let text = row["timestamp"] as? String,
-              let date = fraction.date(from: text) ?? seconds.date(from: text) else { return nil }
-        return (start, date)
     }
 }
 

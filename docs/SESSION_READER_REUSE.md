@@ -46,6 +46,16 @@ filter does not establish a bounded first audit. Yield at the byte/time limit,
 persist continuation state, and show the unread period as partial coverage.
 Observed timestamp endpoints do not prove continuous coverage between them.
 
+Bound row recovery evidence across the whole batch as well as bytes and time.
+The pipeline and store accept at most 4,096 recovery references per capture.
+Claude history and combined parent/child live reads must share that allowance,
+including whole-source availability proofs. Persist a checkpoint and continuation
+before reaching the limit; exceeding it rejects the batch before saving progress.
+
+A later profile audit does not clear a terminal loss from an earlier audit merely
+because it succeeds. Their windows and selected sources can differ. Keep the
+earlier loss visible until recovery has evidence for its original scope and period.
+
 ## Regression scenarios
 
 - Complete an interrupted trailing record and resume after restart without
@@ -54,6 +64,8 @@ Observed timestamp endpoints do not prove continuous coverage between them.
   and truncate/regrow sequences.
 - Bound bytes and rows per pass; read no historical payload for unchanged,
   caught-up sources.
+- Resume dense, small-row transcripts across multiple files without exceeding
+  the capture's recovery-reference allowance or skipping rows.
 - Retry failed commits and lost acknowledgements without advancing progress or
   creating new occurrences.
 - Drain oversized records, record one controlled gap, and continue with later

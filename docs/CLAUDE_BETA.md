@@ -22,6 +22,12 @@ identifies the provider/profile and configured transport. It cannot reliably
 identify the producing app or filter shared-profile sessions by originating host.
 Host-specific verification therefore needs independent host evidence.
 
+The observed `permission-mode` setup record with `permissionMode: "dontAsk"`
+contains session settings rather than conversation text. The reader recognizes
+that exact shape and rereads eligible checkpoints after a parser update to
+recover its previous format warnings. Changed records with additional payloads
+remain visible for investigation.
+
 ## Accepted limits
 
 - Desktop side questions and their replies are unsupported.

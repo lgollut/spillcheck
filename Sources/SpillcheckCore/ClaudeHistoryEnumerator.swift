@@ -98,10 +98,14 @@ extension ClaudeAdapter: SourceHistoricalCaptureProducer {
         var bytes = 0, processed = 0, inspected = 0
         var oldest: Date?, newest: Date?
         var seen = Set<String>(), next: [String] = []
+        func remainingRows() -> Int {
+            CollectionBatch.maximumRecoveryEntries - max(recoveredReferences.count, gaps.count)
+                - Self.recoveryEntryReserve
+        }
         // Deferred sources are placed after newly discovered candidates. Each source gets one
         // bounded slice per pass; a continually growing source cannot monopolize discovery.
         while processed < historyBudget.maximumSources, bytes < historyBudget.maximumBytes,
-              clock.now - started < .seconds(historyBudget.maximumDuration) {
+              clock.now - started < .seconds(historyBudget.maximumDuration), remainingRows() > 0 {
             try Task.checkCancellation()
             if request.pending.isEmpty {
                 if request.directories.isEmpty {
@@ -113,7 +117,7 @@ extension ClaudeAdapter: SourceHistoricalCaptureProducer {
                 var directory = request.directories.removeFirst()
                 do {
                     let page = try claudeDiscoverPage(directory, allowedRoots: allowedTranscriptRoots,
-                        maximumEntries: min(128, 4096 - inspected))
+                        maximumEntries: min(128, 4096 - inspected, remainingRows()))
                     inspected += page.inspected
                     request.pending += page.files
                     request.directories += page.directories
@@ -144,7 +148,7 @@ extension ClaudeAdapter: SourceHistoricalCaptureProducer {
                 let context = RetainedSourceContext(sessionIdentifier: "", transcriptPath: path, openingCapability: .unverified)
                 let read = try await readIncremental(path: path, expectedSessionID: request.selectedSessionID, interface: interface, checkpoint: checkpoint,
                     observedAt: observedAt, provenance: .historical(request.audit), context: context,
-                    maximumBytes: quantum, cryptography: cryptography)
+                    maximumBytes: quantum, maximumRows: remainingRows(), cryptography: cryptography)
                 request.restartSources?.removeAll { $0 == path }
                 bytes += read.bytesRead; sources += read.batch.sources; checkpoints += read.batch.checkpoints
                 gaps += read.batch.coverageGaps

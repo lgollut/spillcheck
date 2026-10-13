@@ -10,6 +10,20 @@ private struct SavedProfiles: Codable {
     let profiles: [AgentProfileDraft]
 }
 
+/// Freeze one actual adapter packet so byte preservation tests the wrapper itself. Separate
+/// JSONEncoder calls may order the same request's object keys differently.
+private struct FixedHistoricalCaptureProducer: HistoricalCaptureProducer {
+    let packet: CapturePacket
+    let expectedAudit: HistoricalAuditContext
+
+    func initialHistoricalCapture(audit: HistoricalAuditContext) async throws -> CapturePacket {
+        guard audit == expectedAudit else {
+            throw ProbeFailure.failed("authorized-history-wrapper-changed-requested-audit")
+        }
+        return packet
+    }
+}
+
 private func require(_ condition: Bool, _ stage: String) throws {
     guard condition else { throw ProbeFailure.failed(stage) }
 }
@@ -30,7 +44,7 @@ private func shellQuote(_ value: String) -> String {
 @MainActor
 private final class Fixture {
     let root: URL
-    let store: ProtectedStore
+    private(set) var store: ProtectedStore
     let helper: URL
     let socket: URL
     let helperMarker: URL
@@ -65,6 +79,12 @@ private final class Fixture {
     func close() async throws {
         try await store.close()
         try FileManager.default.removeItem(at: root)
+    }
+
+    func reopenStore() async throws {
+        try await store.close()
+        store = try await ProtectedStore.open(at: root.appendingPathComponent("store", isDirectory: true),
+            cryptography: cryptography)
     }
 
     func controller() -> AgentSetupController {
@@ -223,10 +243,119 @@ private func sameJSON(_ left: Data, _ right: Data) throws -> Bool {
     return a == b
 }
 
+@MainActor
+private func codexProfileHomeAssertions() async throws -> [String] {
+    try await withFixture { fixture in
+        var profile = try fixture.profile(.codex)
+        let originalHome = try CodexResumeProfile(profileID: profile.profileID,
+            homeURL: URL(fileURLWithPath: profile.homePath),
+            executableURL: URL(fileURLWithPath: profile.executablePath)).homeURL.path
+        let alias = fixture.root.appendingPathComponent("selected-profile")
+        try FileManager.default.createSymbolicLink(atPath: alias.path, withDestinationPath: originalHome)
+        profile.homePath = alias.path
+        let unrelated = try fixture.unrelatedSettings()
+        try unrelated.write(to: fixture.hooksURL(profile), options: .atomic)
+        let controller = fixture.controller()
+        try await controller.load()
+        try await controller.install(profile)
+        try await controller.verify(.codex)
+        guard let prompt = await controller.snapshot().verificationPrompts[.codex] else {
+            throw ProbeFailure.failed("canonical-home-challenge-missing")
+        }
+        let (packet, queueID) = try await fixture.durablePacket(profile: profile, prompt: prompt)
+        await controller.received(packet, durableQueueID: queueID)
+        try await controller.install(profile) // The same home through an alias is a repair.
+        guard let verified = await controller.snapshot().profiles[.codex] else {
+            throw ProbeFailure.failed("canonical-home-profile-missing")
+        }
+        try require(verified.homePath == originalHome && verified.profileID == profile.profileID
+            && verified.registrationID == profile.registrationID && verified.connectionProof?.durableQueueID == queueID,
+            "same-canonical-home-lost-identity-or-proof")
+        try require(try await fixture.savedProfiles().first == verified, "canonical-home-not-persisted")
+        try await controller.remove(.codex)
+        let oldHooks = fixture.hooksURL(verified)
+        try require(try sameJSON(Data(contentsOf: oldHooks), unrelated), "old-home-removal-changed-unowned-settings")
+        let newHome = fixture.root.appendingPathComponent("replacement-profile", isDirectory: true)
+        try FileManager.default.createDirectory(at: newHome, withIntermediateDirectories: false)
+        try FileManager.default.removeItem(at: alias)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: newHome)
+        try unrelated.write(to: newHome.appendingPathComponent("hooks.json"), options: .atomic)
+        try await controller.install(profile)
+        guard let replacement = await controller.snapshot().profiles[.codex] else {
+            throw ProbeFailure.failed("replacement-home-profile-missing")
+        }
+        let canonicalNewHome = try CodexResumeProfile(profileID: replacement.profileID,
+            homeURL: newHome, executableURL: URL(fileURLWithPath: replacement.executablePath)).homeURL.path
+        try require(replacement.homePath == canonicalNewHome && replacement.profileID != verified.profileID
+            && replacement.registrationID != verified.registrationID && replacement.connectionProof == nil,
+            "changed-home-reused-native-profile-identity")
+        let oldSession = try SessionIdentity(provider: .codex, profileID: verified.profileID, sessionID: UUID().uuidString)
+        let opening = SourceOpeningController(configuration: .init(profiles: [.codex: replacement], homeURL: fixture.root))
+        try await requireFailure("retained-finding-followed-replacement-home") {
+            _ = try opening.terminalResumePlan(session: oldSession)
+        }
+        let reloaded = fixture.controller()
+        try await reloaded.load()
+        let restored = await reloaded.snapshot()
+        try require(restored.profiles[.codex] == replacement && restored.states[.codex] == .installedUnverified,
+            "restart-lost-new-home-identity-or-invented-proof")
+        try await reloaded.remove(.codex)
+        try require(try sameJSON(Data(contentsOf: oldHooks), unrelated)
+            && sameJSON(Data(contentsOf: newHome.appendingPathComponent("hooks.json")), unrelated),
+            "replacement-home-removal-altered-unowned-settings")
+    }
+    try await withFixture { fixture in
+        let profile = try fixture.profile(.codex)
+        let controller = fixture.controller()
+        try await controller.load()
+        try await controller.install(profile)
+        try await controller.remove(.codex)
+        let before = await controller.snapshot()
+        let oldHooks = try Data(contentsOf: fixture.hooksURL(profile))
+        var changed = profile
+        let newHome = fixture.root.appendingPathComponent("uncommitted-profile", isDirectory: true)
+        try FileManager.default.createDirectory(at: newHome, withIntermediateDirectories: false)
+        changed.homePath = newHome.path
+        try await fixture.store.close()
+        try await requireFailure("failed-new-home-save-reported-success") { try await controller.install(changed) }
+        let after = await controller.snapshot()
+        try require(after.profiles == before.profiles && after.states == before.states
+            && (try Data(contentsOf: fixture.hooksURL(profile))) == oldHooks
+            && !FileManager.default.fileExists(atPath: fixture.hooksURL(changed).path),
+            "failed-new-home-save-published-identity-or-edited-hooks")
+    }
+    try await withFixture { fixture in
+        var legacy = try fixture.profile(.codex)
+        let alias = fixture.root.appendingPathComponent("legacy-profile-alias")
+        try FileManager.default.createSymbolicLink(atPath: alias.path, withDestinationPath: legacy.homePath)
+        legacy.homePath = alias.path
+        try await fixture.save([legacy], schemaVersion: 3)
+        let saved = try await fixture.store.protectedPreference(.agentProfiles)
+        let controller = fixture.controller()
+        try await controller.load()
+        let loaded = await controller.snapshot()
+        let retained = try await fixture.store.protectedPreference(.agentProfiles)
+        try require(loaded.profiles[.codex] == legacy && retained == saved,
+            "load-invented-legacy-home-or-rewrote-profile-identity")
+    }
+    return ["codex-canonical-home-repair-preserves-identity-and-changed-home-rekeys-after-removal",
+        "failed-codex-home-change-save-preserves-old-identity-and-provider-files",
+        "legacy-codex-home-load-does-not-invent-historical-binding"]
+}
+
 @main
 private struct AgentSetupProbe {
     @MainActor static func main() async {
+        var assertionGroup = "agent-setup-probe"
         do {
+            if CommandLine.arguments.contains("--owner-diagnostics-only") {
+                let checks = try vaultOwnerDiagnosticsAssertions()
+                let report: [String: Any] = ["passed": true, "checks": checks, "checkCount": checks.count,
+                    "keychainAccessed": false, "vaultOpened": false, "providerSessionsStarted": 0,
+                    "verificationEvidence": "pure-owner-failure-diagnostic-projection"]
+                print(String(decoding: try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys]), as: UTF8.self))
+                return
+            }
             var checks: [String] = []
             for t3Version in [nil, "unsupported-T3-version"] as [String?] {
                 try await withFixture { fixture in
@@ -280,7 +409,11 @@ private struct AgentSetupProbe {
                     try require(try Data(contentsOf: fixture.hooksURL(profile)) == malformed, "malformed-install-overwrote-settings")
                     let saved = try await fixture.savedProfiles()
                     try require(saved.count == 1 && saved[0].installed, "install-attempt-lost-removal-authorization")
-                    try require(saved[0].registrationID == profile.registrationID && saved[0].homePath == profile.homePath,
+                    let expectedHome = provider == .codex
+                        ? try CodexResumeProfile(profileID: profile.profileID,
+                            homeURL: URL(fileURLWithPath: profile.homePath),
+                            executableURL: URL(fileURLWithPath: profile.executablePath)).homeURL.path : profile.homePath
+                    try require(saved[0].registrationID == profile.registrationID && saved[0].homePath == expectedHome,
                         "install-attempt-lost-owned-location")
                     let reloaded = fixture.controller()
                     try await reloaded.load()
@@ -383,6 +516,8 @@ private struct AgentSetupProbe {
                             let original = fixture.controller()
                             try await original.load()
                             try await original.install(profile)
+                            let inventory = try await MigrationInventoryAssertions.seed(
+                                store: fixture.store, cryptography: fixture.cryptography, profile: profile)
                             try await original.verify(provider)
                             guard let prompt = await original.snapshot().verificationPrompts[provider] else {
                                 throw ProbeFailure.failed("legacy-migration-challenge-unavailable")
@@ -395,6 +530,7 @@ private struct AgentSetupProbe {
                             let installed = try Data(contentsOf: fixture.hooksURL(profile))
                             let queued = try await fixture.store.captureIdentitiesForTesting()
                             try await fixture.save([verified], schemaVersion: schema)
+                            try await fixture.reopenStore()
                             let migrated = fixture.controller()
                             try await migrated.load()
                             let snapshot = await migrated.snapshot()
@@ -438,8 +574,34 @@ private struct AgentSetupProbe {
                             try await requireFailure("empty-host-authorization-accepted") {
                                 try await migrated.authorizeHosts([], for: provider)
                             }
-                            try await requireFailure("desktop-host-authorization-accepted") {
+                            do {
                                 try await migrated.authorizeHosts([transport, .desktopCode], for: provider)
+                                let optedIn = await migrated.snapshot().profiles[provider]
+                                try require(optedIn?.authorizedHosts == [transport, .desktopCode]
+                                    && optedIn?.profileID == verified.profileID
+                                    && optedIn?.interface == verified.interface
+                                    && optedIn?.registrationID == verified.registrationID
+                                    && optedIn?.connectionProof == verified.connectionProof
+                                    && (try Data(contentsOf: fixture.hooksURL(profile))) == installed,
+                                    "desktop-opt-in-changed-canonical-profile-registration-proof-or-hooks")
+                                let optedInReload = fixture.controller()
+                                try await optedInReload.load()
+                                try require(await optedInReload.snapshot().profiles[provider] == optedIn,
+                                    "desktop-opt-in-restart-lost-host-authorization-or-proof")
+                                try await migrated.authorizeHosts([.standaloneCLI, .t3], for: provider)
+                                var configured = verified
+                                configured.authorizedHosts.insert(.desktopCode)
+                                try await migrated.install(configured)
+                                let configuredSnapshot = await migrated.snapshot()
+                                try require(configuredSnapshot.profiles[provider] == configured
+                                    && configuredSnapshot.states[provider] == .connected
+                                    && (try Data(contentsOf: fixture.hooksURL(profile))) == installed,
+                                    "desktop-configure-save-changed-owned-profile-proof-or-hooks")
+                                let configuredReload = fixture.controller()
+                                try await configuredReload.load()
+                                try require(await configuredReload.snapshot().profiles[provider] == configured,
+                                    "desktop-configure-save-restart-lost-authorization-or-proof")
+                                try await migrated.authorizeHosts([.standaloneCLI, .t3], for: provider)
                             }
                             var changedTransport = restored
                             changedTransport.interface = other
@@ -449,17 +611,25 @@ private struct AgentSetupProbe {
                             try require(await migrated.snapshot().profiles[provider] == verified
                                 && (try Data(contentsOf: fixture.hooksURL(profile))) == installed,
                                 "rejected-host-change-modified-owned-registration")
-                            if provider == .claudeCode {
-                                try await fixture.assertCanonicalClaudeReplay(before: verified, after: restored)
-                            }
+                            try await inventory.assertPreserved(in: fixture.store)
+                            try await inventory.replay(in: fixture.store, profile: restored,
+                                cryptography: fixture.cryptography)
+                            try await fixture.reopenStore()
                             let reloaded = fixture.controller()
                             try await reloaded.load()
                             let finalSnapshot = await reloaded.snapshot()
                             try require(finalSnapshot.profiles[provider] == verified
                                 && finalSnapshot.states[provider] == .connected,
                                 "schema3-restart-lost-proof-or-host-authorization")
+                            try await inventory.assertPreserved(in: fixture.store)
+                            try require(try await fixture.store.captureIdentitiesForTesting().pending == queued.pending,
+                                "schema3-restart-lost-pending-verification-capture")
+                            if provider == .claudeCode {
+                                try await fixture.assertCanonicalClaudeReplay(before: verified, after: restored)
+                            }
                         }
                         checks.append("\(provider.rawValue)-schema\(schema)-\(transport.rawValue)-migration-preserves-owned-proof-native-profile-and-queue")
+                        checks.append("\(provider.rawValue)-schema\(schema)-\(transport.rawValue)-migration-restart-replay-preserves-review-obsolete-marker-receipts-and-alerts")
                     }
                 }
             }
@@ -485,14 +655,102 @@ private struct AgentSetupProbe {
                 try await controller.remove(.claudeCode)
                 try require(try sameJSON(Data(contentsOf: fixture.hooksURL(legacyDesktop)), unrelated),
                     "legacy-desktop-removal-lost-owned-location")
-                var invalid = legacyDesktop
-                invalid.authorizedHosts = [.desktopCode]
+                var explicit = legacyDesktop
+                explicit.authorizedHosts = [.desktopCode]
+                try await fixture.save([explicit], schemaVersion: 3)
+                let explicitController = fixture.controller()
+                try await explicitController.load()
+                try require(await explicitController.snapshot().profiles[.claudeCode] == explicit,
+                    "explicit-claude-desktop-authorization-did-not-round-trip")
+                var invalid = explicit
+                invalid.authorizedHosts = [.standaloneCLI]
                 try await fixture.save([invalid], schemaVersion: 3)
-                try await requireFailure("persisted-desktop-authorization-decoded") {
+                try await requireFailure("persisted-desktop-missing-owned-transport-decoded") {
                     try await fixture.controller().load()
                 }
             }
-            checks.append("legacy-desktop-remains-uncollected-with-owned-removal-and-invalid-host-rejection")
+            checks.append("legacy-desktop-remains-uncollected-until-explicit-authorization-with-owned-removal")
+
+            try await withFixture { fixture in
+                var legacy = try fixture.profile(.codex, interface: .desktopCode)
+                legacy.installed = true
+                let unrelated = try fixture.unrelatedSettings()
+                var oldTransport = legacy
+                oldTransport.interface = .standaloneCLI
+                let originalHooks = try fixture.seedOwnedHooks(oldTransport, preserving: unrelated)
+                try await fixture.save([legacy], schemaVersion: 2)
+                let controller = fixture.controller()
+                try await controller.load()
+                let initial = await controller.snapshot()
+                let initiallySelected = await controller.selectedProfiles()
+                try require(initial.profiles[.codex]?.authorizedHosts.isEmpty == true
+                    && initial.profiles[.codex]?.requiresDesktopDeliveryRoute == false
+                    && initial.states[.codex] == .unsupported
+                    && initiallySelected.isEmpty
+                    && (try Data(contentsOf: fixture.hooksURL(legacy))) == originalHooks,
+                    "legacy-codex-desktop-auto-enabled-or-prevented-explicit-opt-in")
+                try await requireFailure("legacy-codex-desktop-installed-without-opt-in") {
+                    try await controller.install(legacy)
+                }
+                var optedIn = legacy
+                optedIn.authorizedHosts = [.desktopCode]
+                try await controller.install(optedIn)
+                let installed = await controller.snapshot()
+                let selected = await controller.selectedProfiles()
+                try require(installed.profiles[.codex]?.profileID == legacy.profileID
+                    && installed.profiles[.codex]?.registrationID == legacy.registrationID
+                    && installed.profiles[.codex]?.requiresDesktopDeliveryRoute == true
+                    && installed.profiles[.codex]?.authorizedHosts == [.desktopCode]
+                    && installed.states[.codex] == .installedUnverified
+                    && selected.count == 1,
+                    "explicit-codex-desktop-install-lost-ownership-or-invented-proof")
+                try await controller.verify(.codex)
+                guard let prompt = await controller.snapshot().verificationPrompts[.codex] else {
+                    throw ProbeFailure.failed("codex-desktop-delivery-verification-missing")
+                }
+                let (packet, queueID) = try await fixture.durablePacket(profile: optedIn, prompt: prompt)
+                await controller.received(packet, durableQueueID: queueID)
+                let verified = await controller.snapshot().profiles[.codex]
+                try require(await controller.snapshot().states[.codex] == .connected
+                    && verified?.connectionProof?.durableQueueID == queueID,
+                    "codex-desktop-durable-delivery-proof-rejected")
+                try await fixture.reopenStore()
+                let reloaded = fixture.controller()
+                try await reloaded.load()
+                let restarted = await reloaded.snapshot()
+                try require(restarted.profiles[.codex] == verified
+                    && restarted.states[.codex] == .connected,
+                    "codex-desktop-restart-expanded-authorization-or-lost-proof")
+                try await reloaded.remove(.codex)
+                try require(try sameJSON(Data(contentsOf: fixture.hooksURL(legacy)), unrelated),
+                    "codex-desktop-removal-damaged-unowned-hooks")
+            }
+            checks.append("legacy-codex-desktop-needs-explicit-opt-in-preserves-ownership-and-verifies-shared-delivery")
+
+            try await withFixture { fixture in
+                let profile = try fixture.profile(.codex)
+                let controller = fixture.controller()
+                try await controller.load()
+                try await controller.install(profile)
+                let previous = await controller.snapshot()
+                let hooks = try Data(contentsOf: fixture.hooksURL(profile))
+                try await fixture.store.close()
+                try await requireFailure("failed-codex-desktop-authorization-save-reported-success") {
+                    try await controller.authorizeHosts([.standaloneCLI, .t3, .desktopCode], for: .codex)
+                }
+                guard var edited = previous.profiles[.codex] else {
+                    throw ProbeFailure.failed("failed-opt-in-prior-profile-missing")
+                }
+                edited.authorizedHosts.insert(.desktopCode)
+                try await requireFailure("failed-codex-desktop-install-save-reported-success") {
+                    try await controller.install(edited)
+                }
+                let failed = await controller.snapshot()
+                try require(failed.profiles == previous.profiles && failed.states == previous.states
+                    && (try Data(contentsOf: fixture.hooksURL(profile))) == hooks,
+                    "failed-codex-desktop-authorization-save-expanded-collection-or-edited-hooks")
+            }
+            checks.append("failed-codex-desktop-opt-in-save-preserves-prior-authorization-and-provider-hooks")
 
             try await withFixture { fixture in
                 let profile = try fixture.profile(.claudeCode)
@@ -547,6 +805,7 @@ private struct AgentSetupProbe {
             try await withFixture { fixture in
                 let profile = try fixture.profile(.claudeCode)
                 let model = AppModel()
+                model.storageReady = true
                 model.agentProfiles[.claudeCode] = profile
                 model.agentSetupStates[.claudeCode] = .connected
                 let cli = CollectionScope(provider: .claudeCode, profileID: profile.profileID,
@@ -566,16 +825,41 @@ private struct AgentSetupProbe {
                 guard let route = model.routes.first(where: { $0.provider == .claudeCode }) else {
                     throw ProbeFailure.failed("scoped-host-route-unavailable")
                 }
-                try require(route.hostRoutes.count == 2 && route.assessments.count == 2 && route.collecting,
+                try require(route.hostRoutes.count == 1 && route.hostRoutes.first?.sharedProfile == true
+                    && route.assessments.count == 2 && route.collecting,
                     "scoped-host-status-lost-usable-route-or-mixed-native-profile")
-                try require(route.hostRoutes.first(where: { $0.interface == .standaloneCLI })?.status == .partial
-                    && route.hostRoutes.first(where: { $0.interface == .t3 })?.status == .compatible
-                    && route.hostRoutes.first(where: { $0.interface == .t3 })?.limitations.isEmpty == true,
-                    "required-format-failure-spread-to-unaffected-host")
+                try require(route.hostRoutes.first?.status == .partial
+                    && route.assessments.first(where: { $0.scope.interface == .t3 })?.status == .compatible
+                    && route.limitations.allSatisfy { $0.scope?.interface == .standaloneCLI },
+                    "required-format-failure-spread-to-unaffected-transport")
                 model.collectionAssessments.removeAll()
                 let unobserved = model.routes.first(where: { $0.provider == .claudeCode })!
                 try require(!unobserved.collecting && unobserved.hostRoutes.allSatisfy { !$0.collecting },
                     "shared-registration-proof-invented-host-observation")
+                try require(model.coverageSummaryText == "Registration verified · waiting for content",
+                    "verified-registration-displayed-as-unverified-before-live-observation")
+
+                let identity = try SourceIdentity(session: SessionIdentity(provider: .claudeCode,
+                    profileID: profile.profileID, sessionID: "coverage-summary-fixture"), itemID: "prompt")
+                let source = try SourceRecord(metadata: SourceRecordMetadata(identity: identity,
+                    contentType: .userPrompt, contentTime: .now, observedAt: .now,
+                    origin: SourceOrigin(adapterID: "coverage-summary", adapterVersion: "1",
+                        agentVersion: "synthetic", interface: .standaloneCLI, provenance: .live,
+                        canonicalization: .sharedUpstreamIdentity)),
+                    revision: ContentRevision(keyedDigest: Data(repeating: 1, count: 32)),
+                    segments: [SourceSegment(id: "text", utf8: Data("synthetic prompt".utf8))])
+                var ledger = InventoryLedger()
+                _ = try ledger.ingest(SourceAnalysis(source: source, detectorVersion: "fixture", detections: []))
+                model.loadSnapshot(ledger.snapshot)
+                try require(!model.monitoringProven && model.coverageSummaryText.hasPrefix("1 message analyzed"),
+                    "analyzed-history-hidden-without-current-live-observation")
+                model.agentSetupStates[.claudeCode] = .installedUnverified
+                try require(model.coverageSummaryText.hasPrefix("1 message analyzed"),
+                    "historical-analysis-hidden-after-registration-needs-verification")
+                model.loadSnapshot(InventoryLedger().snapshot)
+                try require(model.coverageSummaryText == "Verify an agent to start monitoring",
+                    "unverified-empty-profile-claimed-analysis")
+                model.agentSetupStates[.claudeCode] = .connected
 
                 let selected = fixture.root.appendingPathComponent("native-session.jsonl")
                 let claudeArgs = ["--claude-profile", profile.profileID, "--claude-version", "2.1.295",
@@ -586,9 +870,26 @@ private struct AgentSetupProbe {
                     _ = try CollectionConfiguration.fromArguments(claudeArgs + ["--claude-interface", "t3",
                         "--claude-active-source", selected.path, "--claude-session", "native-session"])
                 }
-                try await requireFailure("claude-runtime-authorized-desktop") {
-                    _ = try CollectionConfiguration.fromArguments(claudeArgs + ["--claude-authorized-host", "desktop-code"])
+                let claudeDesktopArgs = ["--claude-profile", profile.profileID, "--claude-version", "2.1.296",
+                    "--claude-source-root", fixture.root.path, "--claude-interface", "desktop-code",
+                    "--claude-active-source", selected.path, "--claude-session", "native-session"]
+                try await requireFailure("claude-runtime-default-auto-authorized-desktop") {
+                    _ = try CollectionConfiguration.fromArguments(claudeDesktopArgs)
                 }
+                try await requireFailure("claude-runtime-history-only-default-auto-authorized-desktop") {
+                    _ = try CollectionConfiguration.fromArguments(Array(claudeDesktopArgs.prefix(8)))
+                }
+                let claudeDesktop = try CollectionConfiguration.fromArguments(claudeDesktopArgs
+                    + ["--claude-authorized-host", "desktop-code"])
+                try require(claudeDesktop?.authorizedHosts == [.desktopCode]
+                    && claudeDesktop?.activeSources.first?.interface == .desktopCode
+                    && claudeDesktop?.historicalInterface == .desktopCode,
+                    "claude-runtime-explicit-desktop-lost-selected-source-or-history-route")
+                let claudeSharedDesktop = try CollectionConfiguration.fromArguments(claudeDesktopArgs
+                    + ["--claude-authorized-host", "desktop-code", "--claude-authorized-host", "standalone-cli"])
+                try require(claudeSharedDesktop?.authorizedHosts == [.standaloneCLI, .desktopCode]
+                    && claudeSharedDesktop?.historicalInterface == .standaloneCLI,
+                    "claude-runtime-desktop-retagged-shared-profile-history")
                 let codexArgs = ["--codex-profile", profile.profileID, "--codex-version", "0.161.0",
                     "--codex-home", fixture.root.path, "--codex-executable", profile.executablePath,
                     "--codex-authorized-host", "t3", "--codex-interface", "t3"]
@@ -599,11 +900,29 @@ private struct AgentSetupProbe {
                     unauthorized[unauthorized.count - 1] = "standalone-cli"
                     _ = try CodexCollectionConfiguration.fromArguments(unauthorized)
                 }
+                let desktopArgs = ["--codex-profile", profile.profileID, "--codex-version", "0.162.1",
+                    "--codex-home", fixture.root.path, "--codex-executable", profile.executablePath,
+                    "--codex-interface", "desktop-code"]
+                try await requireFailure("codex-runtime-default-auto-authorized-desktop") {
+                    _ = try CodexCollectionConfiguration.fromArguments(desktopArgs)
+                }
+                let explicitDesktop = desktopArgs + ["--codex-authorized-host", "desktop-code"]
+                let desktop = try CodexCollectionConfiguration.fromArguments(explicitDesktop
+                    + ["--codex-active-thread", "fake-native-main"])
+                try require(desktop?.authorizedHosts == [.desktopCode] && desktop?.interface == .desktopCode
+                    && desktop?.authority == .publicNativeItems && desktop?.t3Version == nil
+                    && desktop?.activeSources.first?.threadID == "fake-native-main",
+                    "codex-runtime-explicit-desktop-selection-lost-native-authority")
+                try await requireFailure("codex-runtime-desktop-selected-transcript-authority") {
+                    _ = try CodexCollectionConfiguration.fromArguments(explicitDesktop
+                        + ["--codex-authority", CodexCollectionAuthority.nativeRolloutTranscript.rawValue])
+                }
                 let adapter = try ClaudeAdapter(profileID: profile.profileID, agentVersion: "2.1.295", allowedTranscriptRoots: [])
                 let audit = try HistoricalAuditContext(reason: .firstLaunch, endingAt: .now)
                 let originalHistory = try await adapter.initialHistoricalCapture(audit: audit)
-                for interface in [AgentInterface.standaloneCLI, .t3] {
-                    let wrapper = AuthorizedHistoricalCaptureProducer(producer: adapter, provider: .claudeCode,
+                let fixedProducer = FixedHistoricalCaptureProducer(packet: originalHistory, expectedAudit: audit)
+                for interface in [AgentInterface.standaloneCLI, .t3, .desktopCode] {
+                    let wrapper = AuthorizedHistoricalCaptureProducer(producer: fixedProducer, provider: .claudeCode,
                         profileID: profile.profileID, interface: interface)
                     let history = try await wrapper.initialHistoricalCapture(audit: audit)
                     try require(history.metadata.interface == interface && history.eventJSON == originalHistory.eventJSON
@@ -617,6 +936,23 @@ private struct AgentSetupProbe {
                 }
             }
             checks.append("authorized-host-runtime-selection-and-scoped-status-do-not-infer-host-connection")
+            checks += try await codexProfileHomeAssertions()
+            checks += try await sourceOpeningAssertions()
+            checks += try startupDiagnosticsAssertions()
+            checks += try vaultOwnerDiagnosticsAssertions()
+            checks += try coveragePresentationAssertions()
+            checks += try await coverageRestartAssertions()
+            checks += try collectionAssessmentAssertions()
+            checks += try storageCapacityAssertions()
+            checks += try await schemaOneWithoutConnectionProofAssertions()
+            assertionGroup = "inventory-state-acceptance-assertions"
+            checks += try await inventoryStateAcceptanceAssertions()
+            checks += try await webResultAcceptanceAssertions()
+            checks += try await nativeContentAcceptanceAssertions()
+            assertionGroup = "review-acceptance-assertions"
+            checks += try reviewAcceptanceAssertions()
+            assertionGroup = "desktop-beta-acceptance-assertions"
+            checks += try desktopBetaAcceptanceAssertions()
 
             let report: [String: Any] = ["passed": true, "checks": checks, "checkCount": checks.count,
                 "systemAuthentication": "not-exercised-ephemeral-testing-keys", "providerSessionsStarted": 0,
@@ -626,7 +962,19 @@ private struct AgentSetupProbe {
         } catch {
             let stage: String
             if case ProbeFailure.failed(let name) = error { stage = name }
-            else { stage = "agent-setup-probe" }
+            else if case MigrationInventoryAssertionFailure.failed(let name) = error { stage = name }
+            else if case InventoryStateAssertionFailure.failed(let name) = error { stage = name }
+            else if let failure = error as? InventoryStateAcceptance.Failure {
+                stage = "inventory-state-helper-" + failure.rawValue
+            }
+            else if case StartupDiagnosticAssertionFailure.failed(let name) = error { stage = name }
+            else if case VaultOwnerDiagnosticAssertionFailure.failed(let name) = error { stage = name }
+            else if case StorageCapacityAssertionFailure.failed(let name) = error { stage = name }
+            else if case SourceOpeningAssertionFailure.failed(let name) = error { stage = name }
+            else if case ReviewAssertionFailure.failed(let name) = error { stage = name }
+            else if case NativeAssertionFailure.failed(let name) = error { stage = name }
+            else if case DesktopBetaAssertionFailure.failed(let name) = error { stage = name }
+            else { stage = assertionGroup }
             let report: [String: Any] = ["passed": false, "failure": stage]
             if let bytes = try? JSONSerialization.data(withJSONObject: report, options: [.sortedKeys]) {
                 print(String(decoding: bytes, as: UTF8.self))

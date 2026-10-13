@@ -6,7 +6,16 @@ private let githubValue = "ghp_8nR4vY2qL7sD9mF3xK6cP1aB5hJ0uE4wT9zS"
 private let googleValue = "AIzaSy8vR4qN7dP2mL9xF3kT6sB1cH5jE0uW4zY"
 private let queueMarker = "SPILLCHECK_RESOURCE_QUEUE_SYNTHETIC_1D1D5880"
 private let historySession = "resource-history-synthetic-session"
-private enum ProbeFailure: Error { case configuration, networkNotBlocked, fixture, pipeline, assertion, files }
+private enum ProbeFailure: Error {
+    case configuration, networkNotBlocked, fixture, pipeline, assertion, files
+    case historyAssertion(HistoryAssertion)
+}
+private enum HistoryAssertion: String {
+    case coldOccurrenceCount, cutoffIncluded, coldContentWindow, oldValueExcluded, coldByteBudget, coldWindowCompletion
+    case warmBytes, warmOccurrences, warmWindowCompletion
+    case appendOccurrenceCount, replacementValue, appendByteBudget, appendWindowCompletion
+    case reportedPeriodBounds
+}
 
 private struct Corpus: Decodable {
     let synthetic: Bool
@@ -106,7 +115,10 @@ private struct ResourceAcceptance {
             emit(result)
         } catch {
             let label: String
-            if let controlled = error as? ProbeFailure { label = String(describing: controlled) }
+            if let controlled = error as? ProbeFailure {
+                if case .historyAssertion(let assertion) = controlled { label = "history.\(assertion.rawValue)" }
+                else { label = String(describing: controlled) }
+            }
             else if let controlled = error as? StorageError { label = "storage.\(controlled)" }
             else if let controlled = error as? ContractError { label = "contract.\(controlled)" }
             else if let controlled = error as? CaptureTransportError { label = "transport.\(controlled)" }
@@ -501,15 +513,19 @@ private struct ResourceAcceptance {
         let coldSnapshot = await store.snapshot()
         let historical = coldSnapshot.occurrences.values.filter { $0.source.identity.session.profileID == adapter.profileID }
         let oldFingerprint = try await cryptography.fingerprint(exactBytes: Data(googleValue.utf8))
-        guard historical.count == 9, historical.contains(where: { $0.source.contentTime == cutoff }),
-              historical.allSatisfy({ coldAudit.includes(contentTime: $0.source.contentTime) }),
-              coldSnapshot.records[oldFingerprint] == nil,
-              cold.1.reduce(0, { $0 + $1.bytesRead }) <= 100 * 1024 * 1024,
-              cold.1.contains(where: { $0.hasUnreadContent }) else { throw ProbeFailure.assertion }
+        guard historical.count == 9 else { throw ProbeFailure.historyAssertion(.coldOccurrenceCount) }
+        guard historical.contains(where: { $0.source.contentTime == cutoff }) else { throw ProbeFailure.historyAssertion(.cutoffIncluded) }
+        guard historical.allSatisfy({ coldAudit.includes(contentTime: $0.source.contentTime) }) else { throw ProbeFailure.historyAssertion(.coldContentWindow) }
+        guard coldSnapshot.records[oldFingerprint] == nil else { throw ProbeFailure.historyAssertion(.oldValueExcluded) }
+        guard cold.1.reduce(0, { $0 + $1.bytesRead }) <= 100 * 1024 * 1024 else { throw ProbeFailure.historyAssertion(.coldByteBudget) }
+        // This fixture's monotonic old prefix is before the audit cutoff. It is excluded from
+        // the selected window; it must not leave that window permanently marked unread.
+        guard cold.1.last?.hasUnreadContent == false else { throw ProbeFailure.historyAssertion(.coldWindowCompletion) }
         let warmAudit = try HistoricalAuditContext(reason: .restart, endingAt: base.addingTimeInterval(1))
         let warm = try await pass(warmAudit)
-        guard warm.1.reduce(0, { $0 + $1.bytesRead }) == 0,
-              await store.snapshot().occurrences.count == coldSnapshot.occurrences.count else { throw ProbeFailure.assertion }
+        guard warm.1.reduce(0, { $0 + $1.bytesRead }) == 0 else { throw ProbeFailure.historyAssertion(.warmBytes) }
+        guard await store.snapshot().occurrences.count == coldSnapshot.occurrences.count else { throw ProbeFailure.historyAssertion(.warmOccurrences) }
+        guard warm.1.last?.hasUnreadContent == false else { throw ProbeFailure.historyAssertion(.warmWindowCompletion) }
         let appendTime = Date().addingTimeInterval(-1)
         let append = try historyRow(id: "append-unicode", date: appendTime,
             text: "Résumé 🔐 é 秘密 \(githubValue)")
@@ -521,9 +537,10 @@ private struct ResourceAcceptance {
         let changed = try await pass(changedAudit)
         let changedBytes = changed.1.reduce(0, { $0 + $1.bytesRead })
         let final = await store.snapshot()
-        guard final.occurrences.count == coldSnapshot.occurrences.count + 2,
-              final.records[oldFingerprint] != nil, changedBytes <= append.count + 8192,
-              changed.1.contains(where: { $0.hasUnreadContent }) else { throw ProbeFailure.assertion }
+        guard final.occurrences.count == coldSnapshot.occurrences.count + 2 else { throw ProbeFailure.historyAssertion(.appendOccurrenceCount) }
+        guard final.records[oldFingerprint] != nil else { throw ProbeFailure.historyAssertion(.replacementValue) }
+        guard changedBytes <= append.count + 8192 else { throw ProbeFailure.historyAssertion(.appendByteBudget) }
+        guard changed.1.last?.hasUnreadContent == false else { throw ProbeFailure.historyAssertion(.appendWindowCompletion) }
         let appended = final.occurrences.values.filter {
             $0.source.identity.session.profileID == adapter.profileID && coldSnapshot.occurrences[$0.id] == nil
         }
@@ -536,16 +553,17 @@ private struct ResourceAcceptance {
               appended.count == 2, appendOldest == appended.map(\.source.contentTime).min(),
               appendNewest == appended.map(\.source.contentTime).max(),
               appended.allSatisfy({ changedAudit.includes(contentTime: $0.source.contentTime) }) else {
-            throw ProbeFailure.assertion
+            throw ProbeFailure.historyAssertion(.reportedPeriodBounds)
         }
         await pipeline.stop()
         return ["provider": "Claude Code versioned synthetic transcript", "agentVersion": ClaudeAdapter.validatedAgentVersion,
             "sourceLogicalBytesBeforeAppend": sourceBytes, "appendLogicalBytes": append.count,
-            "periodReporting": ["measuredDuringThisRun": true, "completeWindowCoverage": false,
+            "periodReporting": ["measuredDuringThisRun": true, "completeWindowCoverage": true,
+                "coverageClaimScope": "This generated monotonic synthetic fixture only",
                 "fixtureBaseTime": timestamp(base), "oldRepeatedPrefixTime": timestamp(old),
                 "outsideCutoffTime": timestamp(cutoff.addingTimeInterval(-1)),
                 "onCutoffTime": timestamp(cutoff), "recentRowsTime": timestamp(base.addingTimeInterval(-10)),
-                "notes": "Audit endpoints select an inclusive seven-day content-time window. Adapter bounds describe emitted sources and the newest checkpoint watermark, not all timestamps in unread bytes. Retained bounds describe only new detections in that pass. Warm reuse reads zero payload bytes; an old prefix remains unread and visibly partial."],
+                "notes": "Audit endpoints select an inclusive seven-day content-time window. Adapter bounds describe emitted sources and the newest checkpoint watermark. Retained bounds describe only new detections in that pass. Warm reuse reads zero payload bytes. The known monotonic old prefix is outside the window and is not counted as unread."],
             "cold": ["queueToInventoryMilliseconds": cold.0,
                 "sourceBytesReadIncludingBoundaryVerification": cold.1.reduce(0, { $0 + $1.bytesRead }),
                 "boundedPasses": cold.2, "retainedOccurrences": historical.count,
@@ -559,8 +577,8 @@ private struct ResourceAcceptance {
                 "boundedPasses": changed.2, "newOccurrences": 2,
                 "period": historyPeriod(audit: changedAudit, progress: changed.1, retainedTimes: appended.map(\.source.contentTime))],
             "sevenDayContentTimeCutoffPassed": true, "unchangedHistoryNotReprocessed": true,
-            "differentReplacementValueEvaluated": true, "unreadPrefixVisibleAsPartialCoverage": true,
-            "notes": "Old monotonic prefix is deliberately unread. A visible unresolved-correlation gap and partial progress remain; this is not an exhaustive historical audit or a Codex benchmark."]
+            "differentReplacementValueEvaluated": true, "outsideWindowPrefixNotCountedAsUnread": true,
+            "notes": "The generated old prefix is monotonic and outside the selected audit window. The fixture verifies all nine selected occurrences and both appended values. It does not establish arbitrary-history completeness, genuine provider collection, or Codex resource behavior."]
     }
 
     private static func timestamp(_ date: Date) -> String {
@@ -579,7 +597,8 @@ private struct ResourceAcceptance {
             "adapterNewestContentCheckpointTime": bound(progress.compactMap(\.newestContentTime).max()),
             "newRetainedOldestContentTime": bound(retainedTimes.min()),
             "newRetainedNewestContentTime": bound(retainedTimes.max()),
-            "hasUnreadContent": progress.contains(where: \.hasUnreadContent)]
+            "hasUnreadContent": progress.last?.hasUnreadContent ?? true,
+            "intermediatePassesReportedUnreadContent": progress.dropLast().contains(where: \.hasUnreadContent)]
     }
 
     private static func historyRow(id: String, date: Date, text: String,
@@ -589,10 +608,11 @@ private struct ResourceAcceptance {
         if contentType == .toolOutput || contentType == .toolError {
             blocks = [["type": "tool_result", "tool_use_id": id, "content": text, "is_error": contentType == .toolError]]
         } else { blocks = [["type": "text", "text": text]] }
-        return try JSONSerialization.data(withJSONObject: ["type": contentType == .intermediateResponse || contentType == .finalResponse
-            ? "assistant" : "user", "version": ClaudeAdapter.validatedAgentVersion, "sessionId": historySession,
+        let role = contentType == .intermediateResponse || contentType == .finalResponse ? "assistant" : "user"
+        return try JSONSerialization.data(withJSONObject: ["type": role,
+            "version": ClaudeAdapter.validatedAgentVersion, "sessionId": historySession,
             "uuid": id, "timestamp": formatter.string(from: date),
-            "message": ["content": blocks, "stop_reason": contentType == .finalResponse ? "end_turn" : "tool_use"]],
+            "message": ["role": role, "content": blocks, "stop_reason": contentType == .finalResponse ? "end_turn" : "tool_use"]],
             options: [.sortedKeys]) + Data([10])
     }
 

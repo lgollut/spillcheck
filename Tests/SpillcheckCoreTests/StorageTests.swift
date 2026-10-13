@@ -387,6 +387,32 @@ struct StorageTests {
         try await restarted.close()
     }
 
+    @Test func removingContentPurgesLinkedPrivateCollectionWork() async throws {
+        let directory = temporaryStoreDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let crypto = try BackgroundCryptography.ephemeralForTesting()
+        let store = try await ProtectedStore.open(at: directory, cryptography: crypto)
+        let now = Date(), input = try analysis()
+        let permit = try #require(await store.processingPermit())
+        let packet = try CapturePacket(metadata: .init(agent: .codex, profileID: "removal-profile"),
+            eventJSON: Data("{}".utf8))
+        let scope = CollectionScope(provider: .codex, profileID: "removal-profile",
+            interface: .standaloneCLI, path: .publicHistory)
+        let context = CollectionWorkContext(scope: scope, operation: .liveRead,
+            retry: .init(scope: scope, session: try SessionIdentity(provider: .codex,
+                profileID: "removal-profile", sessionID: "PRIVATE_REMOVAL_SESSION")))
+        let id = UUID()
+        _ = try await store.enqueue(packet.body, id: id, capturedAt: now, permit: permit, at: now, workContext: context)
+        let capture = try #require(try await store.nextPending(at: now, permit: permit))
+        _ = try await store.commit(input, payloads: sealedInventoryPayloads(for: input, using: crypto),
+            linking: capture, permit: permit, at: now)
+        #expect(try await store.collectionWork(id: id) != nil)
+        _ = try await store.removeContent(for: fingerprint())
+        #expect(try await store.collectionWork(id: id) == nil)
+        #expect(try await store.queueStatistics().count == 0)
+        try await store.close()
+    }
+
     @Test func missingOrDifferentKeysNeverCreateAnEmptyStoreOverProtectedData() async throws {
         let directory = temporaryStoreDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

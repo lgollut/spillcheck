@@ -334,11 +334,13 @@ private struct BackgroundKeychainItem {
         return bytes
     }
 
-    func removeCreatedItem() { _ = SecItemDelete(query as CFDictionary) }
-
     func removeCreatedItemVerifyingAbsence() throws {
         let status = SecItemDelete(query as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else { throw failure(status) }
+        try verifyAbsence()
+    }
+
+    func verifyAbsence() throws {
         var probe = query
         probe[kSecMatchLimit] = kSecMatchLimitOne
         probe[kSecReturnAttributes] = true
@@ -405,15 +407,29 @@ public struct ProtectionServices {
     /// The caller must commit this manifest durably before accepting any work.
     public let createdNewManifest: Bool
     private let bootstrapConfiguration: ProtectionConfiguration
+    private let bootstrapDirectory: URL?
+    private let bootstrapAttempt: ProtectionBootstrapAttempt?
 
     init(manifest: ProtectionManifest, background: BackgroundCryptography,
          viewingSession: InventoryViewingSession, createdNewManifest: Bool,
-         configuration: ProtectionConfiguration) {
+         configuration: ProtectionConfiguration, directory: URL? = nil,
+         bootstrapAttempt: ProtectionBootstrapAttempt? = nil) {
         self.manifest = manifest
         self.background = background
         self.viewingSession = viewingSession
         self.createdNewManifest = createdNewManifest
         bootstrapConfiguration = configuration
+        bootstrapDirectory = directory
+        self.bootstrapAttempt = bootstrapAttempt
+    }
+
+    /// Retires bootstrap intent only after the same manifest is durably present in the
+    /// actual protected store. The per-directory lock spans key creation and store open.
+    public func commitBootstrap() throws {
+        guard let bootstrapDirectory, let bootstrapAttempt else {
+            throw ProtectionBootstrapError.commitUnconfirmed
+        }
+        try bootstrapAttempt.commit { try ProtectedStore.probe(at: bootstrapDirectory) }
     }
 
     /// Call only after closing a disposable acceptance store. Loaded production manifests
@@ -439,6 +455,7 @@ public struct ProtectionServices {
         do { try await removeCreatedInventoryRightVerifyingAbsence(manifest.inventoryRightID) }
         catch { firstFailure = firstFailure ?? error }
         if let firstFailure { throw firstFailure }
+        try bootstrapAttempt?.retireAfterVerifiedCleanup()
         return true
     }
 }
@@ -508,70 +525,109 @@ private func removeCreatedInventoryRightVerifyingAbsence(_ identifier: String) a
 @MainActor
 public enum ProtectionBootstrap {
     public static func prepare(
+        at directory: URL,
         manifest existing: ProtectionManifest?, storeState: StoreProtectionState,
         configuration: ProtectionConfiguration
+    ) async throws -> ProtectionServices {
+        let attempt = try ProtectionBootstrapAttempt(
+            at: directory, manifest: existing, storeState: storeState, configuration: configuration,
+            probe: { try ProtectedStore.probe(at: directory) })
+        let manifest = attempt.manifest
+        let queue = BackgroundKeychainItem(component: .queue, account: manifest.queueKeyID, configuration: configuration)
+        let identity = BackgroundKeychainItem(component: .identity, account: manifest.identityKeyID, configuration: configuration)
+        do {
+            let services = try await materialize(manifest: manifest, configuration: configuration,
+                                                 creating: attempt.createsNewManifest ? attempt : nil)
+            try Task.checkCancellation()
+            return ProtectionServices(manifest: manifest, background: services.background,
+                                      viewingSession: services.viewingSession,
+                                      createdNewManifest: attempt.createsNewManifest,
+                                      configuration: configuration, directory: directory, bootstrapAttempt: attempt)
+        } catch {
+            try await attempt.rollback(cause: error as? KeyUnavailable, remove: { component in
+                switch component {
+                case .queue: try queue.removeCreatedItemVerifyingAbsence()
+                case .identity: try identity.removeCreatedItemVerifyingAbsence()
+                case .inventory: try await removeCreatedInventoryRightVerifyingAbsence(manifest.inventoryRightID)
+                }
+            }, verifyAbsent: { component in
+                switch component {
+                case .queue: try queue.verifyAbsence()
+                case .identity: try identity.verifyAbsence()
+                // A failed save has no confirmed owned right for a positive control.
+                // No generic LA failure code is treated as verified absence.
+                case .inventory: throw ProtectionBootstrapError.rollbackIncomplete
+                }
+            })
+            throw error
+        }
+    }
+
+    /// Explicitly load-only access for an already identified vault. This path cannot
+    /// create keys, reconcile a bootstrap journal, or authorize disposable cleanup.
+    public static func load(manifest: ProtectionManifest,
+                            configuration: ProtectionConfiguration) async throws -> ProtectionServices {
+        try await materialize(manifest: manifest, configuration: configuration, creating: nil)
+    }
+
+    private static func materialize(
+        manifest: ProtectionManifest, configuration: ProtectionConfiguration,
+        creating attempt: ProtectionBootstrapAttempt?
     ) async throws -> ProtectionServices {
         guard !configuration.accessGroup.isEmpty, !configuration.identifierPrefix.isEmpty else {
             throw KeyUnavailable.accessGroupUnavailable
         }
-        guard existing != nil || storeState == .empty else { throw KeyUnavailable.missingManifest }
-        let manifest = existing ?? .fresh(identifierPrefix: configuration.identifierPrefix)
         try manifest.validate(identifierPrefix: configuration.identifierPrefix)
+        try Task.checkCancellation()
         let queue = BackgroundKeychainItem(component: .queue, account: manifest.queueKeyID, configuration: configuration)
         let identity = BackgroundKeychainItem(component: .identity, account: manifest.identityKeyID, configuration: configuration)
-        var createdQueue = false
-        var createdIdentity = false
-        var createdRight = false
-        do {
-            let queueBytes: Data
-            let identityBytes: Data
-            let right: LAPersistedRight
-            if existing != nil {
-                queueBytes = try queue.load()
-                identityBytes = try identity.load()
-                do { right = try await LARightStore.shared.right(forIdentifier: manifest.inventoryRightID) }
-                catch {
-                    let code = (error as NSError).code
-                    if code == Int(errSecMissingEntitlement) { throw KeyUnavailable.accessGroupUnavailable }
-                    if code == Int(errSecItemNotFound) { throw KeyUnavailable.missingKey(.inventory) }
-                    throw KeyUnavailable.unusableKey(.inventory, code: code)
-                }
-            } else {
-                queueBytes = try queue.create()
-                createdQueue = true
-                identityBytes = try identity.create()
-                createdIdentity = true
-                do {
-                    right = try await LARightStore.shared.saveRight(
+        let queueBytes: Data
+        let identityBytes: Data
+        let right: LAPersistedRight
+        if let attempt {
+            // Lookup failures fall through to creation under the same identity, which fails
+            // closed if the item exists. No lookup status is trusted to establish absence.
+            queueBytes = try await attempt.create(.queue, existing: { try? queue.load() }) { try queue.create() }
+            identityBytes = try await attempt.create(.identity, existing: { try? identity.load() }) { try identity.create() }
+            do {
+                right = try await attempt.create(.inventory, existing: {
+                    try? await LARightStore.shared.right(forIdentifier: manifest.inventoryRightID)
+                }) {
+                    try await LARightStore.shared.saveRight(
                         LARight(requirement: .biometry(fallback: .devicePasscode)), identifier: manifest.inventoryRightID)
-                    createdRight = true
-                } catch {
-                    let code = (error as NSError).code
-                    if code == Int(errSecMissingEntitlement) { throw KeyUnavailable.accessGroupUnavailable }
-                    throw KeyUnavailable.unusableKey(.inventory, code: code)
                 }
+            } catch {
+                if error is CancellationError || error is ProtectionBootstrapError { throw error }
+                let code = (error as NSError).code
+                if code == Int(errSecMissingEntitlement) { throw KeyUnavailable.accessGroupUnavailable }
+                throw KeyUnavailable.unusableKey(.inventory, code: code)
             }
-            await right.deauthorize()
-            guard right.key.publicKey.canEncrypt(using: inventoryWrappingAlgorithm),
-                  right.key.canDecrypt(using: inventoryWrappingAlgorithm) else {
-                throw KeyUnavailable.unsupportedInventoryAlgorithm
+        } else {
+            queueBytes = try queue.load()
+            identityBytes = try identity.load()
+            do { right = try await LARightStore.shared.right(forIdentifier: manifest.inventoryRightID) }
+            catch {
+                let code = (error as NSError).code
+                if code == Int(errSecMissingEntitlement) { throw KeyUnavailable.accessGroupUnavailable }
+                if code == Int(errSecItemNotFound) { throw KeyUnavailable.missingKey(.inventory) }
+                throw KeyUnavailable.unusableKey(.inventory, code: code)
             }
-            let publicBytes: Data
-            do { publicBytes = try await right.key.publicKey.bytes }
-            catch { throw KeyUnavailable.unusableKey(.inventory, code: (error as NSError).code) }
-            let background = try BackgroundCryptography(manifest: manifest, queueKey: queueBytes,
-                                                        identityKey: identityBytes, inventoryPublicKey: publicBytes)
-            let viewing = InventoryViewingSession(manifest: manifest, privateKey: PersistedInventoryKey(right))
-            return ProtectionServices(manifest: manifest, background: background,
-                                      viewingSession: viewing, createdNewManifest: existing == nil,
-                                      configuration: configuration)
-        } catch {
-            // Only this attempt's newly-created UUIDs are eligible for rollback.
-            if createdQueue { queue.removeCreatedItem() }
-            if createdIdentity { identity.removeCreatedItem() }
-            if createdRight { try? await LARightStore.shared.removeRight(forIdentifier: manifest.inventoryRightID) }
-            throw error
         }
+        await right.deauthorize()
+        try Task.checkCancellation()
+        guard right.key.publicKey.canEncrypt(using: inventoryWrappingAlgorithm),
+              right.key.canDecrypt(using: inventoryWrappingAlgorithm) else {
+            throw KeyUnavailable.unsupportedInventoryAlgorithm
+        }
+        let publicBytes: Data
+        do { publicBytes = try await right.key.publicKey.bytes }
+        catch { throw KeyUnavailable.unusableKey(.inventory, code: (error as NSError).code) }
+        let background = try BackgroundCryptography(manifest: manifest, queueKey: queueBytes,
+                                                    identityKey: identityBytes, inventoryPublicKey: publicBytes)
+        let viewing = InventoryViewingSession(manifest: manifest, privateKey: PersistedInventoryKey(right))
+        return ProtectionServices(manifest: manifest, background: background,
+                                  viewingSession: viewing, createdNewManifest: attempt != nil,
+                                  configuration: configuration)
     }
 }
 

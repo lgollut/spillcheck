@@ -335,8 +335,7 @@ def verify(owner, observations, receipts=None):
                               "policyDefinesExternalAppAndOrdinaryChildNetworkDenial": True,
                               "ownedUnixException": "Exact canonical owned-store/capture.sock only.",
                               "bootstrapException": "Literal /usr/bin/sandbox-exec may run without the inherited sandbox, then apply the unchanged production scanner policy.",
-                              "genericBootstrapEscapeExists": True,
-                              "policyControlsReport": "docs/implementation/m6-parent-sandbox-bootstrap.json"},
+                              "genericBootstrapEscapeExists": True},
             "limits": ["This is a cooperative test-only parent policy. The bootstrap executable exception does not constrain argv and is not a secure all-descendant policy.",
                        "Local OS notification services run outside the app process; system-wide networking was not disabled.",
                        "The source transcript is synthetic. No real provider generation, T3 or Codex offline workflow ran in this check.",
@@ -353,7 +352,7 @@ def main():
     finalizer.add_argument("--owner-report", type=Path, help="Completed external owner report; omit for an explicitly incomplete preview.")
     finalizer.add_argument("--observations", type=Path, required=True)
     finalizer.add_argument("--launch-receipts", type=Path)
-    finalizer.add_argument("--output", type=Path, default=ROOT / "docs/implementation/m6-signed-restart-offline.json")
+    finalizer.add_argument("--output", type=Path, default=ROOT / ".build/acceptance/vault-owner/restart-offline.json")
     args = parser.parse_args()
     try:
         if args.command == "capture-launches":

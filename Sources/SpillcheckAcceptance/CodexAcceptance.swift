@@ -16,10 +16,15 @@ private struct CodexCommitObservation: Sendable {
     let completedAt: Date
     let historical: Bool
 }
-private actor CodexLiveEvidence {
-    var observed: [String: Set<SourceIdentity>] = [:]
+// Internal so the fake-source regression executable can exercise the same acceptance gate.
+// This evidence never changes production collection authority or synthesizes source content.
+actor CodexLiveEvidence {
+    private var observed: [String: Set<CodexTimingSource>] = [:]
+    private var markerMetadata: [CodexTimingSource: SourceRecordMetadata] = [:]
     var sessions: Set<String> = []
     var primarySessions: Set<String> = []
+    private var linkedChildSessions: Set<String> = []
+    private var verifiedSessions: Set<String> = []
     var deliveries = 0
     var producerVersions: Set<String> = []
     private var measuring = true
@@ -27,11 +32,33 @@ private actor CodexLiveEvidence {
     private var commitObservations: [CodexTimingSource: CodexCommitObservation] = [:]
     func delivery(threadID: String?) { deliveries += 1; if let threadID { sessions.insert(threadID) } }
     func selectPrimary(_ threadID: String) { primarySessions.insert(threadID) }
+    func verifyThread(_ requested: String, result: CodexThreadRead) {
+        if result.thread["id"].string == requested { verifiedSessions.insert(requested) }
+    }
+    func observeNativeLinks(parent: String, page: CodexHistoryPage) {
+        guard primarySessions.contains(parent), verifiedSessions.contains(parent) else { return }
+        for entry in page.data {
+            let item = entry["item"]
+            guard ["subAgentActivity", "collabAgentToolCall"].contains(item["type"].string ?? "") else { continue }
+            let children = [item["agentThreadId"].string].compactMap { $0 }
+                + (item["receiverThreadIds"].array ?? []).compactMap(\.string)
+            for child in children where child != parent && UUID(uuidString: child)?.uuidString.lowercased() == child {
+                linkedChildSessions.insert(child)
+            }
+        }
+    }
+    private func role(_ identity: SourceIdentity) -> String? {
+        let session = identity.session.sessionID
+        guard verifiedSessions.contains(session) else { return nil }
+        if primarySessions.contains(session) { return "parent" }
+        return linkedChildSessions.contains(session) ? "child" : nil
+    }
     func collect(_ batch: CollectionBatch, capturedAt: Date, readStartedAt: Date) {
         let expected: [(String, ContentType)] = [("PROMPT", .userPrompt), ("INTERMEDIATE", .intermediateResponse),
             ("FINAL", .finalResponse), ("SHELL_OK", .toolOutput), ("SHELL_ERROR", .toolError),
             ("MCP_OK", .toolOutput), ("MCP_ERROR", .toolError), ("CHILD_PROMPT", .userPrompt),
-            ("CHILD_FINAL", .finalResponse)]
+            ("CHILD_INTERMEDIATE", .intermediateResponse), ("CHILD_FINAL", .finalResponse),
+            ("CHILD_TOOL_OUTPUT", .toolOutput), ("CHILD_TOOL_ERROR", .toolError)]
         for source in batch.sources {
             producerVersions.insert(source.record.metadata.origin.agentVersion)
             sessions.insert(source.record.metadata.identity.session.sessionID)
@@ -43,19 +70,44 @@ private actor CodexLiveEvidence {
                     capturedAt: capturedAt, readStartedAt: readStartedAt)
             }
             for (suffix, kind) in expected where source.record.metadata.contentType == kind && text.contains("LEAKRET_M4_\(suffix)") {
-                if suffix == "CHILD_FINAL" || suffix == "CHILD_PROMPT" {
-                    guard !primarySessions.contains(source.record.metadata.identity.session.sessionID) else { continue }
-                    if suffix == "CHILD_PROMPT", !text.trimmingCharacters(in: .whitespacesAndNewlines)
-                        .hasPrefix("LEAKRET_M4_CHILD_PROMPT") { continue }
-                }
-                observed[suffix, default: []].insert(source.record.metadata.identity)
+                let expectedRole = suffix.hasPrefix("CHILD_") ? "child" : "parent"
+                guard role(source.record.metadata.identity) == expectedRole else { continue }
+                if suffix == "CHILD_PROMPT", !text.contains("LEAKRET_M4_CHILD_PROMPT \(codexLiveSecret)") { continue }
+                observed[suffix, default: []].insert(key)
+                markerMetadata[key] = source.record.metadata
             }
         }
     }
-    func committed(_ ids: Set<SourceIdentity>) -> [String: Int] {
-        observed.mapValues { $0.intersection(ids).count }.filter { $0.value > 0 }
+    private func committedSources(in snapshot: InventorySnapshot, fingerprint: ValueFingerprint) -> Set<CodexTimingSource> {
+        guard let valueID = snapshot.records[fingerprint]?.id else { return [] }
+        return Set(markerMetadata.compactMap { key, metadata in
+            let receipt = AnalysisReceipt(source: key.identity, revision: key.revision,
+                detectorVersion: BetterleaksSecretDetector.version)
+            guard snapshot.analysisReceipts.contains(receipt), snapshot.occurrences.values.contains(where: {
+                $0.valueID == valueID && $0.source.identity == key.identity
+                    && $0.source.contentTime == metadata.contentTime && $0.source.contentType == metadata.contentType
+            }) else { return nil }
+            return key
+        })
     }
-    func summary() -> [String: Int] { observed.mapValues(\.count) }
+    func committed(in snapshot: InventorySnapshot, fingerprint: ValueFingerprint) -> [String: Int] {
+        let accepted = committedSources(in: snapshot, fingerprint: fingerprint)
+        return observed.mapValues { Set($0.intersection(accepted).map(\.identity)).count }.filter { $0.value > 0 }
+    }
+    func committedByRole(in snapshot: InventorySnapshot, fingerprint: ValueFingerprint) -> [String: [String: Int]] {
+        let accepted = committedSources(in: snapshot, fingerprint: fingerprint)
+        return Dictionary(uniqueKeysWithValues: ["parent", "child"].map { name in
+            (name, observed.mapValues { Set($0.intersection(accepted).map(\.identity).filter { role($0) == name }).count }
+                .filter { $0.value > 0 })
+        })
+    }
+    func nativeSourceRoles() -> [String: Int] {
+        ["primarySessionCount": primarySessions.count,
+         "verifiedPrimarySessionCount": primarySessions.intersection(verifiedSessions).count,
+         "nativeLinkedChildSessionCount": linkedChildSessions.count,
+         "verifiedNativeLinkedChildSessionCount": linkedChildSessions.intersection(verifiedSessions).count]
+    }
+    func summary() -> [String: Int] { observed.mapValues { Set($0.map(\.identity)).count } }
     func selectedThreads() -> [String] { sessions.sorted() }
     func deliveryCount() -> Int { deliveries }
     func observedProducerVersions() -> [String] { producerVersions.sorted() }
@@ -123,6 +175,50 @@ private actor CodexLiveEvidence {
         return try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys])
     }
 }
+
+/// Observe source relationships from the passive reader's original responses. Parent tool
+/// arguments and mirrored child summaries never become normalized child content here.
+private struct CodexAuditedHistory: CodexHistoryReading {
+    let client: CodexAppServerHistoryClient
+    let evidence: CodexLiveEvidence
+    func readThread(_ id: String) async throws -> CodexThreadRead {
+        let result = try await client.readThread(id)
+        await evidence.verifyThread(id, result: result)
+        return result
+    }
+    func readThread(_ id: String, budget: CodexRPCBudget) async throws -> CodexThreadRead {
+        let result = try await client.readThread(id, budget: budget)
+        await evidence.verifyThread(id, result: result)
+        return result
+    }
+    func listThreads(cursor: String?, limit: Int, archived: Bool) async throws -> CodexHistoryPage {
+        try await client.listThreads(cursor: cursor, limit: limit, archived: archived)
+    }
+    func listThreads(cursor: String?, limit: Int, archived: Bool, budget: CodexRPCBudget) async throws -> CodexHistoryPage {
+        try await client.listThreads(cursor: cursor, limit: limit, archived: archived, budget: budget)
+    }
+    func listTurns(threadID: String, cursor: String?, limit: Int, direction: CodexHistoryDirection) async throws -> CodexHistoryPage {
+        try await client.listTurns(threadID: threadID, cursor: cursor, limit: limit, direction: direction)
+    }
+    func listTurns(threadID: String, cursor: String?, limit: Int, direction: CodexHistoryDirection,
+                   budget: CodexRPCBudget) async throws -> CodexHistoryPage {
+        try await client.listTurns(threadID: threadID, cursor: cursor, limit: limit, direction: direction, budget: budget)
+    }
+    func listItems(threadID: String, turnID: String?, cursor: String?, limit: Int,
+                   direction: CodexHistoryDirection) async throws -> CodexHistoryPage {
+        let result = try await client.listItems(threadID: threadID, turnID: turnID, cursor: cursor,
+            limit: limit, direction: direction)
+        await evidence.observeNativeLinks(parent: threadID, page: result)
+        return result
+    }
+    func listItems(threadID: String, turnID: String?, cursor: String?, limit: Int,
+                   direction: CodexHistoryDirection, budget: CodexRPCBudget) async throws -> CodexHistoryPage {
+        let result = try await client.listItems(threadID: threadID, turnID: turnID, cursor: cursor,
+            limit: limit, direction: direction, budget: budget)
+        await evidence.observeNativeLinks(parent: threadID, page: result)
+        return result
+    }
+}
 private struct CodexAuditedNormalizer: CaptureNormalizer {
     let adapter: CodexAdapter
     let evidence: CodexLiveEvidence
@@ -158,14 +254,14 @@ enum CodexAcceptance {
             codexHomeURL: URL(fileURLWithPath: home), workingDirectoryURL: clientWork, agentVersion: configuredReaderVersion))
         let interface: AgentInterface = arguments.contains("--codex-observe")
             ? (AgentInterface(rawValue: option("--interface") ?? "t3") ?? .desktopCode) : .standaloneCLI
+        let evidence = CodexLiveEvidence()
         let adapter = try CodexAdapter(profileID: "codex-live", agentVersion: configuredReaderVersion, interface: interface,
-            t3Version: observedHostVersion, history: client,
+            t3Version: observedHostVersion, history: CodexAuditedHistory(client: client, evidence: evidence),
             authorityLookup: { try await store.authority(for: $0) },
             authorityRecorder: { choice in
                 guard let permit = await store.processingPermit() else { throw StorageError.monitoringPaused }
                 try await store.selectAuthority(choice, permit: permit)
             }, checkpointLookup: { try await store.checkpoint(documentID: $0) })
-        let evidence = CodexLiveEvidence()
         let detector = BetterleaksSecretDetector(configuration: .init(executableURL: URL(fileURLWithPath: scanner),
             configurationURL: URL(fileURLWithPath: rules), workingDirectoryURL: scannerWork))
         let pipeline = DetectionPipeline(store: store, cryptography: crypto,
@@ -232,7 +328,9 @@ enum CodexAcceptance {
         await monitor.stop(); await server.stop(); await pipeline.stop()
         let beforeCatchUp = await store.snapshot()
         await evidence.finishMeasurement(beforeCatchUp, at: Date())
-        let beforeCatchUpTyped = await evidence.committed(Set(beforeCatchUp.occurrences.values.map(\.source.identity)))
+        let fingerprint = try await crypto.fingerprint(exactBytes: Data(codexLiveSecret.utf8))
+        let beforeCatchUpTyped = await evidence.committed(in: beforeCatchUp, fingerprint: fingerprint)
+        let beforeCatchUpRoles = await evidence.committedByRole(in: beforeCatchUp, fingerprint: fingerprint)
         // Restarting the passive client after monitor.stop is safe. No resume/start calls exist.
         func replay() async throws {
             for id in await evidence.selectedThreads() {
@@ -250,12 +348,15 @@ enum CodexAcceptance {
         let before = await store.snapshot()
         try await replay()
         let after = await store.snapshot(), queue = try await store.queueStatistics()
-        let fingerprint = try await crypto.fingerprint(exactBytes: Data(codexLiveSecret.utf8))
         let record = after.records[fingerprint]
         let occurrences = after.occurrences.values.filter { $0.valueID == record?.id }
-        let committed = await evidence.committed(Set(occurrences.map(\.source.identity)))
+        let committed = await evidence.committed(in: after, fingerprint: fingerprint)
         let setupState = try await setup?.check()
-        let gaps = try await store.coverageGaps()
+        let coverage = try await store.coverageReport()
+        guard !coverage.isTruncated else { throw StorageError.stateTooLarge }
+        let activeGaps = coverage.activeGapEvents.map(\.gap) + coverage.unresolvedOmissions.map(\.gap)
+        let gaps = activeGaps.filter { $0.excludedContent != true }
+        let excludedMediaCount = activeGaps.filter { $0.excludedContent == true }.count
         let clean = try filesAreClean(storeURL) && filesAreClean(scannerWork) && filesAreClean(clientWork)
         await client.close()
         try await setup?.remove()
@@ -268,14 +369,18 @@ enum CodexAcceptance {
             "hostVersion": observedHostVersion as Any? ?? NSNull(), "interface": interface.rawValue,
             "setupState": setupState?.rawValue ?? "selected-source",
             "durableDeliveries": await evidence.deliveryCount(), "typedObserved": await evidence.summary(), "typedCommitted": committed,
+            "typedCommittedByRole": await evidence.committedByRole(in: after, fingerprint: fingerprint),
+            "nativeSourceRoles": await evidence.nativeSourceRoles(),
             "syntheticValuePresent": record != nil, "valueCount": after.records.count, "occurrenceCount": occurrences.count,
             "nativeLocationsUnique": Set(occurrences.map(\.identity)).count == occurrences.count,
             "occurrencesByContentType": Dictionary(grouping: occurrences, by: { $0.source.contentType.rawValue }).mapValues(\.count),
             "sessionCount": Set(occurrences.map(\.source.identity.session)).count,
             "syntheticAlertCount": after.alertDecisions.values.filter { $0.eligibility.fingerprint == fingerprint }.count,
             "queueCount": queue.count, "gapReasons": Array(Set(gaps.map(\.reason.rawValue))).sorted(),
+            "excludedMediaCount": excludedMediaCount,
             "sourceLatency": sourceLatency, "finalCatchUpNewOccurrences": before.occurrences.count - beforeCatchUp.occurrences.count,
             "typedCommittedBeforeCatchUp": beforeCatchUpTyped,
+            "typedCommittedByRoleBeforeCatchUp": beforeCatchUpRoles,
             "replayStable": before.occurrences.count == after.occurrences.count && before.alertDecisions.count == after.alertDecisions.count,
             "ciphertextMarkerInspectionPassed": finalClean])
     }

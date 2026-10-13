@@ -3,6 +3,35 @@ import GRDB
 import Testing
 @_spi(Testing) @testable import SpillcheckCore
 
+private actor OmissionBlockingCryptography: BackgroundStoreCryptography {
+    nonisolated let manifest: ProtectionManifest
+    private let delegate: BackgroundCryptography
+    private var shouldBlock = false
+    private var gate: CheckedContinuation<Void, Never>?
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    init(_ delegate: BackgroundCryptography) { self.delegate = delegate; manifest = delegate.manifest }
+    func blockNextOmissionSeal() { shouldBlock = true }
+    func waitUntilBlocked() async {
+        if gate != nil { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+    func release() { gate?.resume(); gate = nil }
+    func sealBackground(_ plaintext: Data, binding: PayloadBinding) async throws -> ProtectedPayload {
+        if shouldBlock, (try? JSONDecoder().decode(CoverageOmission.self, from: plaintext)) != nil {
+            shouldBlock = false
+            await withCheckedContinuation { gate = $0; waiters.forEach { $0.resume() }; waiters.removeAll() }
+        }
+        return try await delegate.sealBackground(plaintext, binding: binding)
+    }
+    func openBackground(_ payload: ProtectedPayload, binding: PayloadBinding) async throws -> Data {
+        try await delegate.openBackground(payload, binding: binding)
+    }
+    func revision(canonicalBytes: Data) async throws -> ContentRevision {
+        try await delegate.revision(canonicalBytes: canonicalBytes)
+    }
+}
+
 @Suite("Durable scoped omissions and health incidents")
 struct CoverageRecoveryTests {
     private func directory() -> URL {
@@ -30,6 +59,157 @@ struct CoverageRecoveryTests {
         _ = try await store.enqueue(Data("synthetic controlled capture".utf8), capturedAt: time, permit: permit, at: time)
         let capture = try #require(try await store.nextPending(at: time, permit: permit))
         try await store.completeCapture(capture, coverageGaps: gaps, recoveredReferences: recovered, permit: permit, at: time)
+    }
+
+    private func encryptedInputGap(_ reference: CoverageRecoveryReference, excluded: Bool) -> CoverageGap {
+        .init(reason: .unsupportedContent, scope: scope(), contentType: .userPrompt, operation: .liveRead,
+            recovery: reference, isRequiredFormatFailure: !excluded,
+            diagnosticCode: excluded ? .excludedBinaryContent : .encryptedContentUnavailable,
+            excludedContent: excluded ? true : nil)
+    }
+
+    @Test func requiredEncryptedInputDominatesSameItemMediaInBothOrdersAndAcrossRestart() async throws {
+        for mediaFirst in [true, false] {
+            let directory = directory()
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let crypto = try BackgroundCryptography.ephemeralForTesting(), now = Date()
+            let position = try reference(item: "mixed-input", at: now)
+            let media = encryptedInputGap(position, excluded: true)
+            let encrypted = encryptedInputGap(position, excluded: false)
+            let store = try await ProtectedStore.open(at: directory, cryptography: crypto)
+            try await complete(store, gaps: mediaFirst ? [media, encrypted] : [encrypted, media],
+                recovered: [position], at: now)
+            let first = try #require(try await store.coverageOmissions().first)
+            #expect(first.gap.excludedContent != true && first.gap.isRequiredFormatFailure == true)
+            #expect(first.gap.diagnosticCode == .encryptedContentUnavailable && first.state == .blocked)
+            #expect(try await store.coverageOmissions().count == 1)
+            #expect(try await store.pendingNotifications().count == 1)
+            try await store.close()
+            let reopened = try await ProtectedStore.open(at: directory, cryptography: crypto)
+            // A later media-only observation cannot erase the unresolved required input.
+            try await complete(reopened, gaps: [media], at: now.addingTimeInterval(1))
+            let current = try #require(try await reopened.coverageReport().unresolvedOmissions.first)
+            #expect(current.id == first.id && current.state == .blocked)
+            #expect(current.gap.excludedContent != true && current.gap.diagnosticCode == .encryptedContentUnavailable)
+            try await complete(reopened, recovered: [reference(item: "other-input", at: now)], at: now.addingTimeInterval(2))
+            #expect(try await reopened.coverageOmissions().count == 1)
+            try await complete(reopened, recovered: [position], at: now.addingTimeInterval(3))
+            #expect(try await reopened.coverageOmissions().isEmpty)
+            try await reopened.close()
+        }
+    }
+
+    @Test func previouslyStoredMediaUpgradesToRequiredInputWithoutRenewingItsAge() async throws {
+        let directory = directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let crypto = try BackgroundCryptography.ephemeralForTesting(), now = Date()
+        let earlier = now.addingTimeInterval(-3600)
+        let oldReference = try reference(item: "mixed-input", at: earlier)
+        let newReference = try reference(item: "mixed-input", at: now, contract: "contract-v4")
+        let store = try await ProtectedStore.open(at: directory, cryptography: crypto)
+        try await complete(store, gaps: [encryptedInputGap(oldReference, excluded: true)], at: earlier)
+        let original = try #require(try await store.coverageOmissions().first)
+        #expect(original.gap.excludedContent == true)
+        try await store.close()
+        let reopened = try await ProtectedStore.open(at: directory, cryptography: crypto)
+        try await complete(reopened, gaps: [encryptedInputGap(newReference, excluded: false)], at: now)
+        let upgraded = try #require(try await reopened.coverageOmissions().first)
+        #expect(upgraded.id == original.id && upgraded.state == .blocked && upgraded.resolvedAt == nil)
+        #expect(upgraded.gap.excludedContent != true && upgraded.gap.isRequiredFormatFailure == true)
+        #expect(upgraded.gap.diagnosticCode == .encryptedContentUnavailable)
+        #expect(abs(upgraded.firstObservedAt.timeIntervalSince(earlier)) < 0.000001)
+        #expect(abs(try #require(upgraded.gap.recovery?.contentTime).timeIntervalSince(earlier)) < 0.000001)
+        #expect(upgraded.gap.recovery?.parserContract == "contract-v4")
+        #expect(try await reopened.pendingNotifications().count == 1)
+        try await reopened.close()
+        let again = try await ProtectedStore.open(at: directory, cryptography: crypto)
+        #expect(try await again.coverageReport().unresolvedOmissions.first?.gap.diagnosticCode == .encryptedContentUnavailable)
+        try await again.close()
+    }
+
+    @Test func concurrentMediaInsertRejectsStaleRequiredPreparationWithoutRenewingAge() async throws {
+        let directory = directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let crypto = OmissionBlockingCryptography(try BackgroundCryptography.ephemeralForTesting())
+        let store = try await ProtectedStore.open(at: directory, cryptography: crypto)
+        let now = Date(), earlier = now.addingTimeInterval(-3600)
+        let required = encryptedInputGap(try reference(item: "racing-input", at: now), excluded: false)
+        await crypto.blockNextOmissionSeal()
+        let pending = Task { try await store.recordCoverageGap(required, at: now) }
+        await crypto.waitUntilBlocked()
+        try await store.recordCoverageGap(encryptedInputGap(reference(item: "racing-input", at: earlier), excluded: true), at: earlier)
+        await crypto.release()
+        await #expect(throws: StorageError.stateChanged) { try await pending.value }
+        #expect(try await store.coverageGapEvents().items.count == 1)
+        #expect(try await store.healthIncidents().isEmpty)
+        try await store.recordCoverageGap(required, at: now)
+        let upgraded = try #require(try await store.coverageOmissions().first)
+        #expect(upgraded.gap.requiresAnalysis && upgraded.gap.diagnosticCode == .encryptedContentUnavailable)
+        #expect(abs(upgraded.firstObservedAt.timeIntervalSince(earlier)) < 0.000001)
+        #expect(abs(try #require(upgraded.gap.recovery?.contentTime).timeIntervalSince(earlier)) < 0.000001)
+        #expect(try await store.healthIncidents().count == 1)
+        try await store.close()
+    }
+
+    @Test func concurrentUpgradeRejectsStaleCompletionAndKeepsCheckpointAndQueue() async throws {
+        for staleIsExcluded in [true, false] {
+            let directory = directory()
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let crypto = OmissionBlockingCryptography(try BackgroundCryptography.ephemeralForTesting())
+            let store = try await ProtectedStore.open(at: directory, cryptography: crypto)
+            let now = Date(), earlier = now.addingTimeInterval(-3600)
+            let position = try reference(item: "racing-input", at: earlier)
+            try await store.recordCoverageGap(encryptedInputGap(position, excluded: true), at: earlier)
+            let permit = try #require(await store.processingPermit())
+            _ = try await store.enqueue(Data("synthetic controlled capture".utf8), capturedAt: now, permit: permit, at: now)
+            let capture = try #require(try await store.nextPending(at: now, permit: permit))
+            let checkpoint = SourceCheckpoint(capabilityID: UUID(), sourceDocumentID: UUID(),
+                revision: try ContentRevision(keyedDigest: Data(repeating: 1, count: 32)), byteOffset: 100)
+            let stale = encryptedInputGap(position, excluded: staleIsExcluded)
+            await crypto.blockNextOmissionSeal()
+            let pending = Task {
+                try await store.completeCapture(capture, checkpoints: [checkpoint], coverageGaps: [stale], permit: permit, at: now)
+            }
+            await crypto.waitUntilBlocked()
+            try await store.recordCoverageGap(encryptedInputGap(position, excluded: false), at: now)
+            await crypto.release()
+            await #expect(throws: StorageError.stateChanged) { try await pending.value }
+            #expect(try await store.queueStatistics().count == 1)
+            #expect(try await store.checkpoint(documentID: checkpoint.sourceDocumentID) == nil)
+            #expect(try await store.coverageGapEvents().items.count == 2)
+            try await store.completeCapture(capture, checkpoints: [checkpoint], coverageGaps: [stale], permit: permit, at: now)
+            let current = try #require(try await store.coverageOmissions().first)
+            #expect(current.gap.requiresAnalysis && current.gap.diagnosticCode == .encryptedContentUnavailable)
+            #expect(abs(current.firstObservedAt.timeIntervalSince(earlier)) < 0.000001)
+            #expect(try await store.queueStatistics().count == 0)
+            #expect(try await store.checkpoint(documentID: checkpoint.sourceDocumentID)?.byteOffset == 100)
+            try await store.close()
+        }
+    }
+
+    @Test func requiredUpgradePreservesConcurrentExpiryState() async throws {
+        let directory = directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let crypto = OmissionBlockingCryptography(try BackgroundCryptography.ephemeralForTesting())
+        let store = try await ProtectedStore.open(at: directory, cryptography: crypto)
+        let earlier = Date().addingTimeInterval(-8 * 24 * 60 * 60), now = Date()
+        let position = try reference(item: "expired-mixed-input", at: earlier)
+        try await store.recordCoverageGap(encryptedInputGap(position, excluded: true), at: earlier)
+        await crypto.blockNextOmissionSeal()
+        let pending = Task { try await store.recordCoverageGap(encryptedInputGap(position, excluded: false), at: now) }
+        await crypto.waitUntilBlocked()
+        #expect(try await store.expireCoverageRecovery(at: now) == 1)
+        await crypto.release()
+        try await pending.value
+        let current = try #require(try await store.coverageOmissions().first)
+        #expect(current.state == .unrecoverable && current.resolvedAt == nil)
+        #expect(current.gap.requiresAnalysis && current.gap.diagnosticCode == .encryptedContentUnavailable)
+        #expect(abs(current.firstObservedAt.timeIntervalSince(earlier)) < 0.000001)
+        #expect(try await store.expireCoverageRecovery(at: now) == 0)
+        #expect(try await store.healthIncidents().isEmpty)
+        #expect(try await store.healthIncidents(includeResolved: true).first?.resolvedAt != nil)
+        #expect(try await store.pendingNotifications().isEmpty)
+        try await store.close()
     }
 
     @Test func legacyGapRecordsDecodeWithoutPromotingFailureOrRecovery() throws {
@@ -171,6 +351,28 @@ struct CoverageRecoveryTests {
         try await store.close()
     }
 
+    @Test func lossWithoutContentTimeReopenedAfterItsAgeIsNotBornExpired() async throws {
+        let directory = directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try await ProtectedStore.open(at: directory, cryptography: try BackgroundCryptography.ephemeralForTesting())
+        let session = try SessionIdentity(provider: .codex, profileID: "private-native-profile", sessionID: "private-native-session")
+        let whole = CoverageRecoveryReference(session: session, parserContract: "contract-before")
+        func failure(_ at: Date) -> CoverageGap {
+            .init(reason: .malformedSource, scope: scope(), operation: .liveRead, recovery: whole,
+                  isRequiredFormatFailure: true, observedAt: at)
+        }
+        let now = Date(), first = now.addingTimeInterval(-10 * 24 * 60 * 60)
+        try await complete(store, gaps: [failure(first)], at: first)
+        try await complete(store, recovered: [whole], at: first.addingTimeInterval(60))
+        #expect(try await store.coverageOmissions().allSatisfy { !$0.isUnresolved })
+        try await complete(store, gaps: [failure(now)], at: now)
+        #expect(try await store.expireCoverageRecovery(at: now) == 0)
+        let reopened = try #require(try await store.coverageOmissions().first)
+        #expect(reopened.isUnresolved && abs(reopened.firstObservedAt.timeIntervalSince(now)) < 0.001)
+        #expect(try await store.healthIncidents().count == 1)
+        try await store.close()
+    }
+
     @Test func assessedOperationSettlesDespiteUnrecoverableLinkedLoss() async throws {
         let directory = directory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -246,10 +448,9 @@ struct CoverageRecoveryTests {
         #expect(try await store.queueStatistics().count == 0)
         let omissions = try await store.coverageOmissions()
         #expect(omissions.count == 2)
-        #expect(omissions.allSatisfy { $0.state == .unrecoverable && $0.gap.recovery == nil })
-        #expect(omissions.allSatisfy {
-            $0.gap.scope == CollectionScope(provider: .claudeCode, profileID: profile, interface: .t3, path: .hook)
-        })
+        #expect(omissions.allSatisfy { $0.state == .blocked && $0.gap.recovery == nil })
+        // Legacy work has no stored route authority; provider/host alone cannot invent it.
+        #expect(omissions.allSatisfy { $0.gap.scope == nil })
         #expect(Set(omissions.map { $0.gap.reason }) == [.sourceUnavailable, .queueExpired])
         for filename in [ProtectedStore.databaseFilename, ProtectedStore.databaseFilename + "-wal"] {
             let bytes = try Data(contentsOf: directory.appendingPathComponent(filename))
@@ -281,7 +482,9 @@ struct CoverageRecoveryTests {
         let liveID = try #require(incidents.first(where: { $0.operation == .liveRead })?.id)
         let messages = try await store.pendingNotifications()
         #expect(messages.count == 2)
-        #expect(messages.allSatisfy { $0.body.contains("T3") && !$0.body.contains("private-native") })
+        #expect(messages.allSatisfy {
+            $0.body.contains("Codex") && !$0.body.contains("T3") && !$0.body.contains("private-native")
+        })
         #expect(messages.contains { $0.body.contains("Live collection") })
         #expect(messages.contains { $0.body.contains("History catch-up") })
         for message in messages { try await store.recordNotificationDelivery(identifier: message.identifier, state: .delivered) }

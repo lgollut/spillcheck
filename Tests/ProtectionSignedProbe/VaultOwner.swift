@@ -144,7 +144,7 @@ private struct VaultOwner {
             guard empty.state == .empty, empty.manifest == nil else { throw OwnerFailure.changedManifest }
             stage = "creating-owned-vault"
             bootstrapAttempted = true
-            let created = try await ProtectionBootstrap.prepare(manifest: nil, storeState: .empty,
+            let created = try await ProtectionBootstrap.prepare(at: storeURL, manifest: nil, storeState: .empty,
                 configuration: ProtectionConfiguration(accessGroup: group))
             services = created
             guard created.createdNewManifest else { throw OwnerFailure.cleanup }
@@ -152,6 +152,7 @@ private struct VaultOwner {
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: root.appendingPathComponent("owner-manifest.json").path)
             let initial = try await ProtectedStore.open(at: storeURL, cryptography: created.background)
             try await initial.close()
+            try created.commitBootstrap()
             guard try ProtectedStore.probe(at: storeURL).manifest == created.manifest else { throw OwnerFailure.changedManifest }
             let original = try await created.background.fingerprint(exactBytes: Data(originalValue.utf8))
             let replacement = try await created.background.fingerprint(exactBytes: Data(replacementValue.utf8))

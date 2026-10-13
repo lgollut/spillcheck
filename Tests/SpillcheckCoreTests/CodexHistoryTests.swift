@@ -27,6 +27,79 @@ private actor CodexOversizedTailHistory: CodexHistoryReading {
 }
 @Suite("Codex bounded public history and active replay")
 struct CodexHistoryTests {
+    @Test func transientReadBudgetFailureCanFinishTheSameFrozenAuditAfterRestart() async throws {
+        let history = CodexTestHistory(), crypto = try BackgroundCryptography.ephemeralForTesting()
+        let now = Date(timeIntervalSince1970: 1_791_434_500)
+        let audit = try HistoricalAuditContext(reason: .firstLaunch, endingAt: now)
+        await history.configure("parent", thread: try codexThread(updatedAt: now.addingTimeInterval(-60).timeIntervalSince1970),
+            pages: [.init(data: [try codexItem("first")], nextCursor: "1"), .init(data: [try codexItem("last")])])
+        await history.configureFailure("items:parent", error: .responseLimitExceeded)
+        let adapter = try codexTestAdapter(history: history)
+        let first = try await adapter.normalize(adapter.packet(.init(audit: audit, threads: ["parent"])),
+            capturedAt: now, cryptography: crypto)
+        #expect(first.historicalProgress?.hasUnreadContent == true && first.continuation != nil)
+        await history.configureFailure("items:parent", error: nil)
+        let restarted = try codexTestAdapter(history: history)
+        let second = try await restarted.normalize(#require(first.continuation), capturedAt: now, cryptography: crypto)
+        let final = try await restarted.normalize(#require(second.continuation), capturedAt: now, cryptography: crypto)
+        #expect(final.continuation == nil && final.historicalProgress?.hasUnreadContent == false)
+        #expect(second.sources.map(\.record.metadata.identity.itemID) + final.sources.map(\.record.metadata.identity.itemID) == ["first", "last"])
+    }
+
+    @Test func skippedOversizedItemRemainsPartialAfterLaterPagesFinish() async throws {
+        let history = CodexTestHistory(), crypto = try BackgroundCryptography.ephemeralForTesting()
+        let now = Date(timeIntervalSince1970: 1_791_434_500), audit = try HistoricalAuditContext(reason: .firstLaunch, endingAt: Date(timeIntervalSince1970: 1_791_434_500))
+        await history.configure("parent", thread: try codexThread(), pages: [
+            .init(data: [try codexItem("oversized", body: ["text": String(repeating: "x", count: 2048), "phase": "final_answer"])], nextCursor: "1"),
+            .init(data: [try codexItem("readable")]),
+        ])
+        let adapter = try codexTestAdapter(history: history, limits: .init(maximumRowBytes: 1024))
+        let first = try await adapter.normalize(adapter.packet(.init(audit: audit, threads: ["parent"])), capturedAt: now, cryptography: crypto)
+        let final = try await adapter.normalize(#require(first.continuation), capturedAt: now, cryptography: crypto)
+        #expect(first.coverageGaps.contains { $0.reason == .budgetExhausted && $0.recovery?.itemID == "oversized" })
+        #expect(final.sources.map(\.record.metadata.identity.itemID) == ["readable"])
+        #expect(final.continuation == nil && final.historicalProgress?.hasUnreadContent == true)
+    }
+
+    @Test func parserUpgradeInvalidatesOldCompleteAuditWithoutChangingSourceIdentity() async throws {
+        let history = CodexTestHistory(), checkpoints = CodexCheckpoints(), crypto = try BackgroundCryptography.ephemeralForTesting()
+        let now = Date(timeIntervalSince1970: 1_791_434_500), thread = try codexThread(updatedAt: 1_791_434_000)
+        let entry = try codexItem("dynamic", type: "dynamicToolCall", body: ["status": "completed", "success": true,
+            "contentItems": [["type": "inputText", "text": "unchanged original output"]]])
+        await history.configure("parent", thread: thread, pages: [.init(data: [entry])])
+        let adapter = try codexTestAdapter(history: history, checkpoints: { await checkpoints.get($0) })
+        let audit = try HistoricalAuditContext(reason: .firstLaunch, endingAt: now)
+        let first = try await adapter.normalize(adapter.packet(.init(audit: audit, threads: ["parent"])), capturedAt: now, cryptography: crypto)
+        let saved = try #require(first.checkpoints.first)
+        let savedState = try #require(saved.adapterState)
+        var state = try #require(try JSONSerialization.jsonObject(with: savedState) as? [String: Any])
+        state["parserContract"] = "codex-content-contract-v2"
+        await checkpoints.save([.init(capabilityID: saved.capabilityID, sourceDocumentID: saved.sourceDocumentID,
+            revision: saved.revision, byteOffset: saved.byteOffset, lastContentTime: saved.lastContentTime,
+            adapterState: try JSONSerialization.data(withJSONObject: state))])
+        let nextAudit = try HistoricalAuditContext(reason: .restart, endingAt: now.addingTimeInterval(30))
+        let after = try await adapter.normalize(adapter.packet(.init(audit: nextAudit, threads: ["parent"])), capturedAt: now, cryptography: crypto)
+        #expect(after.sources.count == 1 && after.historicalProgress?.hasUnreadContent == false)
+        #expect(after.sources.first?.record.metadata.identity == first.sources.first?.record.metadata.identity)
+        #expect(after.sources.first?.record.revision == first.sources.first?.record.revision)
+        #expect(after.recoveredReferences.contains { $0.itemID == "dynamic" && $0.parserContract == CodexAdapter.parserContract })
+    }
+
+    @Test(arguments: ["inputImage", "unrecognizedBlock"])
+    func knownMediaExclusionCanFinishTextAuditButUnknownBlockCannot(blockKind: String) async throws {
+        let history = CodexTestHistory(), crypto = try BackgroundCryptography.ephemeralForTesting()
+        let now = Date(timeIntervalSince1970: 1_791_434_500)
+        let entry = try codexItem("dynamic", type: "dynamicToolCall", body: ["status": "completed", "success": true,
+            "contentItems": [["type": "inputText", "text": "readable"], ["type": blockKind, "imageUrl": "not text"]]])
+        await history.configure("parent", thread: try codexThread(), pages: [.init(data: [entry])])
+        let adapter = try codexTestAdapter(history: history)
+        let audit = try HistoricalAuditContext(reason: .firstLaunch, endingAt: now)
+        let batch = try await adapter.normalize(adapter.packet(.init(audit: audit, threads: ["parent"])), capturedAt: now, cryptography: crypto)
+        #expect(batch.continuation == nil && batch.coverageGaps.count == 1)
+        #expect(batch.historicalProgress?.hasUnreadContent == (blockKind != "inputImage"))
+        #expect(batch.coverageGaps.first?.excludedContent == (blockKind == "inputImage" ? true : nil))
+    }
+
     @Test func oversizedColdTailRetriesOneItemWithoutReadingItsOversizedSentinel() async throws {
         let history = CodexOversizedTailHistory(), authority = CodexTestAuthority()
         let crypto = try BackgroundCryptography.ephemeralForTesting()
@@ -57,7 +130,7 @@ struct CodexHistoryTests {
         let adapter = try codexTestAdapter(history: history)
         let batch = try await adapter.normalize(adapter.initialHistoricalCapture(audit: audit), capturedAt: now, cryptography: crypto)
         #expect(batch.sources.map(\.record.metadata.identity.itemID) == ["recent"])
-        #expect(batch.coverageGaps.contains { $0.reason == .budgetExhausted && $0.interval == DateInterval(start: audit.start, end: audit.end) })
+        #expect(batch.coverageGaps.contains { $0.reason == .budgetExhausted && $0.interval == nil && $0.observedAt == audit.end && $0.operation == .historicalRead })
         #expect(batch.historicalProgress?.oldestContentTime == now.addingTimeInterval(-1))
         #expect(!(await history.recordedCalls()).contains("items:old-created-recent-content:1"))
         #expect((await history.recordedCalls()).contains("direction:desc"))
@@ -143,7 +216,7 @@ struct CodexHistoryTests {
         let batch = try await adapter.normalize(adapter.packet(request), capturedAt: Date(), cryptography: crypto)
         #expect(batch.sources.isEmpty && batch.checkpoints.isEmpty && batch.continuation != nil)
         #expect(batch.historicalProgress?.bytesRead == 64 && batch.historicalProgress?.hasUnreadContent == true)
-        #expect(batch.coverageGaps.contains(.init(reason: .budgetExhausted)))
+        #expect(batch.coverageGaps.contains { $0.reason == .budgetExhausted && $0.scope?.path == .publicHistory && $0.operation == .historicalRead && $0.observedAt != nil })
     }
 
     @Test func exactNativeChildReferencesAreBoundedAndCyclesDoNotReopenParent() async throws {

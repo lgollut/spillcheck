@@ -16,10 +16,30 @@ public enum CoverageGapReason: String, Codable, CaseIterable, Sendable {
     case unresolvedCorrelation, sourceChanged, notificationBudgetExhausted
 }
 
+/// Allowlisted source labels. Unknown provider strings and payloads never enter diagnostics.
+public enum CoverageSourceKind: String, Codable, Sendable {
+    case codexUserMessage, codexAgentMessage, codexPlan, codexCommandExecution, codexMCPToolCall
+    case codexDynamicToolCall, codexFunctionCallOutput, codexWebSearch, codexUnknownItem
+    case codexHookEvent, codexHookPrompt
+    case claudeUserMessage, claudeAssistantMessage, claudeQueuedPrompt, claudeAttachment
+    case claudeToolResult, claudeUnknownRecord
+}
+
+public enum CoverageDiagnosticCode: String, Codable, Sendable {
+    case malformedRecord, missingPayload, invalidFieldType, unknownRecordKind, unknownBlockKind
+    case excludedBinaryContent, encryptedContentUnavailable, incompleteWrite, readBudgetExceeded, unavailableSource
+    case changedSource, missingTimestamp, unresolvedIdentity, oversizedRecord
+    case hookIdentityConflict, hookInterrupted, hookContentUnavailable, hookStorageLimit, authorityStorageLimit
+    case nativeChildInputUnavailable
+}
+
 public struct CoverageGap: Hashable, Codable, Sendable {
     public let reason: CoverageGapReason
     public let capabilityID: UUID?
     public let interval: DateInterval?
+    /// When this failure was observed. This is not the affected content's timestamp or period.
+    /// Nil on older encrypted records; unknown content periods remain unknown.
+    public let observedAt: Date?
     public let scope: CollectionScope?
     public let contentType: ContentType?
     public let operation: CollectionOperation?
@@ -27,47 +47,131 @@ public struct CoverageGap: Hashable, Codable, Sendable {
     /// Only a demonstrated required-content or operation failure qualifies for a health alert.
     /// Optional fields preserve decoding of previously encrypted gap records.
     public let isRequiredFormatFailure: Bool?
+    public let sourceKind: CoverageSourceKind?
+    public let diagnosticCode: CoverageDiagnosticCode?
+    /// A recognized binary/media payload was intentionally excluded from text analysis.
+    public let excludedContent: Bool?
 
     public init(reason: CoverageGapReason, capabilityID: UUID? = nil, interval: DateInterval? = nil,
                 scope: CollectionScope? = nil, contentType: ContentType? = nil,
                 operation: CollectionOperation? = nil,
-                recovery: CoverageRecoveryReference? = nil, isRequiredFormatFailure: Bool? = nil) {
+                recovery: CoverageRecoveryReference? = nil, isRequiredFormatFailure: Bool? = nil,
+                sourceKind: CoverageSourceKind? = nil, diagnosticCode: CoverageDiagnosticCode? = nil,
+                excludedContent: Bool? = nil, observedAt: Date? = nil) {
         self.reason = reason
         self.capabilityID = capabilityID
         self.interval = interval
+        self.observedAt = observedAt
         self.scope = scope
         self.contentType = contentType
         self.operation = operation
         self.recovery = recovery
         self.isRequiredFormatFailure = isRequiredFormatFailure
+        self.sourceKind = sourceKind
+        self.diagnosticCode = diagnosticCode
+        self.excludedContent = excludedContent
+    }
+
+    /// Intentional media exclusions do not count as missing required text analysis.
+    public var requiresAnalysis: Bool { excludedContent != true }
+
+    /// Fill only known collection context. Never manufacture a source content period from a
+    /// read attempt, nor replace more specific row/item metadata supplied by the parser.
+    public func contextualized(scope: CollectionScope, operation: CollectionOperation,
+                               observedAt: Date) -> Self {
+        .init(reason: reason, capabilityID: capabilityID, interval: interval,
+            scope: self.scope ?? scope, contentType: contentType, operation: self.operation ?? operation,
+            recovery: recovery, isRequiredFormatFailure: isRequiredFormatFailure,
+            sourceKind: sourceKind, diagnosticCode: diagnosticCode ?? reason.defaultDiagnosticCode,
+            excludedContent: excludedContent, observedAt: self.observedAt ?? observedAt)
+    }
+}
+
+extension CoverageGapReason {
+    public var defaultDiagnosticCode: CoverageDiagnosticCode? {
+        switch self {
+        case .malformedSource: .malformedRecord
+        case .missingTimestamp: .missingTimestamp
+        case .incompleteMessage: .incompleteWrite
+        case .budgetExhausted: .readBudgetExceeded
+        case .unsupportedContent: .unknownRecordKind
+        case .unresolvedCorrelation: .unresolvedIdentity
+        case .sourceUnavailable: .unavailableSource
+        case .sourceChanged: .changedSource
+        default: nil
+        }
     }
 }
 
 /// Structural selection for rereading an original source. It retains no source content.
 /// All native identifiers and coordinates are encrypted by ProtectedStore.
+public enum CoverageRecoveryConstraint: String, Codable, Sendable {
+    /// A recognized metadata item proves only that the old optional unknown-kind warning
+    /// was unnecessary. It does not prove recovery of text or scanner failures at that item.
+    case unclassifiedMetadata
+    /// Gap-only evidence that a previously unsupported user-message block is recognized
+    /// local media. It reclassifies that exact warning; it never recovers a location.
+    case recognizedLocalMedia
+    /// A bounded read verified this exact Claude source's native identity. This settles
+    /// only its earlier availability warning, never content, scanner or delivery losses.
+    case claudeSourceAvailability
+}
+
 public struct CoverageRecoveryReference: Hashable, Codable, Sendable {
     public let session: SessionIdentity?
     public let locator: SourceLocator
     public let itemID: String?
+    /// Whole-source availability, separate from an omitted row/item inside that source.
+    public let sourceDocumentID: UUID?
     public let contentTime: Date?
+    /// Exact original selection for an authorized retry. Encrypted with the reference, never a
+    /// display label or a request to search the provider's other sources.
+    public let sourceURL: URL?
     public let parserContract: String
+    public let constraint: CoverageRecoveryConstraint?
+    /// Availability observation boundary, separate from native content time. An older
+    /// queued read cannot settle a newer observation that the source is unavailable.
+    public let availabilityObservedAt: Date?
 
     public init(session: SessionIdentity? = nil, locator: SourceLocator = .unavailable,
-                itemID: String? = nil, contentTime: Date? = nil, parserContract: String) {
+                itemID: String? = nil, contentTime: Date? = nil, parserContract: String,
+                sourceDocumentID: UUID? = nil, sourceURL: URL? = nil,
+                constraint: CoverageRecoveryConstraint? = nil, availabilityObservedAt: Date? = nil) {
         self.session = session
         self.locator = locator
         self.itemID = itemID
+        self.sourceDocumentID = sourceDocumentID
         self.contentTime = contentTime
+        self.sourceURL = sourceURL
         self.parserContract = parserContract
+        self.constraint = constraint
+        self.availabilityObservedAt = availabilityObservedAt
+    }
+
+    /// The file selected for a retry. Row locators already carry the document identity; keeping
+    /// it computed preserves the existing encrypted row-recovery keys and whole-source semantics.
+    public var retrySourceDocumentID: UUID? {
+        if let sourceDocumentID { return sourceDocumentID }
+        switch locator {
+        case .transcript(let documentID, _), .transcriptByteOffset(let documentID, _): return documentID
+        case .upstreamItem, .unavailable: return nil
+        }
     }
 
     /// A complete successful reparse of this exact item/record is required. A readable sibling
     /// or a changed parser version alone never establishes recovery.
     public func identifiesSameLocation(as other: Self) -> Bool {
-        guard locator == other.locator, itemID == other.itemID else { return false }
+        guard locator == other.locator, itemID == other.itemID, sourceDocumentID == other.sourceDocumentID else { return false }
         switch locator {
         case .transcript, .transcriptByteOffset: return true
-        case .upstreamItem, .unavailable: return session == other.session
+        case .upstreamItem: return session == other.session
+        case .unavailable:
+            // Without a document identity, an explicit file selection must not match another
+            // file belonging to the same native conversation.
+            if sourceDocumentID == nil, sourceURL != nil || other.sourceURL != nil {
+                return session == other.session && sourceURL == other.sourceURL
+            }
+            return session == other.session
         }
     }
 }

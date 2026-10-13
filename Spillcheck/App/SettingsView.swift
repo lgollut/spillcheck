@@ -238,12 +238,16 @@ private struct AgentSettings: View {
                     .accessibilityIdentifier("settings.guided-setup")
             }
             .padding(.horizontal, 2)
-            Text("An owned registration can serve CLI and T3 in the same authorized home. Its verification does not identify the producer host; each host's observed collection and acceptance evidence are shown separately. GUI collection is still awaiting its required gates.")
+            Text("An owned registration can serve CLI and T3 in the same authorized home. Codex collection is shown for that shared profile because its events do not identify the current app or CLI. Partial Codex desktop support can be enabled in Configure. Registration verification and host-specific acceptance are separate. Claude desktop collection remains unavailable.")
                 .font(.system(size: 12)).foregroundStyle(Palette.tertiary).padding(.horizontal, 2)
+            Text("Codex beta limits: automatic side-chat collection, encrypted instructions sent to subagents, and general hook-injected context are not covered. Readable subagent replies and tool results can still be analyzed. Missing content remains visible in Coverage.")
+                .font(.system(size: 12)).foregroundStyle(Palette.tertiary).padding(.horizontal, 2)
+                .accessibilityIdentifier("settings.codex-beta-limits")
             ForEach(model.routes) { route in
                 ForEach(route.hostRoutes) { host in
                     Text("\(route.provider.displayName) \(host.name): \(host.summary)")
                         .font(.system(size: 12)).foregroundStyle(Palette.tertiary).padding(.horizontal, 2)
+                        .help(host.acceptanceSummary)
                 }
             }
         }
@@ -382,12 +386,28 @@ struct ConfigureAgentSheet: View {
                     .accessibilityIdentifier("settings.\(provider.rawValue).home")
                 TextField("Last observed version", text: $draft.version)
                     .accessibilityIdentifier("settings.\(provider.rawValue).version")
-                Text("Authorized collection hosts: \(draft.collectionInterfaces.map(\.hostLabel).joined(separator: " and ")). They share this home and owned registration. Shared hook events may not identify their producer host. GUI collection is awaiting its required acceptance gates.")
+                Text("Authorized collection routes: \(draft.collectionInterfaces.map(\.hostLabel).joined(separator: " and ")). They share this profile and registration. Sessions cannot be filtered reliably by the app or CLI that produced them.")
                     .font(.system(size: 12)).foregroundStyle(Palette.secondary)
+                Toggle("Enable desktop support (partial)", isOn: Binding(
+                    get: { draft.authorizedHosts.contains(.desktopCode) },
+                    set: { enabled in
+                        if enabled { draft.authorizedHosts.insert(.desktopCode) }
+                        else { draft.authorizedHosts.remove(.desktopCode) }
+                    }))
+                    .disabled(model.agentProfiles[provider]?.requiresDesktopDeliveryRoute == true)
+                    .accessibilityIdentifier("settings.\(provider.rawValue).desktop-partial")
+                Text(provider == .claudeCode
+                    ? "Reads saved local Desktop Code conversations and readable native children in this profile. Desktop side questions are unsupported. Chat, Cowork and remote Code are not included. Full Desktop acceptance remains unverified."
+                    : "Reads saved local desktop conversations in this profile. Automatic side-chat collection and encrypted subagent input remain unavailable. This does not establish full desktop acceptance.")
+                    .font(.system(size: 12)).foregroundStyle(Palette.secondary)
+                if model.agentProfiles[provider]?.requiresDesktopDeliveryRoute == true {
+                    Text("Remove this registration's hooks before changing its configured transport.")
+                        .font(.system(size: 12)).foregroundStyle(Palette.secondary)
+                }
             }
             .formStyle(.grouped)
             .scrollDisabled(true)
-            .frame(height: 196)
+            .frame(height: 350)
             if let message = model.agentSetupMessages[provider] {
                 Text(message).font(.system(size: 12)).foregroundStyle(Palette.secondary).fixedSize(horizontal: false, vertical: true)
             }
@@ -408,7 +428,8 @@ struct ConfigureAgentSheet: View {
                 }
                 .buttonStyle(FilledButtonStyle(height: 26))
                 .keyboardShortcut(.defaultAction)
-                .disabled(!draft.isComplete || !model.storageReady || model.isDemo)
+                .disabled(!draft.isComplete || !draft.hasValidHostAuthorization || draft.authorizedHosts.isEmpty
+                    || !model.storageReady || model.isDemo)
                 .accessibilityIdentifier("settings.\(provider.rawValue).install")
             }
         }

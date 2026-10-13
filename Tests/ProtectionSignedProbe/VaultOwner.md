@@ -20,11 +20,11 @@ Start when the Mac is available for manual app checks:
 
 ```sh
 python3 Tests/ProtectionSignedProbe/vault-owner-session.py start \
-  --ready .build/implementation/vault-owner-ready.json \
-  --report .build/implementation/vault-owner-report.json \
+  --ready .build/acceptance/vault-owner/ready.json \
+  --report .build/acceptance/vault-owner/owner-report.json \
   --lease-seconds 3600
 python3 Tests/ProtectionSignedProbe/vault-owner-session.py command \
-  --ready .build/implementation/vault-owner-ready.json --action launch
+  --ready .build/acceptance/vault-owner/ready.json --action launch
 ```
 
 The private ready file contains the nonce and disposable paths. The owner seeds one synthetic Claude 2.1.293 user prompt, then accepts fixed commands through private files. A launch response identifies the owned app PID and report. The launched app holds until its normal Quit action. The owner tracks each `Process`, reaps it, and requires exit status zero, a `shutdown-complete` report, empty raw caches and empty stdout/stderr before opening the store or launching another app.
@@ -48,7 +48,7 @@ Optional network isolation uses a fixed test policy:
 
 ```sh
 python3 Tests/ProtectionSignedProbe/vault-owner-session.py command \
-  --ready .build/implementation/vault-owner-ready.json --action launch \
+  --ready .build/acceptance/vault-owner/ready.json --action launch \
   --sandbox-mode network-denied-trusted-scanner-bootstrap
 ```
 
@@ -61,7 +61,7 @@ Capture masked launch receipts before cleanup removes the private response files
 ```sh
 python3 Tests/ProtectionSignedProbe/finalize-vault-owner-evidence.py capture-launches \
   --responses OWNED_PRIVATE_DIRECTORY/responses \
-  --output .build/implementation/vault-owner-launch-receipts.json
+  --output .build/acceptance/vault-owner/launch-receipts.json
 ```
 
 The test operator records native observations in a separate JSON file with an `observations` array. Each item has a controlled `step`, `runIndex`, `observedNativeUI` booleans/counts, and an optional copy of the safe `appAcceptanceReport`. The same file records masked `launches` and the fixture scope. Update a pending observation when it is completed; duplicate step names are rejected. The finalizer's source defines the accepted steps and fields. It ignores raw values, excerpts, nonces, source paths, titles and native IDs.
@@ -70,23 +70,13 @@ After all app runs quit and owner cleanup completes, finalize the saved evidence
 
 ```sh
 python3 Tests/ProtectionSignedProbe/finalize-vault-owner-evidence.py finalize \
-  --owner-report .build/implementation/vault-owner-report.json \
-  --observations .build/implementation/vault-owner-native-observations.json \
-  --launch-receipts .build/implementation/vault-owner-launch-receipts.json \
-  --output docs/implementation/m6-signed-restart-offline.json
+  --owner-report .build/acceptance/vault-owner/owner-report.json \
+  --observations .build/acceptance/vault-owner/native-observations.json \
+  --launch-receipts .build/acceptance/vault-owner/launch-receipts.json \
+  --output .build/acceptance/vault-owner/restart-offline.json
 python3 Tests/ProtectionSignedProbe/test_vault_owner_evidence.py
 ```
 
-Missing or pending observations leave their checks false and produce exit status 1. Omit `--owner-report` and choose a `.build` output path for an explicitly incomplete preview. OS notification request acceptance, visible display and clicking to masked inventory have separate assertions. Recorded lock/sleep events from an already-masked workflow remain scoped observations and establish no authenticated-reveal lifecycle result.
+The default output is `.build/acceptance/vault-owner/restart-offline.json`. Missing or pending observations leave their checks false and produce exit status 1. Omit `--owner-report` for an explicitly incomplete preview. OS notification request acceptance, visible display and clicking to masked inventory have separate assertions. Recorded lock/sleep events from an already-masked workflow remain scoped observations and establish no authenticated-reveal lifecycle result.
 
-The completed recorded run uses these saved r2 inputs:
-
-```sh
-python3 Tests/ProtectionSignedProbe/finalize-vault-owner-evidence.py finalize \
-  --owner-report .build/implementation/vault-owner-report-r2.json \
-  --observations .build/implementation/vault-owner-native-observations-r2.json \
-  --launch-receipts .build/implementation/vault-owner-launch-receipts-r2.json \
-  --output docs/implementation/m6-signed-restart-offline.json
-```
-
-Its notification click was confirmed by the user, then matched to native accessibility state and actual app navigation events. Banner text was not independently read through accessibility. The report records controlled notification construction plus the user's response as its masking evidence, and records the notification preference restored to disabled and launch at login left off. The finalizer copies only recognized preference booleans and validates expected provenance values before adding those summaries.
+Record notification clicks and masked navigation separately from notification text observations. The finalizer copies only recognized preference booleans and validates expected provenance values before adding those summaries.

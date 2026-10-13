@@ -50,15 +50,22 @@ public struct CodexHistoryPage: Sendable {
     public let nextCursor: String?
     public let backwardsCursor: String?
     public let bytesRead: Int
-    public init(data: [CodexJSON], nextCursor: String? = nil, backwardsCursor: String? = nil, bytesRead: Int = 0) {
+    /// Version of the process that completed this response, not the configured reader.
+    public let readerVersion: String?
+    public init(data: [CodexJSON], nextCursor: String? = nil, backwardsCursor: String? = nil, bytesRead: Int = 0,
+                readerVersion: String? = nil) {
         self.data = data; self.nextCursor = nextCursor; self.backwardsCursor = backwardsCursor; self.bytesRead = bytesRead
+        self.readerVersion = readerVersion
     }
 }
 
 public struct CodexThreadRead: Sendable {
     public let thread: CodexJSON
     public let bytesRead: Int
-    public init(thread: CodexJSON, bytesRead: Int = 0) { self.thread = thread; self.bytesRead = bytesRead }
+    public let readerVersion: String?
+    public init(thread: CodexJSON, bytesRead: Int = 0, readerVersion: String? = nil) {
+        self.thread = thread; self.bytesRead = bytesRead; self.readerVersion = readerVersion
+    }
 }
 
 public enum CodexHistoryDirection: String, Sendable { case ascending = "asc", descending = "desc" }
@@ -140,10 +147,10 @@ public actor CodexAppServerHistoryClient: CodexHistoryReading {
     private var usableMethods: Set<String> = []
     private var methodFailures: [String: CompatibilityFailureReason] = [:]
     private var executableFingerprint: ExecutableFingerprint?
-    private struct ExecutableFingerprint: Equatable {
+    fileprivate struct ExecutableFingerprint: Equatable {
         let device: UInt64, inode: UInt64, size: Int64, seconds: Int64, nanoseconds: Int64
     }
-    private static func fingerprint(_ url: URL) -> ExecutableFingerprint? {
+    fileprivate static func fingerprint(_ url: URL) -> ExecutableFingerprint? {
         var info = stat()
         guard stat(url.path, &info) == 0, info.st_mode & S_IFMT == S_IFREG else { return nil }
         return .init(device: UInt64(info.st_dev), inode: UInt64(info.st_ino), size: info.st_size,
@@ -194,7 +201,7 @@ public actor CodexAppServerHistoryClient: CodexHistoryReading {
         try validate(threadID)
         let (result, count) = try request("thread/read", .object(["threadId": .string(threadID), "includeTurns": .bool(false)]), budget: budget)
         guard result["thread"]["id"].string == threadID else { throw CodexHistoryError.malformedResponse }
-        return .init(thread: result["thread"], bytesRead: count)
+        return .init(thread: result["thread"], bytesRead: count, readerVersion: observedReaderVersion)
     }
     public func listThreads(cursor: String?, limit: Int = 64, archived: Bool = false) async throws -> CodexHistoryPage {
         try await listThreads(cursor: cursor, limit: limit, archived: archived, budget: configuredBudget())
@@ -238,7 +245,7 @@ public actor CodexAppServerHistoryClient: CodexHistoryReading {
             if result[key] != .null, result[key].string == nil { throw CodexHistoryError.malformedResponse }
         }
         return .init(data: rows, nextCursor: result["nextCursor"].string,
-                     backwardsCursor: result["backwardsCursor"].string, bytesRead: count)
+                     backwardsCursor: result["backwardsCursor"].string, bytesRead: count, readerVersion: observedReaderVersion)
     }
     private func request(_ method: String, _ parameters: CodexJSON, budget: CodexRPCBudget) throws -> (CodexJSON, Int) {
         guard ["thread/read", "thread/list", "thread/turns/list", "thread/items/list"].contains(method) else {
@@ -327,8 +334,12 @@ private final class CodexPassiveProcess {
     let observedVersion: String
     init(configuration: CodexHistoryClientConfiguration, budget: CodexRPCBudget, accounting: CodexReadAccounting) throws {
         self.configuration = configuration
-        guard FileManager.default.isExecutableFile(atPath: configuration.executableURL.path),
-              FileManager.default.isExecutableFile(atPath: "/usr/bin/sandbox-exec") else { throw CodexHistoryError.unavailable }
+        // The selected alias stays dynamic between readers. Within one reader launch,
+        // bind version probing and process startup to the same stable executable.
+        let executable = codexConfiguredURL(configuration.executableURL)
+        guard FileManager.default.isExecutableFile(atPath: executable.path),
+              FileManager.default.isExecutableFile(atPath: "/usr/bin/sandbox-exec"),
+              let fingerprint = CodexAppServerHistoryClient.fingerprint(executable) else { throw CodexHistoryError.unavailable }
         _ = try ScannerProcess.prepareWorkingDirectory(configuration.workingDirectoryURL)
         let environment = ["PATH": "/usr/bin:/bin", "HOME": configuration.workingDirectoryURL.path,
             "CODEX_HOME": configuration.codexHomeURL.path, "TMPDIR": configuration.workingDirectoryURL.path,
@@ -337,7 +348,7 @@ private final class CodexPassiveProcess {
         let version: Data
         do {
             version = try ScannerProcess.runBounded(Data(), executable: URL(fileURLWithPath: "/usr/bin/sandbox-exec"),
-                arguments: ["-p", CodexAppServerHistoryClient.sandboxProfile, configuration.executableURL.path, "--version"],
+                arguments: ["-p", CodexAppServerHistoryClient.sandboxProfile, executable.path, "--version"],
                 directory: configuration.workingDirectoryURL, timeout: min(configuration.requestTimeout, budget.timeout), maximumOutputBytes: 1024)
         } catch DetectorFailure.cancelled { throw CodexHistoryError.cancelled }
         catch DetectorFailure.timedOut { throw CodexHistoryError.timedOut }
@@ -347,9 +358,10 @@ private final class CodexPassiveProcess {
         let observed = String(output.dropFirst("codex-cli ".count))
         guard !observed.isEmpty, observed.utf8.count <= 256, !observed.utf8.contains(0),
               !observed.contains(where: { $0.isWhitespace }) else { throw CodexHistoryError.unrecognizedExecutable }
+        guard CodexAppServerHistoryClient.fingerprint(executable) == fingerprint else { throw CodexHistoryError.unavailable }
         observedVersion = observed
         process.executableURL = URL(fileURLWithPath: "/usr/bin/sandbox-exec")
-        process.arguments = ["-p", CodexAppServerHistoryClient.sandboxProfile, configuration.executableURL.path,
+        process.arguments = ["-p", CodexAppServerHistoryClient.sandboxProfile, executable.path,
             "app-server", "--stdio", "-c", "analytics.enabled=false", "-c", "otel.exporter=\"none\""]
         process.environment = environment; process.currentDirectoryURL = configuration.workingDirectoryURL
         process.standardInput = stdin; process.standardOutput = stdout; process.standardError = stderr
@@ -367,6 +379,7 @@ private final class CodexPassiveProcess {
                 "version": .string("1")]), "capabilities": .object(["experimentalApi": .bool(true)])]),
                 budget: .init(maximumBytes: accounting.maximumBytes, timeout: remaining), accounting: accounting)
             guard initialized.0.object != nil else { throw CodexHistoryError.malformedResponse }
+            guard CodexAppServerHistoryClient.fingerprint(executable) == fingerprint else { throw CodexHistoryError.unavailable }
             try writeNotification()
         } catch { close(); throw error }
     }

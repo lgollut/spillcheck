@@ -8,9 +8,11 @@
 
 /* Begin PBXBuildFile section */
 		08BDF76608D5FACBD234235A /* MenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17CA1A1EF4EFC6A19958BBF /* MenuBarView.swift */; };
+		103BD2458395F8A9F1BE2399 /* CoveragePresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96154422E11130707C15FA14 /* CoveragePresentation.swift */; };
 		1A768BC217199FA530DE8C5B /* CoverageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19ED623A19C443D332F0B3F2 /* CoverageView.swift */; };
 		238508EE527520347B9CD96F /* AgentSetupViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 161AAAA9BAF3B2006BED6B7D /* AgentSetupViews.swift */; };
 		276AC0BE0533CC3AC5D86FC4 /* SignedRecoveryVaultOwner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4160819F63DB83EC741C221F /* SignedRecoveryVaultOwner.swift */; };
+		2999B925C3BFAAC7205A6010 /* NativeContentAcceptance.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5BDF74FC031FD8FF2876AFDB /* NativeContentAcceptance.swift */; };
 		3956DC4845C3D45CEE4496C3 /* OnboardingSteps.swift in Sources */ = {isa = PBXBuildFile; fileRef = 260373A8BD99A9BDBE97B235 /* OnboardingSteps.swift */; };
 		3B4CC56CE4793773ED847E2E /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72754F890706FE3AC08E917C /* AppModel.swift */; };
 		4259A3EE68845CF3CE9957C3 /* AppRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9053ADDA32DBF8D9584BF727 /* AppRuntime.swift */; };
@@ -22,13 +24,19 @@
 		7086A44FC3AEE816B442C7E4 /* OnboardingVisuals.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5C829E42126DEFA2CDD0DB6 /* OnboardingVisuals.swift */; };
 		7A7FC052C74DA1ADC186ACF5 /* LoginItemController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 896F4E4526F40D157E21FD55 /* LoginItemController.swift */; };
 		851BC540A1028EC7ADCB5EFF /* CollectionConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1175CE1FD04074EAC791BAD8 /* CollectionConfiguration.swift */; };
+		89676104655B69BEF26985A5 /* ReviewAcceptance.swift in Sources */ = {isa = PBXBuildFile; fileRef = A96B88F383FD10A918E1FF21 /* ReviewAcceptance.swift */; };
+		A4F22B8281F6A4ACF2FAD2B5 /* WebResultAcceptance.swift in Sources */ = {isa = PBXBuildFile; fileRef = B88F681AB7FC7A503DE11B2C /* WebResultAcceptance.swift */; };
 		ABBD7F8E265DDD0D2825A58E /* SourceOpeningController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E58EEA7BDD7529F15719ECBA /* SourceOpeningController.swift */; };
 		B7ABC4164B31F5D198A9AF92 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79D89CB9AE08F6FD4E4F264D /* SettingsView.swift */; };
 		BC155E33BA76BAB1A4E00424 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DDA18D723E4AD8FA8BC3508 /* OnboardingView.swift */; };
 		BD67C7384D09A5B7B3603CC7 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC1789CC5171F1D9793BBF1B /* Theme.swift */; };
+		CD796BAE8CDF13038AF202B6 /* DesktopBetaAcceptance.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4560683A0987184FC5768EE /* DesktopBetaAcceptance.swift */; };
 		D2F262D07C6AB40A469825C4 /* OnboardingWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C63A9AB04E0B7491BDF46B3D /* OnboardingWindowController.swift */; };
 		D41B2EB0424E49AB93C54CF7 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4443654EA8FD4A679416B077 /* main.swift */; };
+		D472645DA8AE94DBB2B59697 /* CoverageReadEvidence.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAFBE02F0B17E91F239B4156 /* CoverageReadEvidence.swift */; };
+		D8549EAAB8117716D886B0C6 /* CoverageDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A442B492E78C71F9D66A8F8 /* CoverageDiagnostics.swift */; };
 		E634A2A7819D7E4E70DB1CC0 /* NotificationController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C83519DE92F4C49EC8CB4A08 /* NotificationController.swift */; };
+		ECB1129CA5F0818A039BD3CD /* InventoryStateAcceptance.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AD1DD30F5191CFA65496940 /* InventoryStateAcceptance.swift */; };
 		ED21B2C2D5B950626DCEA3A7 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD665126341D3C4D0E4FA87C /* AppDelegate.swift */; };
 		EF1BCAB241C606913660ECF1 /* InventoryDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AECF9EEC9C73FB77DD618373 /* InventoryDetailView.swift */; };
 		F3586F5C27CAB9BAAE544BAB /* AgentSetupController.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC76F517857548778A653CCE /* AgentSetupController.swift */; };
@@ -54,17 +62,25 @@
 		260373A8BD99A9BDBE97B235 /* OnboardingSteps.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingSteps.swift; sourceTree = "<group>"; };
 		4160819F63DB83EC741C221F /* SignedRecoveryVaultOwner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SignedRecoveryVaultOwner.swift; sourceTree = "<group>"; };
 		4443654EA8FD4A679416B077 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
+		4B8883194A9A1A966BD4733C /* spillcheck */ = {isa = PBXFileReference; lastKnownFileType = folder; name = spillcheck; path = .; sourceTree = SOURCE_ROOT; };
+		5BDF74FC031FD8FF2876AFDB /* NativeContentAcceptance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeContentAcceptance.swift; sourceTree = "<group>"; };
 		72754F890706FE3AC08E917C /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		74A3255C75EE42AE8E85AF2A /* spillcheck-hook */ = {isa = PBXFileReference; includeInIndex = 0; path = "spillcheck-hook"; sourceTree = BUILT_PRODUCTS_DIR; };
 		79D89CB9AE08F6FD4E4F264D /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		7A442B492E78C71F9D66A8F8 /* CoverageDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoverageDiagnostics.swift; sourceTree = "<group>"; };
 		896F4E4526F40D157E21FD55 /* LoginItemController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginItemController.swift; sourceTree = "<group>"; };
 		9053ADDA32DBF8D9584BF727 /* AppRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppRuntime.swift; sourceTree = "<group>"; };
+		96154422E11130707C15FA14 /* CoveragePresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoveragePresentation.swift; sourceTree = "<group>"; };
+		9AD1DD30F5191CFA65496940 /* InventoryStateAcceptance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InventoryStateAcceptance.swift; sourceTree = "<group>"; };
 		A17CA1A1EF4EFC6A19958BBF /* MenuBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarView.swift; sourceTree = "<group>"; };
-		A4C4067BB18B9765620100D6 /* t3-e4dfde41 */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "t3-e4dfde41"; path = .; sourceTree = SOURCE_ROOT; };
+		A4560683A0987184FC5768EE /* DesktopBetaAcceptance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesktopBetaAcceptance.swift; sourceTree = "<group>"; };
+		A96B88F383FD10A918E1FF21 /* ReviewAcceptance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewAcceptance.swift; sourceTree = "<group>"; };
+		AAFBE02F0B17E91F239B4156 /* CoverageReadEvidence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoverageReadEvidence.swift; sourceTree = "<group>"; };
 		AC1789CC5171F1D9793BBF1B /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		AD665126341D3C4D0E4FA87C /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		AECF9EEC9C73FB77DD618373 /* InventoryDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InventoryDetailView.swift; sourceTree = "<group>"; };
 		B038F902F01EA4B9AE97AA68 /* InventoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InventoryView.swift; sourceTree = "<group>"; };
+		B88F681AB7FC7A503DE11B2C /* WebResultAcceptance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebResultAcceptance.swift; sourceTree = "<group>"; };
 		C63A9AB04E0B7491BDF46B3D /* OnboardingWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingWindowController.swift; sourceTree = "<group>"; };
 		C83519DE92F4C49EC8CB4A08 /* NotificationController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationController.swift; sourceTree = "<group>"; };
 		CEC4CD27AE13CA0B0B10E654 /* ThirdPartyLicenses */ = {isa = PBXFileReference; lastKnownFileType = folder; name = ThirdPartyLicenses; path = Spillcheck/Resources/ThirdPartyLicenses; sourceTree = SOURCE_ROOT; };
@@ -116,21 +132,29 @@
 				72754F890706FE3AC08E917C /* AppModel.swift */,
 				9053ADDA32DBF8D9584BF727 /* AppRuntime.swift */,
 				1175CE1FD04074EAC791BAD8 /* CollectionConfiguration.swift */,
+				7A442B492E78C71F9D66A8F8 /* CoverageDiagnostics.swift */,
+				96154422E11130707C15FA14 /* CoveragePresentation.swift */,
+				AAFBE02F0B17E91F239B4156 /* CoverageReadEvidence.swift */,
 				19ED623A19C443D332F0B3F2 /* CoverageView.swift */,
+				A4560683A0987184FC5768EE /* DesktopBetaAcceptance.swift */,
 				AECF9EEC9C73FB77DD618373 /* InventoryDetailView.swift */,
+				9AD1DD30F5191CFA65496940 /* InventoryStateAcceptance.swift */,
 				B038F902F01EA4B9AE97AA68 /* InventoryView.swift */,
 				896F4E4526F40D157E21FD55 /* LoginItemController.swift */,
 				A17CA1A1EF4EFC6A19958BBF /* MenuBarView.swift */,
+				5BDF74FC031FD8FF2876AFDB /* NativeContentAcceptance.swift */,
 				C83519DE92F4C49EC8CB4A08 /* NotificationController.swift */,
 				260373A8BD99A9BDBE97B235 /* OnboardingSteps.swift */,
 				0DDA18D723E4AD8FA8BC3508 /* OnboardingView.swift */,
 				D5C829E42126DEFA2CDD0DB6 /* OnboardingVisuals.swift */,
 				C63A9AB04E0B7491BDF46B3D /* OnboardingWindowController.swift */,
+				A96B88F383FD10A918E1FF21 /* ReviewAcceptance.swift */,
 				79D89CB9AE08F6FD4E4F264D /* SettingsView.swift */,
 				4160819F63DB83EC741C221F /* SignedRecoveryVaultOwner.swift */,
 				E58EEA7BDD7529F15719ECBA /* SourceOpeningController.swift */,
 				AC1789CC5171F1D9793BBF1B /* Theme.swift */,
 				0C645373F8A1C30BBBA9A13F /* ViewingController.swift */,
+				B88F681AB7FC7A503DE11B2C /* WebResultAcceptance.swift */,
 			);
 			name = App;
 			path = Spillcheck/App;
@@ -157,7 +181,7 @@
 		F10847EA13B548C5C69D2AC9 /* Packages */ = {
 			isa = PBXGroup;
 			children = (
-				A4C4067BB18B9765620100D6 /* t3-e4dfde41 */,
+				4B8883194A9A1A966BD4733C /* spillcheck */,
 			);
 			name = Packages;
 			sourceTree = "<group>";
@@ -322,21 +346,29 @@
 				3B4CC56CE4793773ED847E2E /* AppModel.swift in Sources */,
 				4259A3EE68845CF3CE9957C3 /* AppRuntime.swift in Sources */,
 				851BC540A1028EC7ADCB5EFF /* CollectionConfiguration.swift in Sources */,
+				D8549EAAB8117716D886B0C6 /* CoverageDiagnostics.swift in Sources */,
+				103BD2458395F8A9F1BE2399 /* CoveragePresentation.swift in Sources */,
+				D472645DA8AE94DBB2B59697 /* CoverageReadEvidence.swift in Sources */,
 				1A768BC217199FA530DE8C5B /* CoverageView.swift in Sources */,
+				CD796BAE8CDF13038AF202B6 /* DesktopBetaAcceptance.swift in Sources */,
 				EF1BCAB241C606913660ECF1 /* InventoryDetailView.swift in Sources */,
+				ECB1129CA5F0818A039BD3CD /* InventoryStateAcceptance.swift in Sources */,
 				605FFC3BD87202C6AD265394 /* InventoryView.swift in Sources */,
 				7A7FC052C74DA1ADC186ACF5 /* LoginItemController.swift in Sources */,
 				08BDF76608D5FACBD234235A /* MenuBarView.swift in Sources */,
+				2999B925C3BFAAC7205A6010 /* NativeContentAcceptance.swift in Sources */,
 				E634A2A7819D7E4E70DB1CC0 /* NotificationController.swift in Sources */,
 				3956DC4845C3D45CEE4496C3 /* OnboardingSteps.swift in Sources */,
 				BC155E33BA76BAB1A4E00424 /* OnboardingView.swift in Sources */,
 				7086A44FC3AEE816B442C7E4 /* OnboardingVisuals.swift in Sources */,
 				D2F262D07C6AB40A469825C4 /* OnboardingWindowController.swift in Sources */,
+				89676104655B69BEF26985A5 /* ReviewAcceptance.swift in Sources */,
 				B7ABC4164B31F5D198A9AF92 /* SettingsView.swift in Sources */,
 				276AC0BE0533CC3AC5D86FC4 /* SignedRecoveryVaultOwner.swift in Sources */,
 				ABBD7F8E265DDD0D2825A58E /* SourceOpeningController.swift in Sources */,
 				BD67C7384D09A5B7B3603CC7 /* Theme.swift in Sources */,
 				50CD72C61A2951A9F7B56D8B /* ViewingController.swift in Sources */,
+				A4F22B8281F6A4ACF2FAD2B5 /* WebResultAcceptance.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

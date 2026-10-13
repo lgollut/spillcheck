@@ -234,7 +234,7 @@ struct InventoryDetailView: View {
 
     private var appearances: some View {
         let count = summary.occurrences.count
-        let latest = summary.latestOccurrence
+        let latest = summary.occurrences.max { $0.observedAt < $1.observedAt }
         let times = count == 1 ? "once" : count == 2 ? "twice" : "\(count) times"
         return VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
@@ -243,7 +243,10 @@ struct InventoryDetailView: View {
                     .accessibilityAddTraits(.isHeader)
                 Spacer()
                 if let latest {
-                    Text(count == 1 ? DisplayTime.full(latest) : "Latest \(DisplayTime.full(latest).lowercasedFirstWordIfRelative)")
+                    Text(latest.timeBasis == .firstObservation
+                         ? latest.timestampLabel(formattedDate: DisplayTime.full(latest.observedAt))
+                         : count == 1 ? DisplayTime.full(latest.observedAt)
+                            : "Latest \(DisplayTime.full(latest.observedAt).lowercasedFirstWordIfRelative)")
                         .font(.system(size: 12)).foregroundStyle(Palette.tertiary).monospacedDigit()
                 }
             }
@@ -299,10 +302,7 @@ private struct ConversationCard: View {
     let disabled: Bool
     @Binding var sheet: DetailSheet?
 
-    private var agentLabel: String {
-        let interface = occurrences.compactMap(\.interface).first
-        return conversation.provider.displayName + (interface.map { $0 == .t3 ? " in T3" : $0 == .desktopCode ? " Desktop" : " CLI" } ?? "")
-    }
+    private var agentLabel: String { conversation.provider.displayName }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -339,7 +339,7 @@ struct SourceStyle {
         switch type {
         case .toolOutput: (glyph, label, background, foreground) = (">_", "Tool output", Color(oklch: 0.94, 0.02, 255, dark: 0.32), Color(oklch: 0.4, 0.07, 255, dark: 0.8))
         case .toolError: (glyph, label, background, foreground) = ("!", "Tool error", Color(oklch: 0.94, 0.035, 25, dark: 0.32), Color(oklch: 0.45, 0.13, 25, dark: 0.8))
-        case .userPrompt: (glyph, label, background, foreground) = ("“", "User message", Color(oklch: 0.94, 0.022, 150, dark: 0.32), Color(oklch: 0.4, 0.05, 152, dark: 0.8))
+        case .userPrompt: (glyph, label, background, foreground) = ("“", "Input message", Color(oklch: 0.94, 0.022, 150, dark: 0.32), Color(oklch: 0.4, 0.05, 152, dark: 0.8))
         case .intermediateResponse, .finalResponse:
             (glyph, label, background, foreground) = ("✦", "Model response", Color(oklch: 0.94, 0.03, 300, dark: 0.32), Color(oklch: 0.42, 0.09, 300, dark: 0.8))
         case nil: (glyph, label, background, foreground) = ("•", "Appearance", Color(hex: 0xeef1ef, dark: 0x292c2a), Palette.ink2)
@@ -361,6 +361,7 @@ private struct OccurrenceRow: View {
     private var open: Bool { model.expandedOccurrenceID == occurrence.id }
     private var style: SourceStyle { SourceStyle(occurrence.contentType) }
     private var alerted: Bool { if case .alerted(.delivered) = occurrence.alert { true } else { false } }
+    private var timestamp: String { occurrence.timestampLabel(formattedDate: DisplayTime.full(occurrence.observedAt)) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -369,7 +370,7 @@ private struct OccurrenceRow: View {
                 else { withAnimation(.timingCurve(0.23, 1, 0.32, 1, duration: 0.16)) { model.toggleOccurrence(occurrence.id) } }
             } label: { rowLabel }
             .buttonStyle(.plain)
-            .accessibilityLabel("\(style.label), \(DisplayTime.full(occurrence.observedAt))\(alerted ? ", alerted" : "")")
+            .accessibilityLabel("\(style.label), \(timestamp)\(alerted ? ", alerted" : "")")
             .accessibilityValue(open ? "Expanded" : "Collapsed")
             .accessibilityHint("Shows the retained context and source for this appearance.")
             if open {
@@ -402,7 +403,7 @@ private struct OccurrenceRow: View {
                 .accessibilityHidden(true)
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(style.label).font(.system(size: 13, weight: .medium))
-                Text(DisplayTime.full(occurrence.observedAt)).font(.system(size: 11.5)).foregroundStyle(Palette.quaternary).monospacedDigit()
+                Text(timestamp).font(.system(size: 11.5)).foregroundStyle(Palette.quaternary).monospacedDigit()
                 if alerted {
                     Text("Alerted").font(.system(size: 10.5, weight: .semibold))
                         .foregroundStyle(Palette.amberSoftText)
@@ -546,12 +547,17 @@ private struct OccurrenceDetail: View {
             info = RouteInfo(chip: "Direct link", color: Palette.green, outlined: false,
                              text: "Opens \(conversation) in \(agent).", openLabel: "Open conversation")
         case .unavailable?:
-            info = RouteInfo(chip: "Conversation gone", color: Palette.redDot, outlined: false,
-                             text: "\(conversation) no longer exists in \(agent). The retained excerpt is still here.", openLabel: nil)
+            info = RouteInfo(chip: "Link unavailable", color: Palette.ring, outlined: false,
+                             text: "No supported opening route is available for \(conversation). The retained excerpt is still here.", openLabel: nil)
         case .activeSessionRestriction?:
             info = RouteInfo(chip: "In use", color: Palette.amber, outlined: false,
                              text: "This conversation is active and can’t be opened from here.", openLabel: nil)
         case .unverified?, nil:
+            if occurrence.conversation.provider == .codex {
+                info = RouteInfo(chip: "No verified link", color: Palette.ring, outlined: false,
+                    text: "The shared Codex profile does not identify which app or CLI opens this conversation.", openLabel: nil)
+                break
+            }
             switch occurrence.interface {
             case .t3?:
                 info = RouteInfo(chip: "Unverified", color: Palette.amber, outlined: false,
@@ -561,7 +567,7 @@ private struct OccurrenceDetail: View {
                                  text: "The desktop app may open without landing on this message.", openLabel: "Try opening")
             case .standaloneCLI?, nil:
                 info = RouteInfo(chip: "No direct link", color: Palette.ring, outlined: false,
-                                 text: "CLI conversations can’t be opened from here.", openLabel: nil)
+                                 text: "No verified opening route is available for this conversation.", openLabel: nil)
             }
         }
         if occurrence.metadataOnly {

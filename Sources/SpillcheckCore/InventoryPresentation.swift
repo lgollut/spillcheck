@@ -17,7 +17,7 @@ public extension AgentInterface {
 public extension ContentType {
     var pluralLabel: String {
         switch self {
-        case .userPrompt: "User prompts"
+        case .userPrompt: "Input messages"
         case .intermediateResponse: "Intermediate responses"
         case .finalResponse: "Final responses"
         case .toolOutput: "Tool output"
@@ -128,6 +128,7 @@ public struct InventoryOccurrencePresentation: Identifiable, Hashable, Sendable 
     public let interface: AgentInterface?
     public let contentType: ContentType?
     public let observedAt: Date
+    public let timeBasis: SourceTimeBasis?
     public let conversation: InventoryConversation
     public let review: OccurrenceReview?
     public let classification: AppearanceClassification
@@ -138,6 +139,9 @@ public struct InventoryOccurrencePresentation: Identifiable, Hashable, Sendable 
     public let locationFailure: LocationFailure?
     public let alert: OccurrenceAlertState
     public var metadataOnly: Bool { review == nil && classification == .obsolete }
+    public func timestampLabel(formattedDate: String) -> String {
+        timeBasis == .firstObservation ? "Observed \(formattedDate)" : formattedDate
+    }
 }
 
 /// A masked projection contains controlled labels and action identities, with no source text.
@@ -187,6 +191,7 @@ public struct InventoryPresentation: Sendable {
                 guard let conversation = conversationMap[occurrence.source.identity.session] else { return nil }
                 return InventoryOccurrencePresentation(id: occurrence.id, source: occurrence.source.identity,
                     interface: occurrence.source.origin.interface, contentType: occurrence.source.contentType, observedAt: occurrence.source.contentTime,
+                    timeBasis: occurrence.source.timeBasis,
                     conversation: conversation, review: occurrence.review, classification: occurrence.classification,
                     evidence: Self.evidence(occurrence.evidence), locator: occurrence.source.locator,
                     protectedExcerpt: occurrence.protectedExcerpt, protectedMetadata: occurrence.source.protectedMetadata, locationFailure: nil,
@@ -194,7 +199,8 @@ public struct InventoryPresentation: Sendable {
             } + obsolete.compactMap { occurrence in
                 guard let conversation = conversationMap[occurrence.source.session] else { return nil }
                 return InventoryOccurrencePresentation(id: occurrence.id, source: occurrence.source, interface: nil,
-                    contentType: snapshot.sourceKinds[occurrence.source], observedAt: occurrence.occurredAt, conversation: conversation,
+                    contentType: snapshot.sourceKinds[occurrence.source], observedAt: occurrence.occurredAt,
+                    timeBasis: occurrence.timeBasis, conversation: conversation,
                     review: nil, classification: .obsolete, evidence: [], locator: occurrence.locator,
                     protectedExcerpt: nil, protectedMetadata: nil, locationFailure: nil, alert: .obsolete)
             }
@@ -218,7 +224,8 @@ public struct InventoryPresentation: Sendable {
                 detectorSignal: result.evidence.contains { $0.signal == .strong } ? .strong : .ambiguous,
                 acknowledgement: nil, acknowledgedAt: nil, protectedValue: nil, evidence: Self.evidence(result.evidence)))
             details[id] = [InventoryOccurrencePresentation(id: result.id, source: result.source.identity, interface: result.source.origin.interface,
-                contentType: result.source.contentType, observedAt: result.source.contentTime, conversation: conversation,
+                contentType: result.source.contentType, observedAt: result.source.contentTime,
+                timeBasis: result.source.timeBasis, conversation: conversation,
                 review: nil, classification: .ordinary, evidence: Self.evidence(result.evidence), locator: result.source.locator,
                 protectedExcerpt: nil, protectedMetadata: result.source.protectedMetadata, locationFailure: result.reason,
                 alert: .unlocated)]

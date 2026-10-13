@@ -25,7 +25,10 @@ public struct ClaudeAdapter: CaptureNormalizer, Sendable {
     public static let validatedAgentVersion = "2.1.293"
     public static let adapterVersion = "2"
     /// Cursor interpretation changes independently of native identities and canonical content.
-    public static let parserContractVersion = "claude-transcript-5"
+    public static let parserContractVersion = "claude-transcript-10"
+    /// Location of a whole-source availability warning, not an upstream item. A readable source
+    /// settles only that warning, never another whole-source gap on the same file.
+    static let sourceAvailabilityItemID = "claude-source-availability"
     /// Harness-injected configuration and context, including instruction files. None carries a
     /// user message, model response or tool result. Mentioned files, edited-file snippets,
     /// diagnostics, hook output and queued notifications are deliberately absent and stay gaps.
@@ -94,30 +97,65 @@ public struct ClaudeAdapter: CaptureNormalizer, Sendable {
         guard packet.metadata.agent == .claudeCode, packet.metadata.profileID == profileID else {
             throw ClaudeCollectionError.wrongProfile
         }
+        let scope = CollectionScope(provider: .claudeCode, profileID: profileID,
+            interface: packet.metadata.interface, path: .versionedTranscript)
+        var operation: CollectionOperation = .hookDelivery
+        func gap(_ reason: CoverageGapReason) -> CoverageGap {
+            .init(reason: reason, scope: scope, operation: operation,
+                diagnosticCode: reason.defaultDiagnosticCode, observedAt: capturedAt)
+        }
         guard CollectionCompatibility.isEligible(provider: .claudeCode, interface: packet.metadata.interface, version: agentVersion) else {
-            return CollectionBatch(sources: [], coverageGaps: [.init(reason: .unsupportedVersion)])
+            return CollectionBatch(sources: [], coverageGaps: [gap(.unsupportedVersion)])
         }
         if let request = try? JSONDecoder().decode(ClaudeHistoryRequest.self, from: packet.eventJSON),
            request.kind == ClaudeHistoryRequest.kind {
-            return try await normalizeHistory(request, interface: packet.metadata.interface, cryptography: cryptography)
+            return try await normalizeHistory(request, interface: packet.metadata.interface, observedAt: capturedAt, cryptography: cryptography)
         }
         let hook: ClaudeJSON
         do { hook = try JSONDecoder().decode(ClaudeJSON.self, from: packet.eventJSON) }
-        catch { return CollectionBatch(sources: [], coverageGaps: [.init(reason: .malformedSource)]) }
+        catch { return CollectionBatch(sources: [], coverageGaps: [gap(.malformedSource)]) }
+        if hook["kind"].string == ClaudeHistoryRequest.kind { operation = .historicalRead }
+        if ["SpillcheckTranscriptPoll", "LeakretTranscriptPoll"].contains(hook["hook_event_name"].string ?? "") { operation = .liveRead }
         guard let event = hook["hook_event_name"].string, let session = hook["session_id"].nonemptyString else {
-            return CollectionBatch(sources: [], coverageGaps: [.init(reason: .malformedSource)])
+            return CollectionBatch(sources: [], coverageGaps: [gap(.malformedSource)])
         }
         let events = Set(["SessionStart", "UserPromptSubmit", "PostToolUse", "PostToolUseFailure",
                           "PostToolBatch", "MessageDisplay", "SubagentStart", "SubagentStop", "Stop", "SpillcheckTranscriptPoll", "LeakretTranscriptPoll"])
         guard events.contains(event) else {
-            return CollectionBatch(sources: [], coverageGaps: [.init(reason: .unsupportedContent)])
+            return CollectionBatch(sources: [], coverageGaps: [gap(.unsupportedContent)])
         }
+        operation = .liveRead
         guard let mainPath = hook["transcript_path"].nonemptyString else {
-            return CollectionBatch(sources: [], coverageGaps: [.init(reason: .sourceUnavailable)])
+            return CollectionBatch(sources: [], coverageGaps: [gap(.sourceUnavailable)])
         }
         var paths = [mainPath]
-        if event == "SubagentStop", let child = hook["agent_transcript_path"].nonemptyString {
-            paths.append(child)
+        var correlationPath = mainPath
+        if ClaudeToolHookSelection.toolEvents.contains(event), hook.has("agent_id") {
+            // Ordinary child tool hooks carry the parent session/path and an agent ID,
+            // not agent_transcript_path. Correlate against that exact native child only.
+            guard let agentID = hook["agent_id"].nonemptyString,
+                  !hook.has("agent_transcript_path") || hook["agent_transcript_path"].nonemptyString != nil,
+                  let child = try? ClaudeToolHookSelection.childPath(parentPath: mainPath, agentID: agentID,
+                      declaredChildPath: hook["agent_transcript_path"].string),
+                  (try? transcriptURL(path: child)) != nil else {
+                return CollectionBatch(sources: [], coverageGaps: [gap(.unresolvedCorrelation)])
+            }
+            paths = [child]
+            correlationPath = child
+        } else if ["SubagentStop", "SpillcheckTranscriptPoll", "LeakretTranscriptPoll"].contains(event),
+           let child = hook["agent_transcript_path"].nonemptyString, child != mainPath {
+            if event == "SubagentStop" { paths.append(child) }
+            else {
+                // A selected child poll has its own file signature and checkpoint. Keep its
+                // parent association without requiring the parent's file to remain readable.
+                guard let parentURL = try? transcriptURL(path: mainPath),
+                      let childURL = try? transcriptURL(path: child),
+                      childURL.deletingLastPathComponent().path == parentURL.deletingPathExtension().appendingPathComponent("subagents").path,
+                      childURL.lastPathComponent.hasPrefix("agent-") else {
+                    return CollectionBatch(sources: [], coverageGaps: [gap(.unresolvedCorrelation)])
+                }
+                paths = [child]
+            }
         }
         var sources: [CollectedSource] = [], gaps: [CoverageGap] = []
         var canonicalToolIDs = Set<String>()
@@ -134,10 +172,10 @@ public struct ClaudeAdapter: CaptureNormalizer, Sendable {
             do {
                 read = try await readIncremental(path: path, expectedSessionID: path == mainPath ? session : nil,
                     interface: packet.metadata.interface, checkpoint: previousCheckpoint,
-                    observedAt: Date(), provenance: .live, context: context, cryptography: cryptography)
+                    observedAt: capturedAt, provenance: .live, context: context, cryptography: cryptography)
             }
             catch ClaudeCollectionError.unsafeTranscriptPath {
-                return CollectionBatch(sources: [], coverageGaps: [.init(reason: .sourceUnavailable)])
+                return CollectionBatch(sources: [], coverageGaps: [gap(.sourceUnavailable)])
             } catch { throw ClaudeCollectionError.awaitingTranscript }
             let batch = read.batch
             // Hook delivery can precede even the first complete transcript record. Throwing keeps
@@ -150,11 +188,19 @@ public struct ClaudeAdapter: CaptureNormalizer, Sendable {
             continuationNeeded = continuationNeeded || read.hasForwardContent
             sources += batch.sources; gaps += batch.coverageGaps
             recoveredReferences += batch.recoveredReferences
+            if ["SpillcheckTranscriptPoll", "LeakretTranscriptPoll"].contains(event),
+               verifiesAvailableNativeSource(path: path, expectedSessionID: path == mainPath ? session : nil,
+                   interface: packet.metadata.interface) {
+                recoveredReferences.append(.init(session: path == mainPath
+                    ? try SessionIdentity(provider: .claudeCode, profileID: profileID, sessionID: session) : nil,
+                    parserContract: Self.parserContractVersion, sourceURL: URL(fileURLWithPath: path),
+                    constraint: .claudeSourceAvailability, availabilityObservedAt: capturedAt))
+            }
             if event == "SubagentStop", path != mainPath,
                !read.hasFinalResponse, !read.hasForwardContent {
                 throw ClaudeCollectionError.awaitingTranscript
             }
-            if path == mainPath {
+            if path == correlationPath {
                 canonicalToolIDs.formUnion(read.toolIDs)
                 canonicalPromptIDs.formUnion(read.promptIDs)
             }
@@ -162,7 +208,7 @@ public struct ClaudeAdapter: CaptureNormalizer, Sendable {
         }
         if event == "PostToolUse" || event == "PostToolUseFailure" {
             guard let id = hook["tool_use_id"].nonemptyString else {
-                return CollectionBatch(sources: sources, coverageGaps: gaps + [.init(reason: .malformedSource)], checkpoints: checkpoints,
+                return CollectionBatch(sources: sources, coverageGaps: gaps + [gap(.malformedSource)], checkpoints: checkpoints,
                     recoveredReferences: recoveredReferences)
             }
             guard canonicalToolIDs.contains(id) || continuationNeeded else { throw ClaudeCollectionError.awaitingTranscript }
@@ -171,12 +217,12 @@ public struct ClaudeAdapter: CaptureNormalizer, Sendable {
         // Its date/error status always comes from the persisted record, never the hook observation time.
         if event == "PostToolBatch" {
             guard let calls = hook["tool_calls"].array else {
-                return CollectionBatch(sources: sources, coverageGaps: gaps + [.init(reason: .malformedSource)], checkpoints: checkpoints,
+                return CollectionBatch(sources: sources, coverageGaps: gaps + [gap(.malformedSource)], checkpoints: checkpoints,
                     recoveredReferences: recoveredReferences)
             }
             for call in calls {
                 guard let id = call["tool_use_id"].nonemptyString, call.has("tool_response") else {
-                    gaps.append(.init(reason: .malformedSource)); continue
+                    gaps.append(gap(.malformedSource)); continue
                 }
                 let segments = try textSegments(call["tool_response"], pointer: "/result")
                 let matches = sources.filter { $0.record.metadata.identity.itemID == "tool:\(id)" }
@@ -188,7 +234,7 @@ public struct ClaudeAdapter: CaptureNormalizer, Sendable {
                     continue
                 }
                 if match.record.segments != segments {
-                    gaps.append(.init(reason: .unresolvedCorrelation)) // History remains sole authority.
+                    gaps.append(gap(.unresolvedCorrelation)) // History remains sole authority.
                 }
             }
         }
@@ -196,7 +242,7 @@ public struct ClaudeAdapter: CaptureNormalizer, Sendable {
            !canonicalPromptIDs.contains(promptID), !continuationNeeded {
             throw ClaudeCollectionError.awaitingTranscript
         }
-        if event == "SubagentStop", paths.count == 1 { gaps.append(.init(reason: .sourceUnavailable)) }
+        if event == "SubagentStop", paths.count == 1 { gaps.append(gap(.sourceUnavailable)) }
         return CollectionBatch(sources: sources, coverageGaps: Array(Set(gaps)), checkpoints: checkpoints,
             continuation: continuationNeeded ? packet : nil, recoveredReferences: recoveredReferences)
     }
@@ -207,12 +253,14 @@ public struct ClaudeAdapter: CaptureNormalizer, Sendable {
         expectedSessionID: String? = nil, context: RetainedSourceContext? = nil,
         startingByteOffset: UInt64? = nil
     ) async throws -> CollectionBatch {
+        let scope = CollectionScope(provider: .claudeCode, profileID: profileID, interface: interface, path: .versionedTranscript)
+        let operation: CollectionOperation = provenance.collectionOperation
         guard CollectionCompatibility.isEligible(provider: .claudeCode, interface: interface, version: agentVersion) else {
-            return CollectionBatch(sources: [], coverageGaps: [.init(reason: .unsupportedVersion)])
+            return CollectionBatch(sources: [], coverageGaps: [.init(reason: .unsupportedVersion,
+                scope: scope, operation: operation, observedAt: observedAt)])
         }
         var sources: [CollectedSource] = [], gaps: [CoverageGap] = []
         var recoveredReferences: [CoverageRecoveryReference] = []
-        let scope = CollectionScope(provider: .claudeCode, profileID: profileID, interface: interface, path: .versionedTranscript)
         var canonicalSession = expectedSessionID
         let bounded = data.prefix(limits.maximumBytes)
         let ambiguousTools = try ambiguousToolResults(bounded)
@@ -224,14 +272,19 @@ public struct ClaudeAdapter: CaptureNormalizer, Sendable {
             } ?? .transcript(documentID: documentID, recordIndex: rowIndex)
             var rowSession = canonicalSession.flatMap { try? SessionIdentity(provider: .claudeCode, profileID: profileID, sessionID: $0) }
             var rowTime: Date?, rowContentType: ContentType?
+            var sourceKind: CoverageSourceKind = .claudeUnknownRecord
             var fullyRecognized = false
             let previousGapCount = gaps.count
             func reference() -> CoverageRecoveryReference {
-                .init(session: rowSession, locator: locator, contentTime: rowTime, parserContract: Self.parserContractVersion)
+                .init(session: rowSession, locator: locator, contentTime: rowTime, parserContract: Self.parserContractVersion,
+                    sourceURL: context?.transcriptPath.map { URL(fileURLWithPath: $0) })
             }
-            func addGap(_ reason: CoverageGapReason, contentType: ContentType? = nil, required: Bool = false) {
+            func addGap(_ reason: CoverageGapReason, contentType: ContentType? = nil, required: Bool = false,
+                        diagnostic: CoverageDiagnosticCode? = nil, excluded: Bool = false) {
                 gaps.append(.init(reason: reason, capabilityID: documentID, scope: scope,
-                    contentType: contentType ?? rowContentType, recovery: reference(), isRequiredFormatFailure: required))
+                    contentType: contentType ?? rowContentType, operation: operation, recovery: reference(), isRequiredFormatFailure: required,
+                    sourceKind: sourceKind, diagnosticCode: diagnostic ?? reason.defaultDiagnosticCode,
+                    excludedContent: excluded ? true : nil, observedAt: observedAt))
             }
             defer {
                 if fullyRecognized, gaps.count == previousGapCount { recoveredReferences.append(reference()) }
@@ -242,7 +295,7 @@ public struct ClaudeAdapter: CaptureNormalizer, Sendable {
             let next = offset + line.count + 1
             defer { offset = next; rowIndex += 1 }
             guard !line.isEmpty else { continue }
-            guard line.count <= limits.maximumRowBytes else { addGap(.budgetExhausted); continue }
+            guard line.count <= limits.maximumRowBytes else { addGap(.budgetExhausted, diagnostic: .oversizedRecord); continue }
             let row: ClaudeJSON
             do { row = try JSONDecoder().decode(ClaudeJSON.self, from: Data(line)) }
             catch { addGap(.malformedSource); continue }
@@ -255,14 +308,35 @@ public struct ClaudeAdapter: CaptureNormalizer, Sendable {
             if case .historical(let audit) = provenance, let rowTime, !audit.includes(contentTime: rowTime) { continue }
             let producerVersion = row["version"].nonemptyString ?? CollectionCompatibility.unknownProducerVersion
             guard let type = row["type"].string else { addGap(.malformedSource); continue }
+            sourceKind = type == "user" ? .claudeUserMessage : type == "assistant" ? .claudeAssistantMessage
+                : type == "attachment" ? .claudeAttachment : .claudeUnknownRecord
             let queuedPrompt = type == "attachment" ? Self.queuedUserPrompt(row["attachment"]) : nil
+            if type == "attachment", row["attachment"]["type"].string == "queued_command",
+               row["attachment"]["commandMode"].string == "prompt", row["attachment"]["isMeta"].bool != true {
+                sourceKind = .claudeQueuedPrompt
+                guard queuedPrompt != nil,
+                      !row["attachment"].has("isMeta") || row["attachment"]["isMeta"].bool != nil else {
+                    addGap(.malformedSource, contentType: .userPrompt, required: true, diagnostic: .invalidFieldType)
+                    continue
+                }
+            }
             // These observed envelopes are session metadata. Anthropic's session reader also
             // excludes non-user/assistant entries from message content. A new content-bearing
             // shape must remain visible as a gap rather than inherit this metadata treatment.
             if queuedPrompt == nil, !row.has("message"), !row.has("content") {
+                // T3's observed normal-mode control carries no message payload. Limit this
+                // recognition to its exact shape so future modes or fields remain visible.
+                if type == "mode", case .object(let fields) = row,
+                   Set(fields.keys) == ["type", "sessionId", "mode"],
+                   row["mode"].string == "normal", let session = row["sessionId"].nonemptyString,
+                   canonicalSession == nil || canonicalSession == session {
+                    fullyRecognized = true
+                    continue
+                }
                 if type == "attachment" {
                     // Attachment payloads sit under "attachment", so the subtype decides.
-                    if Self.contextAttachmentTypes.contains(row["attachment"]["type"].string ?? "") { fullyRecognized = true }
+                    if Self.contextAttachmentTypes.contains(row["attachment"]["type"].string ?? "")
+                        || Self.isContentFreeControlAttachment(row["attachment"]) { fullyRecognized = true }
                     else { addGap(.unsupportedContent) }
                     continue
                 }
@@ -304,6 +378,8 @@ public struct ClaudeAdapter: CaptureNormalizer, Sendable {
             }
             fullyRecognized = true
             for (index, block) in blocks.enumerated() {
+                sourceKind = queuedPrompt != nil ? .claudeQueuedPrompt
+                    : role == "user" ? .claudeUserMessage : .claudeAssistantMessage
                 var itemID: String, contentType: ContentType, segments: [SourceSegment]
                 var basis: CanonicalizationBasis = .exclusiveAuthority
                 switch block["type"].string {
@@ -317,6 +393,7 @@ public struct ClaudeAdapter: CaptureNormalizer, Sendable {
                         : (message["stop_reason"].string == "end_turn" ? .finalResponse : .intermediateResponse)
                     segments = [try SourceSegment(id: "/text", utf8: Data(text.utf8))]
                 case "tool_result":
+                    sourceKind = .claudeToolResult
                     guard type == "user", let id = block["tool_use_id"].nonemptyString, block.has("content") else {
                         addGap(.malformedSource, contentType: block["is_error"].bool == true ? .toolError : .toolOutput, required: true); continue
                     }
@@ -332,9 +409,14 @@ public struct ClaudeAdapter: CaptureNormalizer, Sendable {
                         addGap(.malformedSource, contentType: contentType, required: true); continue
                     }
                     segments = try textSegments(block["content"], pointer: "/result")
+                    if claudeContainsBinaryContent(block["content"]) {
+                        addGap(.unsupportedContent, contentType: contentType,
+                            diagnostic: .excludedBinaryContent, excluded: true)
+                    }
                 case "tool_use", "thinking", "redacted_thinking": continue // Inputs/internal reasoning are not output authority.
-                case "image", "image_url", "audio": addGap(.unsupportedContent); continue
-                default: addGap(.unsupportedContent, required: true); continue
+                case "image", "image_url", "audio":
+                    addGap(.unsupportedContent, diagnostic: .excludedBinaryContent, excluded: true); continue
+                default: addGap(.unsupportedContent, required: true, diagnostic: .unknownBlockKind); continue
                 }
                 guard !segments.isEmpty else { continue }
                 let identity = try SourceIdentity(session: .init(provider: .claudeCode, profileID: profileID, sessionID: sessionID), itemID: itemID)
@@ -350,7 +432,10 @@ public struct ClaudeAdapter: CaptureNormalizer, Sendable {
                 sources.append(CollectedSource(record: record, context: sourceContext))
             }
         }
-        if data.count > limits.maximumBytes { gaps.append(.init(reason: .budgetExhausted)) }
+        if data.count > limits.maximumBytes {
+            gaps.append(.init(reason: .budgetExhausted, capabilityID: documentID, scope: scope,
+                operation: operation, diagnosticCode: .readBudgetExceeded, observedAt: observedAt))
+        }
         let revision = try await cryptography.revision(canonicalBytes: Data(bounded.prefix(offset)))
         let checkpoint = SourceCheckpoint(capabilityID: documentID, sourceDocumentID: documentID,
             revision: revision, byteOffset: UInt64(offset), lastContentTime: sources.map(\.record.metadata.contentTime).max(), gaps: Array(Set(gaps)))
@@ -370,6 +455,32 @@ public struct ClaudeAdapter: CaptureNormalizer, Sendable {
               attachment["isMeta"].bool != true else { return nil }
         if let text = attachment["prompt"].string { return [.object(["type": .string("text"), "text": .string(text)])] }
         return attachment["prompt"].array
+    }
+
+    /// Observed Claude 2.1.296 control records, recognized by payload shape rather than version.
+    /// A successful hook may return real text, so its type alone never excludes its output.
+    private static func isContentFreeControlAttachment(_ attachment: ClaudeJSON) -> Bool {
+        guard case .object(let fields) = attachment else { return false }
+        let keys = Set(fields.keys)
+        switch attachment["type"].string {
+        case "budget_usd":
+            return keys == ["type", "used", "total", "remaining"]
+                && ["used", "total", "remaining"].allSatisfy { attachment[$0].nonnegativeFiniteNumber != nil }
+        case "hook_success":
+            let required: Set<String> = ["type", "hookName", "toolUseID", "hookEvent", "content", "stdout",
+                "stderr", "exitCode", "command", "durationMs"]
+            guard required.isSubset(of: keys), keys.isSubset(of: required.union(["accountMemoryBatch"])),
+                  ["hookName", "toolUseID", "hookEvent", "command"].allSatisfy({ attachment[$0].string != nil }),
+                  attachment["content"].string == "", attachment["stderr"].string == "",
+                  attachment["stdout"].string?.trimmingCharacters(in: .whitespacesAndNewlines) == "{}",
+                  attachment["exitCode"].nonnegativeFiniteNumber == 0,
+                  attachment["durationMs"].nonnegativeFiniteNumber != nil,
+                  !attachment.has("accountMemoryBatch") || attachment["accountMemoryBatch"].bool == false else { return false }
+            // The bundled helper returns this empty control object even when delivery fails.
+            // Recognizing its lack of content establishes no delivery or coverage evidence.
+            return true
+        default: return false
+        }
     }
 
     /// One native tool result cannot have competing canonical bytes or success/error semantics
@@ -472,6 +583,47 @@ public struct ClaudeAdapter: CaptureNormalizer, Sendable {
         return fd
     }
 
+    /// Availability is distinct from complete format coverage. Require a complete native
+    /// identity row in a bounded prefix, without treating other rows as analyzed. This
+    /// also checks warm polls whose incremental cursor legitimately reads zero bytes.
+    private func verifiesAvailableNativeSource(path: String, expectedSessionID: String?,
+                                               interface: AgentInterface) -> Bool {
+        do {
+            let fd = try openTranscript(path: path)
+            defer { Darwin.close(fd) }
+            var before = stat()
+            guard fstat(fd, &before) == 0, before.st_size > 0 else { return false }
+            let bound = min(limits.maximumBytes, limits.maximumRowBytes + 4096, 1024 * 1024 + 4096)
+            let bytes = try claudePread(fd, offset: 0, count: min(bound, Int(before.st_size)))
+            var identity: String?, identityVerified = false, offset = 0, rows = 0
+            for line in bytes.split(separator: 10, omittingEmptySubsequences: false) {
+                guard offset + line.count < bytes.count, rows < 64 else { break }
+                offset += line.count + 1; rows += 1
+                guard line.count <= limits.maximumRowBytes,
+                      let row = try? JSONDecoder().decode(ClaudeJSON.self, from: Data(line)),
+                      let kind = row["type"].string, kind == "user" || kind == "assistant" else { continue }
+                guard let native = row["sessionId"].nonemptyString, native.utf8.count <= 256,
+                      !native.unicodeScalars.contains(where: { $0.value < 32 || $0.value == 127 }) else { continue }
+                guard expectedSessionID == nil || native == expectedSessionID,
+                      identity == nil || identity == native else { return false }
+                identity = native
+                guard row["message"]["role"].string == kind,
+                      let version = row["version"].nonemptyString,
+                      CollectionCompatibility.isEligible(provider: .claudeCode, interface: interface, version: version) else { continue }
+                identityVerified = true
+            }
+            guard identityVerified else { return false }
+            var after = stat()
+            guard fstat(fd, &after) == 0, ClaudeFileSignature(before) == ClaudeFileSignature(after) else { return false }
+            // The name must still select that same safely opened file, not a replacement
+            // or a vanished source after the read completed.
+            let named = try openTranscript(path: path)
+            defer { Darwin.close(named) }
+            var current = stat()
+            return fstat(named, &current) == 0 && ClaudeFileSignature(current) == ClaudeFileSignature(after)
+        } catch { return false }
+    }
+
     private func readTranscript(path: String) throws -> ClaudeTranscriptRead {
         let fd = try openTranscript(path: path)
         defer { Darwin.close(fd) }
@@ -528,6 +680,13 @@ private func textSegments(_ value: ClaudeJSON, pointer: String) throws -> [Sourc
     }
 }
 
+private func claudeContainsBinaryContent(_ value: ClaudeJSON) -> Bool {
+    if ["image", "image_url", "audio"].contains(value["type"].string ?? "") { return true }
+    if let values = value.array { return values.contains(where: claudeContainsBinaryContent) }
+    if case .object(let values) = value { return values.values.contains(where: claudeContainsBinaryContent) }
+    return false
+}
+
 private func canonicalBytes(_ segments: [SourceSegment]) -> Data {
     var bytes = Data("claude-segments-v1".utf8)
     for segment in segments {
@@ -555,6 +714,9 @@ private enum ClaudeJSON: Decodable, Sendable {
     var string: String? { if case .string(let x) = self { return x }; return nil }
     var nonemptyString: String? { string.flatMap { $0.isEmpty ? nil : $0 } }
     var bool: Bool? { if case .bool(let x) = self { return x }; return nil }
+    var nonnegativeFiniteNumber: Double? {
+        if case .number(let x) = self, x.isFinite, x >= 0 { return x }; return nil
+    }
     var array: [ClaudeJSON]? { if case .array(let x) = self { return x }; return nil }
     var isNull: Bool { if case .null = self { return true }; return false }
     var isStructuredTextPayload: Bool {

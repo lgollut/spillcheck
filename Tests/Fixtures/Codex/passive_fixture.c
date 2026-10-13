@@ -13,6 +13,15 @@ int main(int argc, char **argv) {
         char versionmode[32] = "normal";
         FILE *versionfile = fopen("mode", "r");
         if (versionfile) { fscanf(versionfile, "%31s", versionmode); fclose(versionfile); }
+        if (strcmp(versionmode, "replace-during-version") == 0) {
+            /* Only fixed paths in this fixture's disposable root. The running old
+               executable reports A after atomically replacing its pathname with B. */
+            if (rename("../replacement", "../passive-fixture") != 0) return 6;
+            versionfile = fopen("mode", "w");
+            if (!versionfile) return 7;
+            fputs("new-version", versionfile);
+            if (fclose(versionfile) != 0) return 8;
+        }
         puts(strcmp(versionmode, "invalid-version") == 0 ? "another-program 4.0.0" :
              strcmp(versionmode, "new-version") == 0 ? "codex-cli 4.0.0" : "codex-cli 0.161.0");
         return 0;

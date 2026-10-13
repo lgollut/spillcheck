@@ -156,6 +156,8 @@ public struct ObsoleteAppearance: Hashable, Codable, Sendable {
     public let valueID: UUID
     public let source: SourceIdentity
     public let occurredAt: Date
+    /// Nil on native-source appearances and snapshots written before this field.
+    public let timeBasis: SourceTimeBasis?
     public let locator: SourceLocator
     public let provenance: SourceProvenance
     public var label: String { "Obsolete value" }

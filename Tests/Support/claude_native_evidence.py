@@ -12,7 +12,8 @@ import uuid
 
 EXPECTED = {"PROMPT": "userPrompt", "INTERMEDIATE": "intermediateResponse", "FINAL": "finalResponse",
     "SHELL_OK": "toolOutput", "SHELL_ERROR": "toolError", "MCP_OK": "toolOutput", "MCP_ERROR": "toolError",
-    "CHILD_PROMPT": "userPrompt", "CHILD_FINAL": "finalResponse"}
+    "CHILD_PROMPT": "userPrompt", "CHILD_INTERMEDIATE": "intermediateResponse", "CHILD_FINAL": "finalResponse",
+    "CHILD_TOOL_OUTPUT": "toolOutput", "CHILD_TOOL_ERROR": "toolError"}
 PREFIXES = ("LEAKRET_M3_", "LEAKRET_M3_T3_")
 MAXIMUM_CHILDREN = 32
 MAXIMUM_DIRECTORY_ENTRIES = 128
@@ -109,6 +110,11 @@ def inspect_native_parents(parents, secret):
     """parents is an explicit sequence of (path, expected main native session or None)."""
     paths, typed, child_typed, versions, kinds, producer_markers = [], set(), set(), set(), {}, {}
     reasons, sessions_seen, seen_paths = set(), set(), set()
+    role_markers, role_kinds = {"parent": set(), "child": set()}, {"parent": set(), "child": set()}
+    producer_role_markers = {}
+    source_identity_paths = {}
+    role_paths = {"parent": set(), "child": set()}
+    markers_by_path, markers_by_path_and_producer, own_children = {}, {}, {}
     valid, complete, total, row_count, unknown_envelopes, unknown_blocks = True, True, 0, 0, 0, 0
     parent_count = 0
     try:
@@ -124,6 +130,9 @@ def inspect_native_parents(parents, secret):
                 if len(seen_paths) >= MAXIMUM_TOTAL_FILES:
                     raise NativeEvidenceFailure("totalFileCountBudgetExceeded")
                 seen_paths.add(path)
+                role = "child" if child else "parent"
+                if child:
+                    own_children[path] = parent
                 payload = _read(path, MAXIMUM_TOTAL_BYTES - total)
                 total += len(payload)
                 complete = complete and (not payload or payload.endswith(b"\n"))
@@ -150,6 +159,10 @@ def inspect_native_parents(parents, secret):
                         or not _valid_time(row.get("timestamp"))):
                         valid = False; reasons.add("requiredNativeFieldInvalid"); continue
                     session = row["sessionId"]
+                    identity = (session, row["uuid"])
+                    if identity in source_identity_paths and source_identity_paths[identity] != path:
+                        valid = False; reasons.add("nativeIdentityAppearedInDistinctSourceFiles")
+                    source_identity_paths[identity] = path
                     sessions.add(session); sessions_seen.add(session)
                     if expected is not None and session != expected:
                         valid = False; reasons.add("selectedNativeSessionMismatch")
@@ -186,17 +199,24 @@ def inspect_native_parents(parents, secret):
                         if secret not in text:
                             continue
                         kinds.setdefault(version, set()).add(kind)
+                        role_kinds[role].add(kind)
                         for marker, expected_kind in EXPECTED.items():
                             if kind != expected_kind or not any(prefix + marker in text for prefix in PREFIXES):
                                 continue
-                            if marker.startswith("CHILD_"):
-                                if not child or (marker == "CHILD_PROMPT" and not any(
-                                    text.strip().startswith(prefix + marker) for prefix in PREFIXES)):
-                                    continue
+                            if marker.startswith("CHILD_") != child:
+                                continue
+                            if not any(prefix + marker + " " + secret in text for prefix in PREFIXES):
+                                continue
+                            if child:
                                 child_typed.add(marker)
+                            markers_by_path.setdefault(path, set()).add(marker)
+                            markers_by_path_and_producer.setdefault((path, version), set()).add(marker)
+                            role_markers[role].add(marker)
+                            producer_role_markers.setdefault(version, {"parent": set(), "child": set()})[role].add(marker)
                             typed.add(marker)
                             producer_markers.setdefault(version, set()).add(marker)
                 if len(sessions) == 1:
+                    role_paths[role].add(path)
                     paths.append((path, next(iter(sessions))))
                 else:
                     valid = False; reasons.add("sourceNativeSessionNotUnique")
@@ -204,8 +224,26 @@ def inspect_native_parents(parents, secret):
         valid = False; reasons.add(str(error))
     except OSError:
         valid = False; reasons.add("sourceOwnershipTypeOrAccessFailure")
+    parent_required = {marker for marker in EXPECTED if not marker.startswith("CHILD_")}
+    child_required = set(EXPECTED) - parent_required
+    def complete_pair(parent, child, producer=None):
+        parent_markers = markers_by_path.get(parent, set()) if producer is None else markers_by_path_and_producer.get((parent, producer), set())
+        child_markers = markers_by_path.get(child, set()) if producer is None else markers_by_path_and_producer.get((child, producer), set())
+        return parent_required <= parent_markers and child_required <= child_markers
+    complete_pairs = sum(complete_pair(parent, child) for child, parent in own_children.items()) if valid and complete else 0
+    pairs_by_producer = {version: sum(complete_pair(parent, child, version) for child, parent in own_children.items())
+        if valid and complete else 0 for version in sorted(versions)}
     return paths, {"producerVersions": sorted(versions), "typedMarkers": sorted(typed),
         "childTypedMarkers": sorted(child_typed), "completeJSONLFraming": complete,
+        "completeNativeParentChildPairCount": complete_pairs,
+        "completeNativeParentChildPairCountByProducer": pairs_by_producer,
+        "individualNativeRoleCoverageComplete": complete_pairs > 0,
+        "typedMarkersByRole": {role: sorted(values) for role, values in role_markers.items()},
+        "contentTypesByRole": {role: sorted(values) for role, values in role_kinds.items()},
+        "nativeSourceRoles": {"verifiedParentSourceCount": len(role_paths["parent"]),
+            "verifiedOwnChildSourceCount": len(role_paths["child"])},
+        "typedMarkersByProducerAndRole": {version: {role: sorted(values) for role, values in roles.items()}
+            for version, roles in sorted(producer_role_markers.items())},
         "requiredNativeFieldsValid": valid, "nativeTranscriptCount": len(paths), "nativeSessionCount": len(sessions_seen),
         "contentRowCount": row_count, "bytesRead": total, "exactParentAndOwnChildFilesOnly": True,
         "contentTypesByProducer": {version: sorted(values) for version, values in sorted(kinds.items())},

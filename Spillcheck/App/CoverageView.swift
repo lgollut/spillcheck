@@ -27,17 +27,30 @@ extension AgentRoute {
 
     /// Collection status, as summarized in the menu bar.
     var collectionStatus: RouteStatus {
+        if !monitoringActive {
+            return RouteStatus(text: "Monitoring paused", color: Palette.secondary, dot: Palette.quaternary, outlined: false)
+        }
         switch state {
         case .connected:
-            RouteStatus(text: limitations.isEmpty ? (collecting ? "Collecting" : "Verified · awaiting observation") : "Partial coverage",
+            return RouteStatus(text: limitations.isEmpty ? (collecting ? "Live reads available" : "Verified · awaiting content") : "Partial coverage",
                         color: limitations.isEmpty ? Palette.secondary : Palette.amberText,
                         dot: limitations.isEmpty ? Palette.green : Palette.amber, outlined: false)
         case .installedUnverified:
-            RouteStatus(text: waitingForEvent ? "Waiting for the test prompt" : "Installed · not verified yet",
+            return RouteStatus(text: waitingForEvent ? "Waiting for the test prompt" : "Installed · not verified yet",
                         color: Palette.amberText, dot: Palette.amber, outlined: false)
-        case .unsupported: RouteStatus(text: "Stopped · route unavailable", color: Palette.red, dot: Palette.redDot, outlined: false)
-        case .unavailable: RouteStatus(text: "Stopped · needs repair", color: Palette.red, dot: Palette.redDot, outlined: false)
-        default: status
+        case .unsupported: return RouteStatus(text: "Stopped · route unavailable", color: Palette.red, dot: Palette.redDot, outlined: false)
+        case .unavailable: return RouteStatus(text: "Stopped · needs repair", color: Palette.red, dot: Palette.redDot, outlined: false)
+        default: return status
+        }
+    }
+}
+
+extension AppModel {
+    var monitoringIndicatorColor: Color {
+        switch monitoringIndicator {
+        case .active: Palette.green
+        case .attention: Palette.amber
+        case .unavailable, .paused, .waiting: Palette.quaternary
         }
     }
 }
@@ -56,7 +69,7 @@ struct CoverageView: View {
                 Text("Last 7 days · \(rangeText)").font(.system(size: 12)).foregroundStyle(Palette.quaternary).monospacedDigit()
                 Spacer()
                 HStack(spacing: 6) {
-                    StatusDot(color: model.monitoringEnabled ? Palette.green : Color(hex: 0xa1a1a6))
+                    StatusDot(color: model.monitoringIndicatorColor)
                     Text(model.processingText)
                 }
                 .font(.system(size: 12)).foregroundStyle(Palette.tertiary)
@@ -66,10 +79,27 @@ struct CoverageView: View {
             .background(WindowDragArea())
             ScrollView {
                 VStack(alignment: .leading, spacing: 36) {
-                    hero
-                    totals
-                    dailyCoverage
-                    gaps
+                    if model.storageUnavailable {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text(model.coverageStateText)
+                                .font(.system(size: 30, weight: .semibold))
+                                .accessibilityAddTraits(.isHeader)
+                            Text(model.coverageSummaryText)
+                                .font(.system(size: 13)).foregroundStyle(Palette.secondary)
+                            if model.canExportStartupDiagnostics { StartupDiagnosticsButton(model: model) }
+                        }
+                    } else {
+                        hero
+                        totals
+                        collectionStorage
+                        dailyCoverage
+                        if shownRoutes.contains(where: { $0.provider == .codex }) {
+                            Text("Codex beta limits: automatic side chats, encrypted subagent instructions, and general hook-injected context are not covered. Readable replies and tool results are analyzed when available. These limits do not clear recorded gaps.")
+                                .font(.system(size: 12)).foregroundStyle(Palette.tertiary).lineSpacing(2)
+                                .accessibilityIdentifier("coverage.codex-beta-limits")
+                        }
+                        gaps
+                    }
                 }
                 .frame(maxWidth: 820)
                 .padding(.horizontal, 40).padding(.top, 20).padding(.bottom, 48)
@@ -83,9 +113,8 @@ struct CoverageView: View {
     /// found as well as how much was read. Activity appears inline, so the layout never shifts.
     private var hero: some View {
         let conversations = model.activity?.conversationCount ?? 0
-        let messages = model.activity?.messageCount ?? 0
-        let nothingFound = model.monitoringProven && !model.hasEntries
-        let reading = model.monitoringProven && model.monitoringEnabled && model.catchingUp
+        let nothingFound = (model.hasAnalyzedContent || model.monitoringProven) && !model.hasEntries
+        let reading = model.monitoringEnabled && model.catchingUp
         let headline = switch (nothingFound, conversations) {
         case (true, 0): model.catchingUp ? "Reading recent history" : "No conversations analyzed yet"
         // While history is still being read, "nothing found" is only true so far.
@@ -102,7 +131,7 @@ struct CoverageView: View {
             Text(headline)
                 .font(.system(size: nothingFound ? 30 : 34, weight: .semibold)).tracking(-0.6).monospacedDigit()
                 .accessibilityAddTraits(.isHeader)
-            Text(model.monitoringProven ? "\(plural(messages, "message")) analyzed · \(rangeText)" : "Analysis starts once an agent is verified")
+            Text(model.coverageSummaryText)
                 .monospacedDigit()
                 .font(.system(size: 13)).foregroundStyle(Palette.secondary)
             // Live analysis is reported in the header; only a catch-up changes what this summary means.
@@ -117,12 +146,18 @@ struct CoverageView: View {
 
     private var totals: some View {
         let collecting = shownRoutes.filter(\.collecting).count
-        return LazyVGrid(columns: Array(repeating: GridItem(.flexible(minimum: 100), spacing: 20, alignment: .leading), count: 4),
-                         alignment: .leading, spacing: 20) {
-            fact("Agents collecting", "\(collecting) of \(shownRoutes.count)")
-            fact("Processing", model.processingShort)
-            fact("Last catch-up", model.lastCatchUp.map { DisplayTime.full($0) } ?? "Not yet")
-            fact("Gaps", model.coverageGaps.count.formatted())
+        return VStack(alignment: .leading, spacing: 10) {
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(minimum: 100), spacing: 20, alignment: .leading), count: 4),
+                             alignment: .leading, spacing: 20) {
+                fact("Live reads ready", "\(collecting) of \(shownRoutes.count)")
+                fact("Processing", model.processingShort)
+                fact("Catch-up completed", model.lastCatchUp.map { DisplayTime.full($0) } ?? "Not yet")
+                fact(model.coverageReport?.isTruncated == true ? "Shown issues" : "Issues", model.coverageGaps.count.formatted())
+            }
+            if let attempt = model.lastCatchUpAttempt {
+                Text("Last catch-up attempt \(DisplayTime.full(attempt))")
+                    .font(.system(size: 11.5)).foregroundStyle(Palette.tertiary)
+            }
         }
     }
 
@@ -132,6 +167,31 @@ struct CoverageView: View {
             Text(value).font(.system(size: 15, weight: .semibold)).monospacedDigit().lineLimit(1)
         }
         .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder private var collectionStorage: some View {
+        if !model.collectionStorageWarnings.isEmpty {
+            VStack(alignment: .leading, spacing: 12) {
+                ForEach(model.collectionStorageWarnings) { warning in
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(warning.title).font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Palette.amberText).accessibilityAddTraits(.isHeader)
+                        Text(warning.detail)
+                        Text(warning.countText).monospacedDigit()
+                        Text(warning.byteText).monospacedDigit()
+                    }
+                    .accessibilityElement(children: .combine)
+                }
+                Text("These lifetime records prevent duplicate findings. Deleting findings does not free this space.")
+                    .foregroundStyle(Palette.tertiary)
+                Button("Export diagnostics") { model.performCoverageAction(.exportDiagnostics) }
+                    .buttonStyle(QuietButtonStyle(foreground: Palette.link, height: 26))
+                    .disabled(!model.canPerformCoverageAction(.exportDiagnostics))
+            }
+            .font(.system(size: 12)).foregroundStyle(Palette.secondary)
+            .padding(16).frame(maxWidth: .infinity, alignment: .leading).card()
+            .accessibilityIdentifier("coverage.storage-capacity")
+        }
     }
 
     private var dailyCoverage: some View {
@@ -189,6 +249,11 @@ struct CoverageView: View {
                     Text("\(host.name): \(host.summary)")
                         .font(.system(size: 11.5)).foregroundStyle(host.status == .partial ? Palette.amberText : Palette.tertiary)
                         .fixedSize(horizontal: false, vertical: true)
+                        .help(host.acceptanceSummary)
+                    if let lastRead = host.lastReadAt {
+                        Text("Last read \(DisplayTime.full(lastRead))")
+                            .font(.system(size: 11)).foregroundStyle(Palette.tertiary)
+                    }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -209,34 +274,72 @@ struct CoverageView: View {
 
     private var gaps: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Gaps").font(.system(size: 13, weight: .semibold)).padding(.horizontal, 2).accessibilityAddTraits(.isHeader)
+            HStack {
+                Text("Gaps").font(.system(size: 13, weight: .semibold)).accessibilityAddTraits(.isHeader)
+                Spacer()
+                Button("Export diagnostics…") { model.performCoverageAction(.exportDiagnostics) }
+                    .buttonStyle(QuietButtonStyle(foreground: Palette.link, height: 26))
+                    .disabled(!model.canPerformCoverageAction(.exportDiagnostics))
+                    .help(DiagnosticsExport.help)
+            }.padding(.horizontal, 2)
+            if model.coverageReport?.isTruncated == true {
+                Text("This view reached its record limit. The counts in diagnostics show the full query size; coverage remains incomplete.")
+                    .font(.system(size: 12)).foregroundStyle(Palette.amberText)
+            }
             VStack(spacing: 0) {
                 if model.coverageGaps.isEmpty {
-                    Text(model.monitoringProven ? "No gaps recorded in the last 7 days." : "No agent is verified yet, so nothing has been collected.")
+                    Text(model.hasAnalyzedContent || model.monitoringProven
+                        ? "No gaps recorded in the last 7 days." : model.coverageSummaryText)
                         .font(.system(size: 12.5)).foregroundStyle(Palette.tertiary)
                         .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
                         .padding(.horizontal, 16)
                 }
                 ForEach(Array(model.coverageGaps.enumerated()), id: \.element.id) { index, gap in
-                    HStack(spacing: 12) {
-                        RoundedRectangle(cornerRadius: 2).fill(Palette.amber).frame(width: 8, height: 8).accessibilityHidden(true)
-                        Text(gap.text).font(.system(size: 12.5)).foregroundStyle(Palette.ink2).lineSpacing(2)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        if let action = gap.action {
-                            Button(action.label) { model.route = action.route }
-                                .buttonStyle(OutlineButtonStyle(height: 28))
-                        }
-                    }
-                    .padding(.horizontal, 16).padding(.vertical, 10)
-                    .frame(minHeight: 48)
-                    .overlay(alignment: .top) { if index > 0 { Rectangle().fill(Palette.hairline).frame(height: 1) } }
+                    gapRow(gap)
+                        .overlay(alignment: .top) { if index > 0 { Rectangle().fill(Palette.hairline).frame(height: 1) } }
                 }
             }
             .card()
+            if !model.recoveredCoverageGaps.isEmpty {
+                DisclosureGroup("Recovered · \(model.recoveredCoverageGaps.count)") {
+                    VStack(spacing: 0) {
+                        ForEach(model.recoveredCoverageGaps) { gapRow($0) }
+                    }.card()
+                }
+                .font(.system(size: 12)).foregroundStyle(Palette.secondary)
+            }
             Text("First and last observed times don’t prove everything in between was seen. A day with nothing seen may simply have had no agent activity. Inventory entries don’t expire.")
                 .font(.system(size: 12)).foregroundStyle(Palette.tertiary).lineSpacing(2)
                 .padding(.horizontal, 2)
         }
+    }
+
+    private func gapRow(_ gap: AppModel.CoverageGapRow) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            RoundedRectangle(cornerRadius: 2)
+                .fill([.recovered, .excluded].contains(gap.state) ? Palette.quaternary : Palette.amber)
+                .frame(width: 8, height: 8).padding(.top, 5).accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(gap.text).font(.system(size: 12.5)).foregroundStyle(Palette.ink2).lineSpacing(2)
+                Text(gap.stateLabel + (gap.count > 1 ? " · \(gap.count) records" : ""))
+                    .font(.system(size: 11.5, weight: .medium)).foregroundStyle(Palette.secondary)
+                if let first = gap.firstObservedAt {
+                    Text("First recorded \(DisplayTime.full(first))"
+                         + (gap.lastObservedAt.flatMap { $0 > first ? " · Last recorded \(DisplayTime.full($0))" : nil } ?? ""))
+                        .font(.system(size: 11)).foregroundStyle(Palette.tertiary)
+                }
+                if let detail = gap.detail {
+                    Text(detail).font(.system(size: 11)).foregroundStyle(Palette.tertiary)
+                }
+            }.frame(maxWidth: .infinity, alignment: .leading)
+            if let action = gap.action {
+                Button(action.label) { model.performCoverageAction(action) }
+                    .buttonStyle(OutlineButtonStyle(height: 28))
+                    .disabled(!model.canPerformCoverageAction(action))
+            }
+        }
+        .padding(.horizontal, 16).padding(.vertical, 12)
+        .frame(minHeight: 48)
     }
 }
 

@@ -31,15 +31,13 @@ Changesets applies the highest pending bump once. Starting at `0.1.0`, two patch
 notes and one minor note produce `0.2.0`, not three successive releases. Rebuilding
 an open release PR does not repeatedly increment the build number. Empty
 changesets do not create a release PR on their own; they are consumed alongside
-the next versioned release. The CI bootstrap PR therefore creates no tag or
-release when merged.
+the next versioned release.
 
-The first release pipeline publishes a changelog only. GitHub may show its
-automatic source archives, but the workflow uploads no app, DMG, or installer.
-Signed app assets remain deferred until the recorded
-[release checks](implementation/release-checks.json) pass.
+Current automation publishes a changelog only. GitHub may show its automatic
+source archives, but the workflow uploads no app, DMG or installer. App assets
+require the [distribution gates](#before-distributing-an-app) below.
 
-## GitHub configuration before merging the CI bootstrap PR
+## Required GitHub configuration
 
 The automation uses a private GitHub App installed only on this repository. Give
 it repository **Contents: Read and write** and **Pull requests: Read and write**.
@@ -58,8 +56,7 @@ Default workflow permissions can remain read-only, and **Allow GitHub Actions to
 create and approve pull requests** can remain off: the App token creates release
 PRs and tags. PR jobs do not receive the App secret.
 
-After the first bootstrap PR run makes the check available, finish these rules
-before merging it:
+Once CI exposes its required check, keep these repository rules enabled:
 
 1. Under **Settings → Rules → Rulesets**, create an active branch ruleset targeting
    `main`. Require a pull request, require status check **`Required checks`** from
@@ -102,3 +99,25 @@ changing any release metadata.
 `npm run version:release` can preview versioning in a disposable branch or
 worktree. It consumes changesets and edits release files, so do not run it on a
 feature branch you intend to merge. The automated release PR owns those edits.
+
+
+## Before distributing an app
+
+The release baseline is macOS 14 or later, Apple Silicon first, with signed and
+notarized direct distribution. App distribution remains deferred. Local
+controlled acceptance and changelog publication do not close these gates:
+
+| Required check | Current state |
+| --- | --- |
+| Runtime on macOS 14 | Unverified; requires a macOS 14 environment. |
+| Hardware without Touch ID | Unverified; requires a Mac without Touch ID. Password fallback on a Touch ID Mac is insufficient. |
+| Developer ID signing and notarization | Deferred until distribution. |
+| Gatekeeper installation/update and production-vault key persistence across distribution upgrades | Unverified. |
+| Actual logout/login launch | Unverified. |
+
+The user deferred the two platform tests until before release and distribution
+work until before distribution. These are scheduling deferrals, not waived
+requirements; the platform baseline and authentication requirements are unchanged.
+Do not publish app assets until the checks pass on the intended signed artifact.
+Preserve user data and keys through updates, and follow the
+[beta enrollment and trial requirements](BETA_READINESS.md) for controlled use.

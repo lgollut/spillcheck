@@ -96,7 +96,7 @@ struct MenuBarView: View {
                 model.toggleMonitoring()
                 close()
             }
-            .disabled(!model.storageReady || model.monitoringTransition || model.stopped || model.isDemo)
+            .disabled(model.storageUnavailable || model.monitoringTransition || model.stopped || model.isDemo)
             divider
             MenuRow(title: "Quit \(AppIdentity.name)", shortcut: "⌘Q", action: quit)
             Text("Quitting stops monitoring. Closing the window doesn’t.")
@@ -124,8 +124,8 @@ struct MenuBarView: View {
             }
             Spacer()
             HStack(spacing: 6) {
-                StatusDot(color: model.monitoringEnabled ? Palette.green : Color(hex: 0xa1a1a6))
-                Text(model.monitoringEnabled ? "Monitoring on" : (model.stopped ? "Stopped" : "Paused"))
+                StatusDot(color: model.monitoringIndicatorColor)
+                Text(model.monitoringStatusText)
             }
             .font(.system(size: 12)).foregroundStyle(Palette.ink2)
         }
@@ -135,12 +135,15 @@ struct MenuBarView: View {
     private var needsReviewCard: some View {
         let values = model.needsReview
         let occurrences = values.reduce(0) { $0 + max($1.unreviewed, $1.unlocated ? 1 : 0) }
-        let title = values.isEmpty ? "Nothing awaiting review" : "\(plural(values.count, "value")) need\(values.count == 1 ? "s" : "") review"
-        let subtitle = values.isEmpty
+        let title = model.inventoryStatusTitle ?? (values.isEmpty ? "Nothing awaiting review" : "\(plural(values.count, "value")) need\(values.count == 1 ? "s" : "") review")
+        let subtitle = model.storageSummaryText ?? (values.isEmpty
             ? (model.monitoringProven ? "In analyzed content. Coverage may be partial." : "Finish setup to start monitoring.")
-            : "\(plural(occurrences, "unreviewed occurrence")) · latest \(DisplayTime.short(values[0].entry.observedAt))"
+            : "\(plural(occurrences, "unreviewed occurrence")) · latest \(DisplayTime.short(values[0].entry.observedAt))")
         return Button {
-            if model.monitoringProven || !values.isEmpty {
+            if model.storageUnavailable {
+                model.route = .inventory
+                openInventory()
+            } else if model.monitoringProven || !values.isEmpty {
                 if let first = values.first { model.selectEntry(first.id) } else { model.route = .inventory }
                 openInventory()
             } else {
@@ -174,11 +177,18 @@ struct MenuBarView: View {
             HStack(alignment: .firstTextBaseline) {
                 Text("Coverage").font(.system(size: 12, weight: .semibold))
                 Spacer()
-                Text(shownRoutes.isEmpty ? "Nothing connected" : "\(shownRoutes.filter(\.collecting).count) of \(shownRoutes.count) collecting")
+                Text(model.liveReadReadinessText)
                     .font(.system(size: 11.5)).foregroundStyle(Palette.tertiary).monospacedDigit()
             }
             .padding(.horizontal, 8).padding(.bottom, 4)
-            if shownRoutes.isEmpty {
+            if model.storageUnavailable {
+                Button(action: openCoverage) {
+                    Text(model.storageSummaryText ?? "Coverage is unavailable until the vault opens.")
+                        .font(.system(size: 11.5)).foregroundStyle(Palette.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 8).padding(.vertical, 5)
+                }.buttonStyle(.plain)
+            } else if shownRoutes.isEmpty {
                 Button(action: openCoverage) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("No agent is being collected").font(.system(size: 12.5, weight: .medium))
@@ -195,7 +205,7 @@ struct MenuBarView: View {
                 .buttonStyle(.plain)
                 .padding(.horizontal, 4)
             }
-            ForEach(shownRoutes) { route in
+            ForEach(model.storageUnavailable ? [] : shownRoutes) { route in
                 let status = route.collectionStatus
                 Button(action: openCoverage) {
                     HStack(spacing: 10) {
@@ -213,7 +223,7 @@ struct MenuBarView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("\(route.name): \(status.text)")
             }
-            ForEach(model.routes.filter { $0.state == .notDetected }) { route in
+            ForEach(model.storageUnavailable ? [] : model.routes.filter { $0.state == .notDetected }) { route in
                 Text("\(route.provider.displayName) wasn’t found on this Mac.")
                     .font(.system(size: 11.5)).foregroundStyle(Palette.secondary)
                     .padding(.horizontal, 8).padding(.top, 3)

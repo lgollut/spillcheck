@@ -14,7 +14,9 @@ struct CollectionCompatibilityTests {
                 producerVersion: version) == .unverified)
         }
         #expect(!CollectionCompatibility.isEligible(provider: .claudeCode, interface: .standaloneCLI, version: ""))
-        #expect(!CollectionCompatibility.isEligible(provider: .claudeCode, interface: .desktopCode, version: "2.1.293"))
+        #expect(CollectionCompatibility.isEligible(provider: .claudeCode, interface: .desktopCode, version: "2.1.293"))
+        #expect(CollectionCompatibility.recordedEvidence(provider: .claudeCode, interface: .desktopCode,
+            producerVersion: "2.1.293") == .unverified)
     }
 
     @Test func connectionCompatibilityAndAcceptanceAreIndependent() {

@@ -88,9 +88,41 @@ class HookDeliveryTests(unittest.TestCase):
         self.thread = threading.Thread(target=listen)
         self.thread.start()
 
-    def deliver(self, payload, arguments=None):
+    def deliver(self, payload, arguments=None, bulk_pipe_input=False):
         start = time.monotonic()
-        result = subprocess.run(arguments or self.arguments(), input=payload, capture_output=True, cwd=self.root, timeout=1)
+        command = arguments or self.arguments()
+        if bulk_pipe_input:
+            # communicate(input=...) writes at most select.PIPE_BUF bytes per wakeup.
+            # On macOS this can exhaust the helper's deadline merely feeding 8 MB.
+            # A blocking pipe writer supplies the same bytes without that scheduler
+            # throttle. The slow/open-stdin tests separately enforce the deadline.
+            process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                       stderr=subprocess.PIPE, cwd=self.root)
+            writer = process.stdin
+            process.stdin = None  # communicate owns only output; the writer owns stdin.
+            writer_errors = []
+
+            def write_input():
+                try:
+                    with writer:
+                        writer.write(payload)
+                except Exception as error:
+                    writer_errors.append(type(error).__name__)
+
+            producer = threading.Thread(target=write_input)
+            producer.start()
+            try:
+                stdout, stderr = process.communicate(timeout=1)
+                result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.communicate(timeout=1)
+                producer.join(timeout=1)
+                self.assertFalse(producer.is_alive(), "test input writer did not stop")
+            self.assertEqual(writer_errors, [], "helper stopped before receiving the complete test input")
+        else:
+            result = subprocess.run(command, input=payload, capture_output=True, cwd=self.root, timeout=1)
         # The attempt deadline starts inside the helper, after process startup.
         elapsed = time.monotonic() - (self.connected_at if self.connected_at is not None else start)
         self.assertEqual(result.returncode, 0)
@@ -233,8 +265,10 @@ class HookDeliveryTests(unittest.TestCase):
         payload = b'{"tool_response":[' + b'"x",' * 1_999_999 + b'"x"]}'
         self.assertEqual(len(payload), 8_000_019)
         self.serve()
-        self.assertLess(self.deliver(payload), 0.2)
+        self.assertLess(self.deliver(payload, bulk_pipe_input=True), 0.2)
         self.thread.join(timeout=1)
+        self.assertEqual(self.server_errors, [])
+        self.assertEqual(len(self.frames), 1, "helper did not deliver the large test frame")
         metadata, raw_bytes = decode_frame(self.frames[0])
         self.assertEqual(metadata["schemaVersion"], 1)
         self.assertEqual(raw_bytes, payload)

@@ -1,13 +1,12 @@
-// Standalone production-implementation probe. Compile this with SourceContracts.swift,
-// StorageContracts.swift and Protection.swift; then package/sign it with Spillcheck's own
-// app identity, provisioning profile and Keychain entitlement before running.
+// Links the production Core package, including durable bootstrap and manifest commit.
+// Package/sign with Spillcheck's own identity and Keychain entitlement before running.
 import AppKit
 import Foundation
 import LocalAuthentication
 import Security
-#if canImport(SpillcheckCore)
 @_spi(Testing) import SpillcheckCore
-#endif
+
+private enum ProbeFixtureFailure: Error { case legacyFixtureRequiresFreshDirectory }
 
 private struct ProbeReport: Codable {
     let checks: [String: Bool]
@@ -114,22 +113,29 @@ private struct ProtectionSignedProbe {
             try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
             let manifestURL = directory.appendingPathComponent("manifest.json")
             let payloadURL = directory.appendingPathComponent("inventory.json")
-            let existing = FileManager.default.fileExists(atPath: manifestURL.path)
+            let storedManifest = FileManager.default.fileExists(atPath: manifestURL.path)
                 ? try JSONDecoder().decode(ProtectionManifest.self, from: Data(contentsOf: manifestURL)) : nil
-            let state: StoreProtectionState = FileManager.default.fileExists(atPath: payloadURL.path)
-                ? .protectedDataPresent : .empty
-            let services = try await ProtectionBootstrap.prepare(manifest: existing, storeState: state,
-                                                                 configuration: configuration)
-            if services.createdNewManifest {
+            let storeDirectory = directory.appendingPathComponent("protected-store", isDirectory: true)
+            let probe = try ProtectedStore.probe(at: storeDirectory)
+            guard probe.manifest != nil || (storedManifest == nil && !FileManager.default.fileExists(atPath: payloadURL.path)) else {
+                throw ProbeFixtureFailure.legacyFixtureRequiresFreshDirectory
+            }
+            if let storedManifest, storedManifest != probe.manifest { throw ProtectionBootstrapError.manifestMismatch }
+            let services = try await ProtectionBootstrap.prepare(at: storeDirectory,
+                manifest: probe.manifest, storeState: probe.state, configuration: configuration)
+            let store = try await ProtectedStore.open(at: storeDirectory, cryptography: services.background)
+            try await store.close()
+            try services.commitBootstrap()
+            if storedManifest == nil {
                 try writePrivate(JSONEncoder().encode(services.manifest), to: manifestURL)
             }
             checks["bootstrap-with-real-keychain-and-persisted-right"] = true
+            checks["bootstrap-manifest-durably-committed"] = try ProtectedStore.probe(at: storeDirectory).manifest == services.manifest
             let backgroundBinding = PayloadBinding(reference: ProtectedPayloadReference(), ownerID: UUID(), kind: .queueEvent)
             let syntheticQueue = Data("SYNTHETIC-SPILLCHECK-PRODUCTION-QUEUE-Ä\n".utf8)
             let queue = try await services.background.sealBackground(syntheticQueue, binding: backgroundBinding)
             checks["real-queue-key-round-trip"] = try await services.background.openBackground(queue, binding: backgroundBinding) == syntheticQueue
-            let reloaded = try await ProtectionBootstrap.prepare(manifest: services.manifest, storeState: .protectedDataPresent,
-                                                                 configuration: configuration)
+            let reloaded = try await ProtectionBootstrap.load(manifest: services.manifest, configuration: configuration)
             checks["real-key-reload-opens-queue"] = try await reloaded.background.openBackground(queue, binding: backgroundBinding) == syntheticQueue
             let originalFingerprint = try await services.background.fingerprint(exactBytes: syntheticQueue)
             let reloadedFingerprint = try await reloaded.background.fingerprint(exactBytes: syntheticQueue)
@@ -172,8 +178,7 @@ private struct ProtectionSignedProbe {
                                              identityKeyID: unknownKey.identityKeyID,
                                              inventoryRightID: unknownKey.inventoryRightID)
             do {
-                _ = try await ProtectionBootstrap.prepare(manifest: unknownKey, storeState: .protectedDataPresent,
-                                                           configuration: configuration)
+                _ = try await ProtectionBootstrap.load(manifest: unknownKey, configuration: configuration)
                 checks["missing-queue-key-fails-without-replacement"] = false
             } catch KeyUnavailable.missingKey(.queue) {
                 checks["missing-queue-key-fails-without-replacement"] = true
@@ -182,8 +187,7 @@ private struct ProtectionSignedProbe {
                                                      queueKeyID: services.manifest.queueKeyID, identityKeyID: UUID(),
                                                      inventoryRightID: services.manifest.inventoryRightID)
             do {
-                _ = try await ProtectionBootstrap.prepare(manifest: missingIdentity, storeState: .protectedDataPresent,
-                                                           configuration: configuration)
+                _ = try await ProtectionBootstrap.load(manifest: missingIdentity, configuration: configuration)
                 checks["missing-identity-key-fails-without-replacement"] = false
             } catch KeyUnavailable.missingKey(.identity) {
                 checks["missing-identity-key-fails-without-replacement"] = true
@@ -193,8 +197,7 @@ private struct ProtectionSignedProbe {
                                                  identityKeyID: services.manifest.identityKeyID,
                                                  inventoryRightID: "\(configuration.identifierPrefix).inventory.v1.\(absentVaultID.uuidString)")
             do {
-                _ = try await ProtectionBootstrap.prepare(manifest: absentRight, storeState: .protectedDataPresent,
-                                                           configuration: configuration)
+                _ = try await ProtectionBootstrap.load(manifest: absentRight, configuration: configuration)
                 checks["missing-inventory-right-fails-without-replacement"] = false
             } catch KeyUnavailable.missingKey(.inventory) {
                 checks["missing-inventory-right-fails-without-replacement"] = true
@@ -202,8 +205,8 @@ private struct ProtectionSignedProbe {
                 checks["missing-inventory-right-fails-without-replacement"] = true
             }
             do {
-                _ = try await ProtectionBootstrap.prepare(manifest: nil, storeState: .protectedDataPresent,
-                                                           configuration: configuration)
+                _ = try await ProtectionBootstrap.prepare(at: storeDirectory, manifest: nil,
+                    storeState: .protectedDataPresent, configuration: configuration)
                 checks["missing-manifest-preserves-protected-state"] = false
             } catch KeyUnavailable.missingManifest {
                 checks["missing-manifest-preserves-protected-state"] = FileManager.default.fileExists(atPath: payloadURL.path)
@@ -227,6 +230,8 @@ private struct ProtectionSignedProbe {
         } catch {
             checks["probe-completed"] = false
             switch error {
+            case ProbeFixtureFailure.legacyFixtureRequiresFreshDirectory: failure = "legacy-fixture-requires-fresh-directory"
+            case is ProtectionBootstrapError: failure = "bootstrap-recovery-unconfirmed"
             case ViewingAuthorizationError.cancelled: failure = "authorization-cancelled"
             case ViewingAuthorizationError.unavailable(let code): failure = "authorization-unavailable"; errorCode = code
             case ViewingAuthorizationError.denied(let code): failure = "authorization-denied"; errorCode = code

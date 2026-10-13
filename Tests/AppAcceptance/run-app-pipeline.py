@@ -87,7 +87,7 @@ with AcceptanceArtifacts("spillcheck-app-pipeline-", args.output) as artifacts:
     expected = {"userPrompt", "intermediateResponse", "finalResponse", "toolOutput", "toolError"}
     passed = not timed_out and process.returncode == 0 and result.get("storageReady") and result.get("collectionConfigured") \
         and result.get("queueCount") == 0 and result.get("valueCount") == 1 and result.get("occurrenceCount") == 5 \
-        and set(result.get("occurrencesByContentType", {})) == expected and not result.get("gapReasons") \
+        and set(result.get("occurrencesByContentType", {})) == expected and result.get("gapReasons") == [] and result.get("coverageReportTruncated") is False \
         and result.get("newVaultCleanupPassed") is True and clean
     output = {"schemaVersion": 1, "signedAppExitCode": process.returncode,
               "timedOut": timed_out,

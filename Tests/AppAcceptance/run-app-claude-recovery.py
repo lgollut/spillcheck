@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Genuine owned Claude upgrade and signed process restart against one disposable vault."""
 import argparse
+import base64
+import datetime
 import hashlib
 import importlib.util
 import json
@@ -12,10 +14,12 @@ import shutil
 import subprocess
 import sys
 import time
+import uuid
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "Tests"))
 from Support.acceptance_artifacts import AcceptanceArtifacts
+from Support.acceptance_journal import ClaudeRecoveryJournal
 from Support.processes import stop_group
 
 spec = importlib.util.spec_from_file_location("signed_claude_live", Path(__file__).with_name("run-app-claude-live.py"))
@@ -49,7 +53,46 @@ def require(value, gate):
 
 def comparison(before, after, key):
     old, new = before.get(key), after.get(key)
-    return isinstance(old, list) and bool(old) and isinstance(new, list) and set(old) <= set(new)
+    def digest(value):
+        if not isinstance(value, str):
+            return False
+        try:
+            decoded = base64.b64decode(value, validate=True)
+            return len(decoded) == 32 and base64.b64encode(decoded).decode() == value
+        except ValueError:
+            return False
+    def digests(value):
+        return isinstance(value, list) and all(digest(item) for item in value) and len(value) == len(set(value))
+    return digests(old) and bool(old) and digests(new) and set(old) <= set(new)
+
+
+def native_role_coverage_complete(evidence, producers):
+    pairs = evidence.get("completeNativeParentChildPairCountByProducer", {})
+    return evidence.get("requiredNativeFieldsValid") is True \
+        and evidence.get("completeJSONLFraming") is True \
+        and evidence.get("individualNativeRoleCoverageComplete") is True \
+        and isinstance(pairs, dict) and all(type(pairs.get(version)) is int and pairs[version] > 0
+            for version in producers)
+
+
+def committed_role_coverage_complete(report, producers):
+    pairs = report.get("claudeCommittedNativeParentChildPairCountByProducer", {})
+    return live.strict_role_coverage_complete(report) and isinstance(pairs, dict) \
+        and all(type(pairs.get(version)) is int and pairs[version] > 0 for version in producers)
+
+
+def exact_source_reread(path, session):
+    """Use the existing bounded production retry cursor for this original native file."""
+    end = datetime.datetime.now(datetime.timezone.utc).timestamp() - 978307200
+    return {"kind": "LeakretClaudeHistory", "version": 1,
+        "audit": {"id": str(uuid.uuid4()), "reason": "resume", "start": end - 604800, "end": end},
+        "directories": [], "pending": [str(path)], "deferred": [], "partial": False,
+        "restartSources": [str(path)], "selectedSessionID": session}
+
+
+def cleanup_confirmed(cleanup):
+    return isinstance(cleanup, dict) and cleanup.get("term_permission_denied") is False \
+        and cleanup.get("kill_permission_denied") is False
 
 
 def public_snapshot(report):
@@ -67,12 +110,20 @@ def fixed_rebuild_command(repository, app):
             "--derived-data", str(repository / ".build/app")]
 
 
-def migration_schema_observed(report):
-    return report.get("recoveryProfileSchemaMeasurementAvailable") is True \
+def migration_schema_observed(report, expected_starting_schema=2):
+    return type(expected_starting_schema) is int and expected_starting_schema in (1, 2) \
+        and report.get("recoveryProfileSchemaMeasurementAvailable") is True \
         and type(report.get("recoveryLoadedProfileSchemaVersion")) is int \
-        and report["recoveryLoadedProfileSchemaVersion"] == 2 \
+        and report["recoveryLoadedProfileSchemaVersion"] == expected_starting_schema \
         and type(report.get("recoverySavedProfileSchemaVersion")) is int \
         and report["recoverySavedProfileSchemaVersion"] == 3
+
+
+def migration_claims(*, passed, rebuild_requested, owner_smoke, expected_starting_schema, report):
+    established = passed is True and rebuild_requested is True and owner_smoke is False \
+        and migration_schema_observed(report, expected_starting_schema)
+    return {"signedAppSchema1To3MigrationEstablished": established and expected_starting_schema == 1,
+            "signedAppSchema2To3MigrationEstablished": established and expected_starting_schema == 2}
 
 
 def source_snapshot(repository):
@@ -150,7 +201,8 @@ RECOVERY_CHECKS = {
     "noPersistedCoverageGaps", "nativeRequiredContentAndFraming", "producerInstallationsUnchanged",
     "encryptedMarkerInspection", "originalNativeSourcesUnchanged", "originalFreshCreatorCleanupPassed", "ownedRegistrationRemoved",
     "temporaryAuthenticationRemoved", "ownedProcessGroupsStopped", "automaticUpgradeAndRestartAuditsSettled",
-    "exactPendingCapturesSuccessfullyProcessedAfterRestart", "nativeChildPromptAndFinalCommittedForBothProducers"
+    "exactPendingCapturesSuccessfullyProcessedAfterRestart", "nativeChildPromptAndFinalCommittedForBothProducers",
+    "allIndividualRolesCommittedForBothProducersBeforeRestart", "allIndividualRolesRestoredAfterExactSourceReread"
 }
 SMOKE_CHECKS = {"freshOwnerCreatedVault", "workerLoadedExistingVault", "workerExitedBeforeCleanup",
                 "originalFreshCreatorCleanupPassed", "ownedRegistrationRemoved",
@@ -160,7 +212,14 @@ MIGRATION_CHECKS = {"oldSignedCreatorRetainedThroughBuild", "buildOccurredBetwee
                    "productionSourcesFrozenThroughMigration", "encryptedProfileSchema2MigratedTo3"}
 
 
-def main():
+def migration_checks(expected_starting_schema=2):
+    require(type(expected_starting_schema) is int and expected_starting_schema in (1, 2),
+            "unsupportedStartingProfileSchema")
+    return MIGRATION_CHECKS - {"encryptedProfileSchema2MigratedTo3"} \
+        | {f"encryptedProfileSchema{expected_starting_schema}MigratedTo3"}
+
+
+def parse_arguments(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--app", type=Path, default=ROOT / ".build/app/Build/Products/Debug/Spillcheck.app")
@@ -171,12 +230,29 @@ def main():
     parser.add_argument("--configuration-executable", type=Path, default=ROOT / ".build/debug/spillcheck-storage-acceptance")
     parser.add_argument("--owner-smoke", action="store_true", help="Only validate fresh creator / signed worker / exact cleanup lifetime.")
     parser.add_argument("--rebuild-app-between-workers", action="store_true",
-                        help="Build the fixed repository Debug bundle after worker1 exits; require encrypted profile schema 2 to migrate to 3.")
-    args = parser.parse_args()
+                        help="Build the fixed repository Debug bundle after worker1 exits; require the selected encrypted profile schema to migrate to 3.")
+    parser.add_argument("--expected-starting-schema", type=int, choices=(1, 2),
+                        help="Expected measured schema before migration (default: 2). Requires --rebuild-app-between-workers and a genuine signed baseline that writes that schema.")
+    live.candidate_arguments(parser)
+    args = parser.parse_args(argv)
+    live.candidate_admission(parser, args)
+    if args.candidate_manifest is not None and args.rebuild_app_between_workers:
+        parser.error("candidate pinning requires a fixed candidate; rebuild mode changes the signed bundle")
+    if args.expected_starting_schema is not None and not args.rebuild_app_between_workers:
+        parser.error("--expected-starting-schema requires --rebuild-app-between-workers")
+    if args.expected_starting_schema is None:
+        args.expected_starting_schema = 2
+    return args
+
+
+def main():
+    args = parse_arguments()
     os.umask(0o077)
     app = args.app.resolve()
     rebuild_command = fixed_rebuild_command(ROOT, app) if args.rebuild_app_between_workers else None
     require(not (args.owner_smoke and args.rebuild_app_between_workers), "migrationRequiresFullGenuineRun")
+    required_migration_checks = migration_checks(args.expected_starting_schema)
+    schema_check = f"encryptedProfileSchema{args.expected_starting_schema}MigratedTo3"
     binary = app / "Contents/MacOS/Spillcheck"
     helper = app / "Contents/Helpers/spillcheck-hook"
     starting = Path(shutil.which(args.starting_executable) or args.starting_executable).resolve()
@@ -186,7 +262,10 @@ def main():
     require(old_version == args.expected_starting_version and new_version == args.expected_upgraded_version
             and old_version != new_version, "genuineDistinctProducerVersionsUnavailable")
     subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(app)], check=True)
-    with AcceptanceArtifacts("spillcheck-app-claude-recovery-", args.output) as artifacts:
+    candidate_before = live.candidate_snapshot(args.candidate_manifest, args.expected_bundle_sha256, app)
+    with AcceptanceArtifacts("spillcheck-app-claude-recovery-", args.output,
+                             diagnostic_journal_factory=ClaudeRecoveryJournal) as artifacts:
+        artifacts.report.update(candidateBinding=candidate_before, candidateUnchanged=False)
         root = artifacts.directory
         token = os.urandom(32)
         (root / "run-token").write_bytes(token)
@@ -203,12 +282,14 @@ def main():
         processes, streams, provider_runs, process_cleanups = [], [], [], []
         owner = worker1 = worker2 = None
         removal_passed = False
+        authentication_removed = False
         checks = {}
         final = {}
         native = {}
         before_restart = {}
         owner_report = {}
         transition = {"requested": args.rebuild_app_between_workers, "buildStarted": False}
+        schema_migration_report = {}
         sources_before = None
         bindings_before = None
         owner_binary = binary
@@ -254,6 +335,9 @@ def main():
             owner_arguments[0] = str(owner_binary)
             owner = launch(owner_arguments, "owner")
             wait(owner, "owner-report.json", lambda r: r.get("ownerReady") and r.get("createdFreshVault"), "freshVaultOwnerUnavailable")
+            # Persist only the exact protection identities before any provider work.
+            # This identifies interrupted disposable state, never licenses key deletion.
+            artifacts.diagnostic_journal.require_manifest()
             if args.owner_smoke:
                 checks["freshOwnerCreatedVault"] = True
                 worker1 = launch(command("worker1-report.json", "worker1-finish") + ["--acceptance-recovery-worker",
@@ -276,7 +360,8 @@ def main():
             phase = "first-signed-worker"
             worker1 = launch(command("worker1-report.json", "worker1-finish") + ["--acceptance-recovery-worker",
                 "--acceptance-recovery-install-profile", "--acceptance-recovery-home", str(config),
-                "--acceptance-recovery-executable", str(selected), "--acceptance-recovery-version", old_version], "worker1")
+                "--acceptance-recovery-executable", str(selected), "--acceptance-recovery-version", old_version,
+                "--acceptance-recovery-claude-role-evidence"], "worker1")
             ready = wait(worker1, "worker1-report.json", lambda r: r.get("storageReady") and r.get("collectionConfigured")
                          and isinstance(r.get("recoveryVerificationPrompt"), str), "ownedSetupChallengeUnavailable")
             provider_runs.append(fixture.run_provider(selected, ready["recoveryVerificationPrompt"], env, project, mcp))
@@ -288,7 +373,8 @@ def main():
             baseline = live.settled_report(worker1, root / "worker1-report.json")
             require(baseline.get("queueCount") == 0 and baseline.get("syntheticValuePresent")
                     and baseline.get("unreadHistoricalProgressCount") == 0
-                    and baseline.get("settledHistoricalAuditCount", 0) > 0, "startingInventoryUnsettled")
+                    and baseline.get("settledHistoricalAuditCount", 0) > 0
+                    and committed_role_coverage_complete(baseline, [old_version]), "startingInventoryUnsettled")
             original_paths, original_native = live.native_evidence(config)
             require(bool(original_paths) and original_native.get("requiredNativeFieldsValid") is True,
                     "startingNativeSourcesUnavailable")
@@ -307,8 +393,11 @@ def main():
             before_restart = live.settled_report(worker1, root / "worker1-report.json")
             before_restart = wait(worker1, "worker1-report.json", lambda r: r.get("queueCount") == 0
                 and r.get("unreadHistoricalProgressCount") == 0
-                and r.get("settledHistoricalAuditCount", 0) > baseline["settledHistoricalAuditCount"],
+                and r.get("settledHistoricalAuditCount", 0) > baseline["settledHistoricalAuditCount"]
+                and committed_role_coverage_complete(r, [old_version, new_version]),
                 "automaticUpgradeAuditUnsettled")
+            checks["allIndividualRolesCommittedForBothProducersBeforeRestart"] = committed_role_coverage_complete(
+                before_restart, [old_version, new_version])
             required = {"userPrompt", "intermediateResponse", "finalResponse", "toolOutput", "toolError"}
             committed = before_restart.get("syntheticOccurrencesByProducerVersionAndContentType", {})
             checks["genuineRequiredTypesFromBothProducersCommitted"] = all(
@@ -361,24 +450,30 @@ def main():
                 sources_after = source_snapshot(ROOT)
                 (root / "migration-source-hashes-after.json").write_text(json.dumps(sources_after, sort_keys=True))
                 checks["productionSourcesFrozenThroughMigration"] = sources_after == sources_before
-                require(all(checks[key] for key in MIGRATION_CHECKS - {"encryptedProfileSchema2MigratedTo3"}),
+                require(all(checks[key] for key in required_migration_checks - {schema_check}),
                         "signedBuildTransitionEvidenceFailed")
             phase = "cold-signed-process-restart"
-            worker2 = launch(command("worker2-report.json", "worker2-finish") + ["--acceptance-recovery-worker"], "worker2")
+            worker2 = launch(command("worker2-report.json", "worker2-finish") + ["--acceptance-recovery-worker",
+                "--acceptance-recovery-claude-role-evidence", "--acceptance-recovery-home", str(config),
+                "--acceptance-recovery-executable", str(selected), "--acceptance-recovery-version", new_version,
+                "--acceptance-allow-history-request"], "worker2")
             recovered = wait(worker2, "worker2-report.json", lambda r: r.get("storageReady") and r.get("collectionConfigured")
                              and r.get("queueCount") == 0 and r.get("unreadHistoricalProgressCount") == 0
                              and r.get("settledHistoricalAuditCount", 0) > before_restart.get("settledHistoricalAuditCount", 0)
                              and r.get("syntheticOccurrenceCount", 0) > before_restart.get("syntheticOccurrenceCount", 0)
                              and r.get("recoveryCaptureIdentityMeasurementAvailable") is True
-                             and (not args.rebuild_app_between_workers or migration_schema_observed(r))
+                             and (not args.rebuild_app_between_workers
+                                  or migration_schema_observed(r, args.expected_starting_schema))
                              and all(comparison(stopped, {"recoveryPendingCaptureDigests": r.get(key)},
                                                 "recoveryPendingCaptureDigests") for key in
                                      ["recoveryConsumedCaptureDigests", "recoverySuccessfullyProcessedCaptureDigests"]),
                              "coldRestartPendingWorkRecoveryUnavailable", timeout=60)
             if args.rebuild_app_between_workers:
-                checks["encryptedProfileSchema2MigratedTo3"] = migration_schema_observed(recovered)
+                checks[schema_check] = migration_schema_observed(recovered, args.expected_starting_schema)
+                schema_migration_report = recovered
                 transition.update(loadedProfileSchemaVersion=recovered["recoveryLoadedProfileSchemaVersion"],
                                   savedProfileSchemaVersion=recovered["recoverySavedProfileSchemaVersion"],
+                                  expectedStartingProfileSchemaVersion=args.expected_starting_schema,
                                   profileSchemaMeasurementAvailable=True)
             checks["automaticUpgradeAndRestartAuditsSettled"] = True
             checks["exactPendingCapturesSuccessfullyProcessedAfterRestart"] = all(comparison(stopped,
@@ -398,6 +493,18 @@ def main():
                 after_signatures.get(path) == signature for path, signature in original_signatures.items())
             replay_before = live.settled_report(worker2, root / "worker2-report.json")
             replay_codes = []
+            for path, session in paths:
+                replay = subprocess.run([str(helper), "--socket", str(store / "capture.sock"), "--agent", "claude-code",
+                    "--interface", "standalone-cli", "--profile-id", "owned-signed-claude-recovery"],
+                    input=json.dumps(exact_source_reread(path, session)).encode(), capture_output=True, timeout=5)
+                replay_codes.append(replay.returncode)
+            reread = wait(worker2, "worker2-report.json", lambda r: r.get("queueCount") == 0
+                and r.get("unreadHistoricalProgressCount") == 0
+                and r.get("settledHistoricalAuditCount", 0) >= replay_before.get("settledHistoricalAuditCount", 0) + len(paths)
+                and committed_role_coverage_complete(r, [old_version, new_version]),
+                "exactSourceRoleReceiptRestorationUnavailable")
+            checks["allIndividualRolesRestoredAfterExactSourceReread"] = committed_role_coverage_complete(
+                reread, [old_version, new_version])
             for interface in ["standalone-cli", "t3"]:
                 for path, session in paths:
                     payload = json.dumps({"hook_event_name": "SpillcheckTranscriptPoll", "session_id": session,
@@ -412,11 +519,9 @@ def main():
                     for k in ["recoveryOccurrenceDigests", "recoveryReceiptDigests", "recoveryAlertDigests"])
             checks["persistedCheckpointIdentitiesLoaded"] = comparison(before_restart,
                 {"recoveryCheckpointDigests": replay_after.get("recoveryLoadedCheckpointDigests")}, "recoveryCheckpointDigests")
-            checks["noPersistedCoverageGaps"] = before_restart.get("gapReasons") == [] and replay_after.get("gapReasons") == []
-            checks["nativeRequiredContentAndFraming"] = native.get("requiredNativeFieldsValid") is True \
-                and native.get("completeJSONLFraming") is True and all(
-                    set(fixture.EXPECTED_MARKERS) <= set(native.get("typedMarkersByProducer", {}).get(producer, []))
-                    for producer in [old_version, new_version])
+            checks["noPersistedCoverageGaps"] = (before_restart.get("gapReasons") == [] and replay_after.get("gapReasons") == []
+                and before_restart.get("coverageReportTruncated") is False and replay_after.get("coverageReportTruncated") is False)
+            checks["nativeRequiredContentAndFraming"] = native_role_coverage_complete(native, [old_version, new_version])
             (root / "worker2-finish").touch()
             worker2.wait(timeout=35)
             require(worker2.returncode == 0, "restartedWorkerShutdownFailed")
@@ -432,16 +537,24 @@ def main():
             artifacts.report.update(unmetGate=phase, failureCategory=type(error).__name__)
             if isinstance(error, RecoveryGateFailure):
                 artifacts.report["unmetCheck"] = error.gate
+            if provider_runs and provider_runs[-1].get("exitCode") != 0:
+                artifacts.report["providerFailureCategory"] = provider_runs[-1].get("failureCategory", "providerFailed")
         finally:
             # Stop only process groups launched by this run before authorizing exact creator cleanup.
             collectors_stopped = True
             for process in processes:
                 if process is not owner:
                     try:
-                        process_cleanups.append(stop_group(process))
-                        collectors_stopped = collectors_stopped and process.poll() is not None
+                        cleanup = stop_group(process)
+                        process_cleanups.append(cleanup)
+                        collectors_stopped = collectors_stopped and process.poll() is not None and cleanup_confirmed(cleanup)
                     except RuntimeError:
                         collectors_stopped = False
+            collectors_stopped = collectors_stopped and all(cleanup_confirmed(run.get("processGroupCleanup"))
+                for run in provider_runs)
+            # Snapshot fake native bytes before auth, source, or protection cleanup.
+            # A snapshot failure is sticky and prevents acceptance, but never skips cleanup.
+            artifacts.diagnostic_journal.snapshot(final=True)
             settings = config / "settings.json"
             try:
                 if not settings.exists():
@@ -456,7 +569,8 @@ def main():
                     removal_passed = removed.returncode == 0 and not remaining
             except (OSError, ValueError, KeyError, TypeError, RuntimeError, subprocess.SubprocessError):
                 removal_passed = not settings.exists()
-            if collectors_stopped and removal_passed and owner is not None and owner.poll() is None:
+            authentication_removed = live.remove_provider_authentication(config, env)
+            if collectors_stopped and removal_passed and authentication_removed and owner is not None and owner.poll() is None:
                 signal_control(root, "owner-finish", token)
                 try:
                     owner.wait(timeout=35)
@@ -470,18 +584,21 @@ def main():
             owner_report = live.read_report(root / "owner-report.json")
             for stream in streams:
                 stream.close()
-            shutil.rmtree(config, ignore_errors=True)
-            env.pop("CLAUDE_CODE_OAUTH_TOKEN", None)
+        if candidate_before is not None:
+            try:
+                checks["candidateUnchanged"] = live.candidate_snapshot(
+                    args.candidate_manifest, args.expected_bundle_sha256, app) == candidate_before
+            except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+                checks["candidateUnchanged"] = False
+            artifacts.report["candidateUnchanged"] = checks["candidateUnchanged"]
         checks["originalFreshCreatorCleanupPassed"] = owner is None or owner_report.get("cleanupPassed") is True
         checks["ownedRegistrationRemoved"] = removal_passed
-        checks["temporaryAuthenticationRemoved"] = not config.exists()
+        checks["temporaryAuthenticationRemoved"] = authentication_removed
         cleanups = process_cleanups + [run.get("processGroupCleanup", {}) for run in provider_runs]
-        checks["ownedProcessGroupsStopped"] = collectors_stopped and all(
-            cleanup.get("term_permission_denied") is False and cleanup.get("kill_permission_denied") is False
-            for cleanup in cleanups)
+        checks["ownedProcessGroupsStopped"] = collectors_stopped and all(cleanup_confirmed(cleanup) for cleanup in cleanups)
         required_checks = SMOKE_CHECKS if args.owner_smoke else RECOVERY_CHECKS
         if args.rebuild_app_between_workers:
-            required_checks = required_checks | MIGRATION_CHECKS
+            required_checks = required_checks | required_migration_checks
         passed = required_checks <= set(checks) and all(checks.values()) and "unmetGate" not in artifacts.report
         artifacts.report.update(schemaVersion=1, startingProducerVersion=old_version, upgradedProducerVersion=new_version,
             checks=checks, providerRuns=provider_runs, nativeSourceEvidence=native, result={**public_snapshot(final),
@@ -491,10 +608,16 @@ def main():
             passed=passed, ownerLifetimeSmokeOnly=args.owner_smoke,
             appBuildTransition=transition,
             freshCreatorLaunched=owner is not None,
-            signedAppSchema2To3MigrationEstablished=passed and args.rebuild_app_between_workers,
+            **migration_claims(passed=passed, rebuild_requested=args.rebuild_app_between_workers,
+                owner_smoke=args.owner_smoke, expected_starting_schema=args.expected_starting_schema,
+                report=schema_migration_report),
             diagnosticArtifactsRetained=not passed,
             ownedProtectionCleanupPending=owner is not None and owner_report.get("cleanupPassed") is not True,
             signedCLIUpgradeAndRestartEstablished=passed and not args.owner_smoke,
+            signedIndividualRoleRecoveryEstablished=passed and not args.owner_smoke,
+            signedCurrentCandidateIndividualRoleRecoveryEstablished=passed and not args.owner_smoke
+                and checks.get("candidateUnchanged") is True,
+            exactOriginalSourceRereadUsed=not args.owner_smoke,
             genuineGUIOrT3ConcurrencyEstablished=False, requiredFormatFailureRestorationEstablished=False,
             reviewAndObsoleteStateRecoveryEstablished=False,
             actualHealthNotificationDeliveryEstablished=False)

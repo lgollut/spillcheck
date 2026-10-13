@@ -21,7 +21,7 @@ SPEC = importlib.util.spec_from_file_location("codex_live_acceptance", pathlib.P
 FIXTURE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(FIXTURE)
 TOKEN = FIXTURE.TOKEN
-REQUIRED = {"PROMPT", "INTERMEDIATE", "FINAL", "SHELL_OK", "SHELL_ERROR", "MCP_OK", "MCP_ERROR", "CHILD_FINAL"}
+REQUIRED = FIXTURE.REQUIRED_MARKERS
 
 
 def now():
@@ -29,7 +29,7 @@ def now():
 
 
 def evaluate_measurement(report):
-    """Evaluate the established eight-marker Codex gate without changing measurements."""
+    """Require the parent and native child typed-source gate without changing measurements."""
     report["requiredTypedMarkers"] = sorted(REQUIRED)
     final = report.get("pipeline")
     report["passed"] = False
@@ -45,23 +45,22 @@ def evaluate_measurement(report):
     report["observerReadStartedWhileProducerRunning"] = overlap
     report["historicalLatencyMeasured"] = historical["count"] > 0
     report["liveLatencyMeasured"] = live["count"] > 0
-    report["nativeChildPromptCoverage"] = {"validated": False,
-        "optionalTypedObservedCount": final.get("typedObserved", {}).get("CHILD_PROMPT", 0),
-        "limit": "The established Codex fixture requires the native child's own final. Its prompt remains unverified."}
+    report["nativeChildPromptCoverage"] = {"validated": FIXTURE.typed_source_gate(final),
+        "typedObservedCount": final.get("typedObserved", {}).get("CHILD_PROMPT", 0),
+        "limit": "Requires all five committed types in the native-linked child's own source; parent arguments do not count."}
     report["liveCanonicalReadStartP95WithinProposed120SecondTarget"] = bool(live["count"] > 0
         and live["p95"] < 120000)
     report["latencyMeasurementPassed"] = bool(overlap and live["count"] > 0
         and latency["unmeasuredSourceRevisionCount"] == 0
         and live["excludedNegativeOrNonfiniteCount"] == 0
-        and REQUIRED <= set(final["typedCommittedBeforeCatchUp"]))
+        and FIXTURE.typed_source_gate(final, before_catchup=True))
     cleanup = report.get("cleanup", {})
     report["passed"] = bool(isinstance(report.get("actualProducerVersion"), str)
         and final.get("actualReaderVersion") == report.get("actualReaderVersion")
         and final.get("observedProducerVersions") == [report.get("actualProducerVersion")] and report.get("producerExitCode") == 0
         and report.get("pipelineExitCode") == 0 and report.get("observerReady")
         and report["latencyMeasurementPassed"] and report["liveCanonicalReadStartP95WithinProposed120SecondTarget"]
-        and REQUIRED <= set(final["typedCommitted"]) and final["syntheticValuePresent"]
-        and all(final["typedCommitted"].get(marker) == 1 for marker in REQUIRED)
+        and FIXTURE.typed_source_gate(final) and final["syntheticValuePresent"]
         and final.get("nativeLocationsUnique") and not final.get("gapReasons")
         and final["queueCount"] == 0 and final["replayStable"] and final["finalCatchUpNewOccurrences"] == 0
         and final["ciphertextMarkerInspectionPassed"] and cleanup.get("disposableRootRemoved")
@@ -163,14 +162,7 @@ def main():
                 str(ROOT / ".build/scanner/betterleaks.toml"), "--duration", "240"],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
 
-        prompt = f"""Run only this synthetic Spillcheck acceptance task. LEAKRET_M4_PROMPT {TOKEN}.
-Send a commentary response containing exactly LEAKRET_M4_INTERMEDIATE {TOKEN}.
-Run a shell command that prints LEAKRET_M4_SHELL_OK {TOKEN} and exits 0.
-Run a shell command that prints LEAKRET_M4_SHELL_ERROR {TOKEN} and exits 7.
-Call spillcheck_synthetic.synthetic_output once with fail=false and once with fail=true.
-Spawn exactly one native child with spawn_agent, fork_turns=none, and this entire literal message including both marker/token occurrences: "LEAKRET_M4_CHILD_PROMPT {TOKEN}. Reply only: LEAKRET_M4_CHILD_FINAL {TOKEN}." Wait for that child's completed reply.
-Do not read files or access the network. Finish with LEAKRET_M4_FINAL {TOKEN}.
-Keep all commentary and final responses short."""
+        prompt = FIXTURE.fixture_prompt()
         report["producerStartedAt"] = now()
         code, output, elapsed = FIXTURE.bounded([args.executable, "--no-daemon", "-a", "never", "exec",
             "--skip-git-repo-check", "--json", "-s", "read-only", "-C", str(work), "-"],

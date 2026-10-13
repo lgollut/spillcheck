@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import SpillcheckCore
+@_spi(Testing) @testable import SpillcheckCore
 
 private func claudeSetupDirectory() throws -> URL {
     let path = FileManager.default.temporaryDirectory.appendingPathComponent("spillcheck-claude-setup-\(UUID())").resolvingSymlinksInPath()
@@ -82,10 +82,14 @@ struct ClaudeSetupTests {
 
 private actor ClaudeMonitorSink {
     var packets:[CapturePacket] = []
+    var gaps: [CoverageGap] = []
     var reject = false
     func accept(_ packet:CapturePacket) throws { if reject { throw ClaudeCollectionError.awaitingTranscript }; packets.append(packet) }
     func setReject(_ value:Bool) { reject = value }
     func count() ->Int { packets.count }
+    func recorded() -> [CapturePacket] { packets }
+    func recordGap(_ gap: CoverageGap) { gaps.append(gap) }
+    func observedGaps() -> [CoverageGap] { gaps }
 }
 private actor ClaudeCancelledMonitorSink {
     var began=false, cancelled=false, gaps=0
@@ -106,6 +110,79 @@ private actor ClaudeCancelledMonitorSink {
 }
 @Suite("Claude selected active sources")
 struct ClaudeMonitorTests {
+    @Test func unavailableParentDoesNotBlockReadableSelectedChild() async throws {
+        let directory = try claudeSetupDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let parent = directory.appendingPathComponent("parent.jsonl")
+        let children = directory.appendingPathComponent("parent/subagents")
+        try FileManager.default.createDirectory(at: children, withIntermediateDirectories: true)
+        let child = children.appendingPathComponent("agent-child.jsonl")
+        let content = try JSONSerialization.data(withJSONObject: ["type": "user", "uuid": "child-prompt",
+            "sessionId": "native-child", "version": "2.1.293", "timestamp": "2026-10-07T20:00:00Z",
+            "message": ["role": "user", "content": "FAKE_CHILD_PROMPT"]]) + Data([10])
+        try content.write(to: child)
+        let sink = ClaudeMonitorSink()
+        let monitor = try ClaudeActiveTranscriptMonitor(profileID: "test", sources: [.init(sessionID: "parent", transcriptURL: parent)],
+            enqueue: { packet, _ in try await sink.accept(packet) }, onGap: { await sink.recordGap($0) })
+        #expect(try await monitor.pollOnce() == 1)
+        let gaps = await sink.observedGaps()
+        #expect(gaps.count == 1 && gaps.first?.reason == .sourceUnavailable)
+        #expect(gaps.first?.recovery?.sourceURL == parent)
+        let adapter = try ClaudeAdapter(profileID: "test", agentVersion: "2.1.293", allowedTranscriptRoots: [directory])
+        let packet = try #require(await sink.recorded().first)
+        let batch = try await adapter.normalize(packet, capturedAt: Date(), cryptography: .ephemeralForTesting())
+        #expect(batch.coverageGaps.isEmpty)
+        #expect(batch.sources.map(\.record.metadata.identity.itemID) == ["prompt:child-prompt:block:0"])
+        #expect(batch.sources.first?.record.metadata.identity.session.sessionID == "native-child")
+        #expect(batch.sources.first?.context?.transcriptPath == claudeConfiguredURL(child).path)
+    }
+
+    @Test(arguments: ["parent", "distinct-child"])
+    func selectedChildPollingUsesPersistedNativeIdentity(childSession: String) async throws {
+        let directory = try claudeSetupDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let parent = directory.appendingPathComponent("parent.jsonl")
+        let children = directory.appendingPathComponent("parent/subagents")
+        try FileManager.default.createDirectory(at: children, withIntermediateDirectories: true)
+        let child = children.appendingPathComponent("agent-child.jsonl")
+        func row(_ id: String, session: String, role: String = "user", content: Any, stop: String? = nil) throws -> Data {
+            var message: [String: Any] = ["role": role, "content": content]
+            if let stop { message["stop_reason"] = stop }
+            return try JSONSerialization.data(withJSONObject: ["type": role, "uuid": id, "sessionId": session,
+                "version": "2.1.293", "timestamp": "2026-10-07T20:00:00Z", "message": message], options: [.sortedKeys]) + Data([10])
+        }
+        try row("parent-prompt", session: "parent", content: "FAKE_PARENT_PROMPT").write(to: parent)
+        var content = try row("child-prompt", session: childSession, content: "FAKE_CHILD_PROMPT")
+        content += try row("child-intermediate", session: childSession, role: "assistant", content: "FAKE_CHILD_INTERMEDIATE")
+        content += try row("child-shell", session: childSession, content: [
+                ["type": "tool_result", "tool_use_id": "child-shell-ok", "content": "FAKE_CHILD_SHELL_OK"],
+                ["type": "tool_result", "tool_use_id": "child-shell-error", "content": "FAKE_CHILD_SHELL_ERROR", "is_error": true]])
+        content += try row("child-mcp", session: childSession, content: [
+                ["type": "tool_result", "tool_use_id": "child-mcp-ok", "content": ["result": "FAKE_CHILD_MCP_OK"]],
+                ["type": "tool_result", "tool_use_id": "child-mcp-error", "content": ["error": "FAKE_CHILD_MCP_ERROR"], "is_error": true]])
+        content += try row("child-final", session: childSession, role: "assistant", content: "FAKE_CHILD_FINAL", stop: "end_turn")
+        try content.write(to: child)
+        let sink = ClaudeMonitorSink()
+        let monitor = try ClaudeActiveTranscriptMonitor(profileID: "test", sources: [.init(sessionID: "parent", transcriptURL: parent)]) {
+            packet, _ in try await sink.accept(packet)
+        }
+        #expect(try await monitor.pollOnce() == 2)
+        let crypto = try BackgroundCryptography.ephemeralForTesting()
+        let adapter = try ClaudeAdapter(profileID: "test", agentVersion: "2.1.293", allowedTranscriptRoots: [directory])
+        var collected: [CollectedSource] = [], gaps: [CoverageGap] = []
+        for packet in await sink.recorded() {
+            let batch = try await adapter.normalize(packet, capturedAt: Date(), cryptography: crypto)
+            collected += batch.sources.filter { $0.context?.transcriptPath == claudeConfiguredURL(child).path }
+            gaps += batch.coverageGaps
+        }
+        #expect(gaps.isEmpty)
+        #expect(collected.count == 7)
+        #expect(Set(collected.map(\.record.metadata.contentType)) == Set(ContentType.allCases))
+        #expect(collected.allSatisfy { $0.record.metadata.identity.session.sessionID == childSession })
+        let canonical = try await adapter.importTranscript(content, documentID: UUID(), interface: .t3,
+            observedAt: Date(), cryptography: crypto)
+        #expect(collected.map(\.record.metadata.identity) == canonical.sources.map(\.record.metadata.identity))
+        #expect(collected.map(\.record.revision) == canonical.sources.map(\.record.revision))
+    }
+
     @Test func warmPollDoesNotEnqueueAndChangesWaitForDurableAdmission() async throws {
         let directory = try claudeSetupDirectory(); defer { try? FileManager.default.removeItem(at:directory) }
         let file = directory.appendingPathComponent("source.jsonl"); try Data("{}\n".utf8).write(to:file)
@@ -150,5 +227,46 @@ struct ClaudeMonitorTests {
         let status=await sink.status()
         #expect(status.0)
         #expect(status.1 == 0)
+    }
+
+    @Test func failedSourceIsReportedWithoutSkippingLaterSourcesInThePass() async throws {
+        let directory = try claudeSetupDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let first = directory.appendingPathComponent("first.jsonl"), second = directory.appendingPathComponent("second.jsonl")
+        try Data("{}\n".utf8).write(to: first); try Data("{}\n".utf8).write(to: second)
+        let sink = ClaudeMonitorSink()
+        let monitor = try ClaudeActiveTranscriptMonitor(profileID: "test", sources: [
+            .init(sessionID: "first", transcriptURL: first), .init(sessionID: "second", transcriptURL: second)],
+            enqueue: { packet, _ in
+                let event = try #require(JSONSerialization.jsonObject(with: packet.eventJSON) as? [String: String])
+                if event["session_id"] == "first" { throw ClaudeCollectionError.awaitingTranscript }
+                try await sink.accept(packet)
+            }, onGap: { await sink.recordGap($0) })
+        await #expect(throws: ClaudeCollectionError.awaitingTranscript) { try await monitor.pollOnce() }
+        #expect(await sink.count() == 1)
+        let gaps = await sink.observedGaps()
+        #expect(gaps.count == 1 && gaps.first?.reason == .deliveryUncertain && gaps.first?.recovery?.sourceURL == first)
+    }
+
+    @Test func failedChildDeliveryLeavesADurableWarningWithoutAGuessedIdentity() async throws {
+        let directory = try claudeSetupDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let parent = directory.appendingPathComponent("parent.jsonl")
+        let children = directory.appendingPathComponent("parent/subagents")
+        try FileManager.default.createDirectory(at: children, withIntermediateDirectories: true)
+        try Data("{}\n".utf8).write(to: parent)
+        try Data("{}\n".utf8).write(to: children.appendingPathComponent("agent-child.jsonl"))
+        let store = try await ProtectedStore.open(at: directory.appendingPathComponent("store"),
+            cryptography: BackgroundCryptography.ephemeralForTesting())
+        let monitor = try ClaudeActiveTranscriptMonitor(profileID: "test",
+            sources: [.init(sessionID: "parent", transcriptURL: parent)],
+            enqueue: { packet, _ in
+                let event = try #require(JSONSerialization.jsonObject(with: packet.eventJSON) as? [String: String])
+                if event["agent_transcript_path"] != nil { throw ClaudeCollectionError.awaitingTranscript }
+            }, onGap: { gap in try? await store.recordCoverageGap(gap) }) // Mirrors the app's handler.
+        await #expect(throws: ClaudeCollectionError.awaitingTranscript) { try await monitor.pollOnce() }
+        let gaps = try await store.coverageGaps()
+        #expect(gaps.count == 1 && gaps.first?.reason == .deliveryUncertain)
+        #expect(gaps.first?.scope?.path == .versionedTranscript && gaps.first?.operation == .liveRead)
+        #expect(try await store.coverageOmissions().isEmpty)
+        try await store.close()
     }
 }

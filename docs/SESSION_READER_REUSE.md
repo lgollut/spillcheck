@@ -3,8 +3,9 @@
 Session readers must preserve the content and identities needed for secret
 detection while bounding history work. This guidance covers transcript framing,
 checkpoint persistence, recovery, and occurrence reconciliation. The
-[supported matrix](implementation/supported-matrix.md) records which provider
-interfaces and versions have passed genuine collection checks.
+[Codex scope](CODEX_BETA.md) and [Claude scope](CLAUDE_BETA.md) record supported
+content and hosts; [beta readiness](BETA_READINESS.md) records remaining acceptance
+gates.
 
 ## Reading and framing
 
@@ -71,4 +72,4 @@ live-provider, Desktop, or subagent-format coverage.
 The supported file-mutation contract is append with stable native identities.
 Arbitrary growing-file edits outside certified boundaries remain unverified.
 Compressed histories are visibly unsupported; relocation requires an explicitly
-configured root. These limits remain in the implementation reports.
+configured root. Keep these reader limits separate from live-provider acceptance.

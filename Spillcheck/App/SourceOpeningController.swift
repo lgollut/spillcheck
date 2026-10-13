@@ -3,18 +3,37 @@ import Darwin
 import Foundation
 import SpillcheckCore
 
+struct SourceOpeningConfiguration: Equatable {
+    let codexProfile: CodexResumeProfile?
+    let claudeExecutableURL: URL?
+
+    init(codexProfile: CodexResumeProfile? = nil, claudeExecutableURL: URL? = nil) {
+        self.codexProfile = codexProfile
+        self.claudeExecutableURL = claudeExecutableURL
+    }
+
+    init(profiles: [AgentProvider: AgentProfileDraft], homeURL: URL) {
+        codexProfile = profiles[.codex].flatMap { profile in
+            guard profile.executablePath.hasPrefix("/"), profile.homePath.hasPrefix("/") else { return nil }
+            return try? CodexResumeProfile(profileID: profile.profileID,
+                homeURL: URL(fileURLWithPath: profile.homePath, isDirectory: true),
+                executableURL: URL(fileURLWithPath: profile.executablePath))
+        }
+        claudeExecutableURL = URL(fileURLWithPath: profiles[.claudeCode]?.executablePath
+            ?? homeURL.appendingPathComponent(".local/bin/claude").path)
+    }
+}
+
 /// The app dispatches only a documented existing-conversation route after an explicit UI action.
 @MainActor
 final class SourceOpeningController {
-    private let codexExecutableURL: URL?
-    private let claudeExecutableURL: URL?
+    private let configuration: SourceOpeningConfiguration
     private var operation: Task<SourceOpeningFailure?, Never>?
     private var retiringOperations: [UUID: Task<SourceOpeningFailure?, Never>] = [:]
     private var generation = UUID()
 
-    init(codexExecutableURL: URL? = nil, claudeExecutableURL: URL? = nil) {
-        self.codexExecutableURL = codexExecutableURL
-        self.claudeExecutableURL = claudeExecutableURL
+    init(configuration: SourceOpeningConfiguration = .init()) {
+        self.configuration = configuration
     }
 
     func open(session: SessionIdentity, capability: SourceOpeningCapability,
@@ -39,7 +58,7 @@ final class SourceOpeningController {
                 return NSWorkspace.shared.open(url) ? .requested
                     : .fallback(.commandFailed, retainedContextAvailable: hasRetainedContext)
             case .claudeCode:
-                guard let executable = claudeExecutableURL,
+                guard let executable = configuration.claudeExecutableURL,
                       FileManager.default.isExecutableFile(atPath: executable.path) else {
                     return .fallback(.applicationMissing, retainedContextAvailable: hasRetainedContext)
                 }
@@ -61,7 +80,15 @@ final class SourceOpeningController {
 
     /// This method prepares a separate terminal action. It does not start or resume a session.
     func terminalResumePlan(session: SessionIdentity) throws -> SourceCommandPlan {
-        guard let executable = session.provider == .codex ? codexExecutableURL : claudeExecutableURL,
+        if session.provider == .codex {
+            guard let profile = configuration.codexProfile else { throw SourceOpeningFailure.invalidReference }
+            let plan = try SourceOpeningPlan.terminalResume(session: session, codexProfile: profile)
+            guard FileManager.default.isExecutableFile(atPath: profile.executableURL.path) else {
+                throw SourceOpeningFailure.applicationMissing
+            }
+            return plan
+        }
+        guard let executable = configuration.claudeExecutableURL,
               executable.isFileURL, FileManager.default.isExecutableFile(atPath: executable.path) else {
             throw SourceOpeningFailure.applicationMissing
         }

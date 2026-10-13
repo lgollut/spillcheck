@@ -9,6 +9,7 @@ let package = Package(
         .executable(name: "spillcheck-hook", targets: ["SpillcheckHook"]),
         .executable(name: "spillcheck-storage-acceptance", targets: ["SpillcheckAcceptance"]),
         .executable(name: "spillcheck-resource-acceptance", targets: ["SpillcheckResourceAcceptance"]),
+        .executable(name: "spillcheck-codex-hook-delivery-probe", targets: ["CodexHookDeliveryProbe"]),
     ],
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift.git", exact: "7.11.1"),
@@ -18,6 +19,8 @@ let package = Package(
         .executableTarget(name: "SpillcheckHook"),
         .executableTarget(name: "SpillcheckAcceptance", dependencies: ["SpillcheckCore"]),
         .executableTarget(name: "SpillcheckResourceAcceptance", dependencies: ["SpillcheckCore"]),
+        .executableTarget(name: "CodexHookDeliveryProbe", dependencies: ["SpillcheckCore"],
+                          path: "Tests/CodexHookDeliveryProbe", exclude: ["run.py", "README.md"]),
         .testTarget(
             name: "SpillcheckCoreTests",
             dependencies: ["SpillcheckCore"],
@@ -25,7 +28,9 @@ let package = Package(
             exclude: [
                 "README.md", "HookHelper", "ProtectionSignedProbe", "ClaudeLive", "CodexLive", "AgentSetupProbe",
                 "NativeWorkflowProbe", "ResourceAcceptance", "AppAcceptance", "Tooling", "Support",
-                "ClaudeGUIProbe", "ClaudeGUIModProbe", "CodexGUIProbe",
+                "CodexHookDeliveryProbe", "CodexPlanProbe", "CodexReviewProbe",
+                "CodexReviewRecoveryProbe", "CodexMCPSourceProbe", "CodexMCPPipelineProbe",
+                "CodexHookPromptProbe", "CodexLocalMediaProbe", "BetaTrial",
             ],
             sources: ["SpillcheckCoreTests"],
             resources: [.copy("Fixtures")]

@@ -27,12 +27,17 @@ public struct CollectionRouter: CaptureNormalizer, Sendable {
 
     public func normalize(_ packet: CapturePacket, capturedAt: Date,
                           cryptography: BackgroundCryptography) async throws -> CollectionBatch {
+        try await normalize(packet, capturedAt: capturedAt, context: nil, cryptography: cryptography)
+    }
+
+    public func normalize(_ packet: CapturePacket, capturedAt: Date, context: CollectionWorkContext?,
+                          cryptography: BackgroundCryptography) async throws -> CollectionBatch {
         guard let route = routes.first(where: {
             $0.provider == packet.metadata.agent && $0.profileID == packet.metadata.profileID
                 && $0.interface == packet.metadata.interface
         }) else {
             return CollectionBatch(sources: [], coverageGaps: [.init(reason: .unsupportedVersion)])
         }
-        return try await route.normalizer.normalize(packet, capturedAt: capturedAt, cryptography: cryptography)
+        return try await route.normalizer.normalize(packet, capturedAt: capturedAt, context: context, cryptography: cryptography)
     }
 }

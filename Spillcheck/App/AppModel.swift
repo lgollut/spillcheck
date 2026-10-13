@@ -370,6 +370,7 @@ final class AppModel {
     var exportingDiagnostics = false
     @ObservationIgnored var onRetryHistory: ((AgentProvider) -> Void)?
     @ObservationIgnored var onRetrySource: ((CoverageSourceRetryDescriptor) -> Void)?
+    @ObservationIgnored var onRetrySources: (([CoverageSourceRetryDescriptor]) -> Void)?
     @ObservationIgnored var onExportDiagnostics: (() -> Void)?
     private(set) var monitoring = MonitoringState()
     @ObservationIgnored var onMonitoringChanged: (() -> Void)?
@@ -755,7 +756,7 @@ final class AppModel {
         }
     }
 
-    static func gapText(_ reason: CoverageGapReason) -> String {
+    nonisolated static func gapText(_ reason: CoverageGapReason) -> String {
         switch reason {
         case .unsupportedContent: "Some content wasn’t in a supported format, so it wasn’t analyzed."
         case .unsupportedVersion: "An earlier collector rejected a source version. Recovery requires available original content."

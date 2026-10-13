@@ -641,7 +641,10 @@ final class AppRuntime {
             self?.performAction { runtime in await runtime.retryHistory(provider) }
         }
         model.onRetrySource = { [weak self] source in
-            self?.performAction { runtime in await runtime.retrySource(source) }
+            self?.performAction { runtime in await runtime.retrySources([source]) }
+        }
+        model.onRetrySources = { [weak self] sources in
+            self?.performAction { runtime in await runtime.retrySources(sources) }
         }
         model.onExportDiagnostics = { [weak self] in
             self?.requestDiagnosticsExport()
@@ -2311,83 +2314,114 @@ final class AppRuntime {
         await refresh()
     }
 
-    /// Retries the retained original selection. Readers revalidate its authorized root and authority.
-    private func retrySource(_ source: CoverageSourceRetryDescriptor) async {
-        guard model.canPerformCoverageAction(.retrySource(source)), let store,
-              let route = sourceProducers[source.scope], let permit = await store.processingPermit(),
-              let liveScope = await admission.currentScope() else { return }
+    private enum SourceRetryOutcome { case unavailable, alreadyReading, reading, recovered, incomplete, unverifiable, failed, cancelled }
+
+    /// Retries each retained original selection in turn. Readers revalidate its authorized root and authority.
+    private func retrySources(_ requested: [CoverageSourceRetryDescriptor]) async {
+        let sources = requested.filter { model.canPerformCoverageAction(.retrySource($0)) }
+        guard !sources.isEmpty, let store else { return }
+        let providers = Set(sources.map(\.scope.provider))
+        model.retryingHistory.formUnion(providers)
+        defer { model.retryingHistory.subtract(providers) }
+        let announce = sources.count == 1
+        if !announce { model.showToast("Retrying \(plural(sources.count, "affected source")).") }
+        var outcomes: [SourceRetryOutcome] = []
+        for source in sources {
+            guard !terminating, !Task.isCancelled else { return }
+            // Earlier reads in this retry keep the reader busy, so only the selection's profile is rechecked.
+            guard model.sourceRetryIsCurrent(source) else { outcomes.append(.unavailable); continue }
+            let outcome = await retrySource(source, store: store, announce: announce)
+            if outcome == .cancelled { return }
+            outcomes.append(outcome)
+        }
+        if !announce { model.showToast(Self.sourceRetrySummary(outcomes)) }
+        if outcomes.contains(where: { $0 != .unavailable }) { await refresh() }
+    }
+
+    private static func sourceRetrySummary(_ outcomes: [SourceRetryOutcome]) -> String {
+        func count(_ matching: Set<SourceRetryOutcome>) -> Int { outcomes.filter(matching.contains).count }
+        let parts = [(count([.recovered]), "recovered"), (count([.reading, .alreadyReading]), "still being read"),
+                     (count([.incomplete, .unverifiable]), "not fully recovered"), (count([.failed]), "couldn’t be queued"),
+                     (count([.unavailable]), "skipped")]
+            .filter { $0.0 > 0 }.map { "\($0.0.formatted()) \($0.1)" }
+        return "Retry finished for \(plural(outcomes.count, "source")): \(parts.joined(separator: ", "))."
+    }
+
+    /// Reads one source again. The caller has checked the source and holds its provider's retry.
+    private func retrySource(_ source: CoverageSourceRetryDescriptor, store: ProtectedStore,
+                             announce: Bool) async -> SourceRetryOutcome {
+        func toast(_ message: String) { if announce { model.showToast(message) } }
+        guard let route = sourceProducers[source.scope], let permit = await store.processingPermit(),
+              let liveScope = await admission.currentScope() else { return .unavailable }
         let provider = source.scope.provider
         let selectedProfile = model.agentProfiles[provider]
-        model.retryingHistory.insert(provider)
-        defer { model.retryingHistory.remove(provider) }
         do {
             let related = try await store.retryableCollectionWork(for: source)
-            guard !related.contains(where: { $0.state == .queued || $0.state == .processing }) else { return }
+            guard !related.contains(where: { $0.state == .queued || $0.state == .processing }) else { return .alreadyReading }
             let stalled = related.filter { $0.state == .stalled }
             if !stalled.isEmpty {
                 for work in stalled { _ = try await store.retryQueuedWork(id: work.id, permit: permit) }
-                model.showToast("Retrying the affected original source.")
-            } else {
-                let failed = related.filter { $0.state == .terminal }.max { $0.admittedAt < $1.admittedAt }
-                #if DEBUG
-                if acceptanceCodexRetryControlConsumed, !acceptanceCodexRetryInvoked,
-                   let target = acceptanceCodexRetryTarget {
-                    guard failed?.id == target.id, target.context.retry?.identifiesSameSource(as: source) == true else {
-                        throw StorageError.stateChanged
-                    }
-                    acceptanceCodexRetryInvoked = true
+                toast("Retrying the affected original source.")
+                return .reading
+            }
+            let failed = related.filter { $0.state == .terminal }.max { $0.admittedAt < $1.admittedAt }
+            #if DEBUG
+            if acceptanceCodexRetryControlConsumed, !acceptanceCodexRetryInvoked,
+               let target = acceptanceCodexRetryTarget {
+                guard failed?.id == target.id, target.context.retry?.identifiesSameSource(as: source) == true else {
+                    throw StorageError.stateChanged
                 }
-                #endif
-                if let failed, failed.context.auditWindow == nil {
-                    model.showToast("This older failure has no recorded time window. Its missing content cannot be verified automatically.")
-                    return
-                }
-                // Freeze the target once. A live responsibility interval may span up to eight days,
-                // so recover it with at most two ordinary seven-day reads, one after the other.
-                let endings: [Date]
-                if let failed { endings = try await store.remainingRecoveryAuditEnds(for: failed.id) }
-                else { endings = [.now] }
-                guard endings.count <= 2 else { throw StorageError.invalidPayload }
-                model.showToast("Retrying the affected original source.")
-                for ending in endings {
-                    try Task.checkCancellation()
-                    guard !terminating, model.monitoringEnabled, !model.monitoringTransition,
-                          model.agentProfiles[provider] == selectedProfile,
-                          model.agentSetupStates[provider] == .connected,
-                          !model.agentSetupBusy.contains(provider),
-                          await admission.currentScope() == liveScope,
-                          let currentPermit = await store.processingPermit() else { throw StorageError.stateChanged }
-                    let audit = try HistoricalAuditContext(id: UUID(), reason: .resume, endingAt: ending)
-                    let packet = try await route.producer.initialHistoricalCapture(audit: audit, source: source)
-                    guard model.agentProfiles[provider] == selectedProfile,
-                          let currentRoute = sourceProducers[source.scope]?.route else { throw StorageError.stateChanged }
-                    let context = try currentRoute.context(for: packet, trigger: .historyRequest, audit: audit, retry: source)
-                    _ = try await store.enqueue(packet.body, capturedAt: .now, permit: currentPermit, scope: liveScope,
-                        historicalAudit: audit, workContext: context, recoveryOf: failed?.id)
-                    if let failed {
-                        let outcome = try await waitForSourceRecoveryAudit(audit.id, target: failed.id,
-                            store: store, liveScope: liveScope, profile: selectedProfile)
-                        guard outcome == .certified else {
-                            model.showToast(outcome == .stillReading
-                                ? "This source is still being read. Retry after it finishes if missing content remains."
-                                : "The source was retried, but the missing content is not fully recovered.")
-                            await refresh()
-                            return
-                        }
-                    }
-                }
+                acceptanceCodexRetryInvoked = true
+            }
+            #endif
+            if let failed, failed.context.auditWindow == nil {
+                toast("This older failure has no recorded time window. Its missing content cannot be verified automatically.")
+                return .unverifiable
+            }
+            // Freeze the target once. A live responsibility interval may span up to eight days,
+            // so recover it with at most two ordinary seven-day reads, one after the other.
+            let endings: [Date]
+            if let failed { endings = try await store.remainingRecoveryAuditEnds(for: failed.id) }
+            else { endings = [.now] }
+            guard endings.count <= 2 else { throw StorageError.invalidPayload }
+            toast("Retrying the affected original source.")
+            for ending in endings {
+                try Task.checkCancellation()
+                guard !terminating, model.monitoringEnabled, !model.monitoringTransition,
+                      model.agentProfiles[provider] == selectedProfile,
+                      model.agentSetupStates[provider] == .connected,
+                      !model.agentSetupBusy.contains(provider),
+                      await admission.currentScope() == liveScope,
+                      let currentPermit = await store.processingPermit() else { throw StorageError.stateChanged }
+                let audit = try HistoricalAuditContext(id: UUID(), reason: .resume, endingAt: ending)
+                let packet = try await route.producer.initialHistoricalCapture(audit: audit, source: source)
+                guard model.agentProfiles[provider] == selectedProfile,
+                      let currentRoute = sourceProducers[source.scope]?.route else { throw StorageError.stateChanged }
+                let context = try currentRoute.context(for: packet, trigger: .historyRequest, audit: audit, retry: source)
+                _ = try await store.enqueue(packet.body, capturedAt: .now, permit: currentPermit, scope: liveScope,
+                    historicalAudit: audit, workContext: context, recoveryOf: failed?.id)
                 if let failed {
-                    let remaining = try await store.remainingRecoveryAuditEnds(for: failed.id)
-                    model.showToast(remaining.isEmpty ? "The missing content for this failure was recovered."
-                        : "The source was retried, but some missing content remains.")
+                    let outcome = try await waitForSourceRecoveryAudit(audit.id, target: failed.id,
+                        store: store, liveScope: liveScope, profile: selectedProfile)
+                    guard outcome == .certified else {
+                        toast(outcome == .stillReading
+                            ? "This source is still being read. Retry after it finishes if missing content remains."
+                            : "The source was retried, but the missing content is not fully recovered.")
+                        return outcome == .stillReading ? .reading : .incomplete
+                    }
                 }
             }
+            guard let failed else { return .reading }
+            let remaining = try await store.remainingRecoveryAuditEnds(for: failed.id)
+            toast(remaining.isEmpty ? "The missing content for this failure was recovered."
+                : "The source was retried, but some missing content remains.")
+            return remaining.isEmpty ? .recovered : .incomplete
         } catch is CancellationError {
-            return
+            return .cancelled
         } catch {
-            model.showToast("This source could not be queued. Check the agent in Settings or export diagnostics.")
+            toast("This source could not be queued. Check the agent in Settings or export diagnostics.")
+            return .failed
         }
-        await refresh()
     }
 
     /// Completion alone is insufficient: require an authenticated certificate for this audit.

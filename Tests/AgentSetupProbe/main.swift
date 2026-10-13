@@ -971,6 +971,7 @@ private struct AgentSetupProbe {
             else if case VaultOwnerDiagnosticAssertionFailure.failed(let name) = error { stage = name }
             else if case StorageCapacityAssertionFailure.failed(let name) = error { stage = name }
             else if case SourceOpeningAssertionFailure.failed(let name) = error { stage = name }
+            else if case CollectionAssessmentAssertionFailure.failed(let name) = error { stage = name }
             else if case ReviewAssertionFailure.failed(let name) = error { stage = name }
             else if case NativeAssertionFailure.failed(let name) = error { stage = name }
             else if case DesktopBetaAssertionFailure.failed(let name) = error { stage = name }

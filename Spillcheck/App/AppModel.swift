@@ -237,7 +237,8 @@ struct AgentHostRoute: Identifiable {
     var name: String { sharedProfile ? "Shared profile" : interface.hostLabel }
     var collecting: Bool { assessments.contains { $0.canPerform(.liveRead) } }
     var summary: String {
-        var parts = [operationSummary(.liveRead), operationSummary(.historicalRead)]
+        var parts = status == .partial ? ["Partial coverage"] : []
+        parts += [operationSummary(.liveRead), operationSummary(.historicalRead)]
         if assessments.contains(where: { $0.scope.provider == .codex && $0.scope.path == .hook }) {
             parts.append("Hook collection excludes intermediate replies")
         }

@@ -11,7 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var statusItem: NSStatusItem?
     private var statusPanel: MenuBarPanel?
     private var lifecycleLogURL: URL?
-    /// The status item image is redrawn only when its attention dot changes.
+    /// The status item image is redrawn only when its attention color changes.
     private var statusAttention: Bool?
     private var lifecycleEvents: [[String: String]] = []
 
@@ -294,32 +294,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private static func statusImage(attention: Bool) -> NSImage {
         let slot: CGFloat = 18
-        guard attention else {
-            let image = NSImage(size: NSSize(width: slot, height: slot), flipped: true) { rect in
-                NSColor.black.set()
-                drawGlyph(in: rect)
-                return true
+        // The glyph keeps one size in both states, so the icon stays centered in its status item.
+        let image = NSImage(size: NSSize(width: slot, height: slot), flipped: true) { rect in
+            if attention {
+                // A colored drop cannot be a template image, so the frame takes the menu bar's text color.
+                drawGlyph(in: rect, frame: .labelColor, drop: NSColor(srgbRed: 0.85, green: 0.6, blue: 0.2, alpha: 1))
+            } else {
+                drawGlyph(in: rect, frame: .black, drop: .black)
             }
-            image.isTemplate = true
-            image.accessibilityDescription = AppIdentity.name
-            return image
-        }
-        // A colored dot cannot be a template image, so draw the glyph in the menu bar's text color.
-        let image = NSImage(size: NSSize(width: slot + 11, height: slot), flipped: true) { rect in
-            NSColor.labelColor.set()
-            drawGlyph(in: NSRect(x: 0, y: 0, width: slot, height: slot))
-            NSColor(srgbRed: 0.85, green: 0.6, blue: 0.2, alpha: 1).setFill()
-            NSBezierPath(ovalIn: NSRect(x: rect.width - 6, y: rect.height / 2 - 3, width: 6, height: 6)).fill()
             return true
         }
-        image.isTemplate = false
+        image.isTemplate = !attention
         image.accessibilityDescription = AppIdentity.name
         return image
     }
 
-    /// The app icon's detection frame and drop in one color, drawn at 85% like the design's menu bar
-    /// glyph. Coordinates are AppIcon.svg's 1024 grid; `rect` is in a flipped (top-down) context.
-    private static func drawGlyph(in rect: NSRect) {
+    /// The app icon's detection frame and drop, drawn at 85% like the design's menu bar glyph.
+    /// Coordinates are AppIcon.svg's 1024 grid; `rect` is in a flipped (top-down) context.
+    private static func drawGlyph(in rect: NSRect, frame: NSColor, drop dropColor: NSColor) {
         let near: CGFloat = 243.712, far: CGFloat = 780.288, inner: CGFloat = 389.12, outer: CGFloat = 634.88
         let corner: CGFloat = 58.368
         let brackets = NSBezierPath()
@@ -351,7 +343,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         transform.scale(by: scale)
         transform.translateX(by: -512, yBy: -512)
         transform.concat()
+        frame.setStroke()
         brackets.stroke()
+        dropColor.setFill()
         drop.fill()
         NSGraphicsContext.restoreGraphicsState()
     }

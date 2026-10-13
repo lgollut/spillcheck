@@ -46,6 +46,9 @@ public struct CoverageRecoveryDependency: Sendable {
 }
 
 public struct CollectionBatch: Sendable {
+    /// A capture must fit both pipeline validation and its atomic coverage settlement.
+    static let maximumRecoveryEntries = 4096
+
     public let sources: [CollectedSource]
     public let coverageGaps: [CoverageGap]
     /// Source progress becomes durable only after every returned record is handled.

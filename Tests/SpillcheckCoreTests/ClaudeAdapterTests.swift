@@ -123,6 +123,62 @@ struct ClaudeAdapterTests {
         }
     }
 
+    @Test func observedPermissionModeControlsRecoverWithoutLosingMessages() async throws {
+        let crypto = try BackgroundCryptography.ephemeralForTesting()
+        let adapter = try ClaudeAdapter(profileID: "test", agentVersion: "2.1.296", allowedTranscriptRoots: [])
+        let document = UUID(), observedAt = Date()
+        // The setup transcript emitted this exact control three times, without timestamps or UUIDs.
+        let control = try JSONSerialization.data(withJSONObject: ["type": "permission-mode",
+            "permissionMode": "dontAsk", "sessionId": "session"]) + Data([10])
+        let prompt = try claudeRow(content: "required prompt")
+        let original = try await adapter.importTranscript(prompt, documentID: document,
+            interface: .standaloneCLI, observedAt: observedAt, cryptography: crypto)
+        let batch = try await adapter.importTranscript(control + control + control + prompt, documentID: document,
+            interface: .standaloneCLI, observedAt: observedAt, cryptography: crypto)
+        #expect(batch.coverageGaps.isEmpty)
+        #expect(batch.recoveredReferences.map(\.locator) == (0..<4).map {
+            .transcript(documentID: document, recordIndex: UInt64($0))
+        })
+        let session = try SessionIdentity(provider: .claudeCode, profileID: "test", sessionID: "session")
+        #expect(batch.recoveredReferences.prefix(3).allSatisfy {
+            $0.session == session && $0.contentTime == nil && $0.parserContract == ClaudeAdapter.parserContractVersion
+        })
+        #expect(batch.sources.map(\.record.metadata.identity) == original.sources.map(\.record.metadata.identity))
+        #expect(batch.sources.map(\.record.revision) == original.sources.map(\.record.revision))
+        #expect(batch.sources.map(\.record.segments) == original.sources.map(\.record.segments))
+    }
+
+    @Test func changedPermissionModeControlsRemainVisibleAsGaps() async throws {
+        let crypto = try BackgroundCryptography.ephemeralForTesting()
+        let adapter = try ClaudeAdapter(profileID: "test", agentVersion: "2.1.296", allowedTranscriptRoots: [])
+        let control: [String: Any] = ["type": "permission-mode", "sessionId": "session", "permissionMode": "dontAsk"]
+        var changes: [[String: Any]] = []
+        for (key, value) in [("message", ["content": "required text"] as Any),
+                             ("content", "required text"), ("unknownPayload", "required text"),
+                             ("message", NSNull()), ("content", NSNull()),
+                             ("permissionMode", "future_mode"), ("permissionMode", "dontAsk "), ("permissionMode", ""),
+                             ("permissionMode", 1), ("permissionMode", false), ("permissionMode", NSNull()),
+                             ("sessionId", 1), ("sessionId", false), ("sessionId", ""),
+                             ("sessionId", NSNull()), ("sessionId", "different-session"), ("type", false)] {
+            var changed = control
+            changed[key] = value
+            changes.append(changed)
+        }
+        for key in ["type", "sessionId", "permissionMode"] {
+            var changed = control
+            changed.removeValue(forKey: key)
+            changes.append(changed)
+        }
+        for changed in changes {
+            let data = try JSONSerialization.data(withJSONObject: changed) + Data([10])
+            let batch = try await adapter.importTranscript(data, documentID: UUID(),
+                interface: .t3, observedAt: Date(), cryptography: crypto, expectedSessionID: "session")
+            #expect(batch.sources.isEmpty && batch.recoveredReferences.isEmpty)
+            #expect(batch.coverageGaps.count == 1)
+            #expect(batch.coverageGaps.allSatisfy { [.unsupportedContent, .malformedSource].contains($0.reason) })
+        }
+    }
+
     @Test func queuedPromptsAreCollectedAndContentBearingAttachmentsStayVisible() async throws {
         let crypto = try BackgroundCryptography.ephemeralForTesting()
         let adapter = try ClaudeAdapter(profileID: "test", agentVersion: "2.1.295", allowedTranscriptRoots: [])

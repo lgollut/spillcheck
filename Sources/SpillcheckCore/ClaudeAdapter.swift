@@ -18,14 +18,35 @@ public struct ClaudeReadLimits: Sendable {
     }
 }
 
+/// Decoded JSON and timestamps live only for one bounded read. Import, correlation and
+/// cursor bookkeeping share them instead of decoding the same physical rows repeatedly.
+struct ClaudeTranscriptPage: Sendable {
+    fileprivate struct Row: Sendable {
+        let offset: Int
+        let endOffset: Int
+        let value: ClaudeJSON?
+        let date: Date?
+    }
+    fileprivate let rows: [Row]
+
+    func rowDates(through byteCount: Int) -> [(offset: Int, date: Date)] {
+        rows.compactMap { row in
+            guard row.endOffset <= byteCount, let date = row.date else { return nil }
+            return (row.offset, date)
+        }
+    }
+}
+
 /// Version-isolated Claude Code collection. Raw strings and paths exist only in this transient batch.
 /// Batch results need the exact transcript tool-use ID for source time and error classification.
 /// Display IDs are never used as transcript IDs. Broad history discovery belongs to another layer.
 public struct ClaudeAdapter: CaptureNormalizer, Sendable {
+    /// Whole-source diagnostics, availability proofs and continuation gaps also consume slots.
+    static let recoveryEntryReserve = 8
     public static let validatedAgentVersion = "2.1.293"
     public static let adapterVersion = "2"
     /// Cursor interpretation changes independently of native identities and canonical content.
-    public static let parserContractVersion = "claude-transcript-10"
+    public static let parserContractVersion = "claude-transcript-11"
     /// Location of a whole-source availability warning, not an upstream item. A readable source
     /// settles only that warning, never another whole-source gap on the same file.
     static let sourceAvailabilityItemID = "claude-source-availability"
@@ -163,6 +184,10 @@ public struct ClaudeAdapter: CaptureNormalizer, Sendable {
         var checkpoints: [SourceCheckpoint] = []
         var recoveredReferences: [CoverageRecoveryReference] = []
         var continuationNeeded = false
+        // A child completion reads both files into one committed batch. Give each file a
+        // page within the pipeline's aggregate recovery budget so both checkpoints advance.
+        // Reserve room for availability proofs and other per-read bookkeeping.
+        let rowsPerPath = (CollectionBatch.maximumRecoveryEntries - Self.recoveryEntryReserve) / paths.count
         for path in paths {
             let checkpointID = try await checkpointIdentity(path: path, provenance: .live, cryptography: cryptography)
             let context = RetainedSourceContext(sessionIdentifier: session, title: nil,
@@ -172,7 +197,8 @@ public struct ClaudeAdapter: CaptureNormalizer, Sendable {
             do {
                 read = try await readIncremental(path: path, expectedSessionID: path == mainPath ? session : nil,
                     interface: packet.metadata.interface, checkpoint: previousCheckpoint,
-                    observedAt: capturedAt, provenance: .live, context: context, cryptography: cryptography)
+                    observedAt: capturedAt, provenance: .live, context: context,
+                    maximumRows: rowsPerPath, cryptography: cryptography)
             }
             catch ClaudeCollectionError.unsafeTranscriptPath {
                 return CollectionBatch(sources: [], coverageGaps: [gap(.sourceUnavailable)])
@@ -251,7 +277,18 @@ public struct ClaudeAdapter: CaptureNormalizer, Sendable {
         _ data: Data, documentID: UUID, interface: AgentInterface, observedAt: Date,
         provenance: SourceProvenance = .live, cryptography: BackgroundCryptography,
         expectedSessionID: String? = nil, context: RetainedSourceContext? = nil,
-        startingByteOffset: UInt64? = nil
+        startingByteOffset: UInt64? = nil, maximumRows: Int? = nil
+    ) async throws -> CollectionBatch {
+        try await importTranscript(data, documentID: documentID, interface: interface, observedAt: observedAt,
+            provenance: provenance, cryptography: cryptography, expectedSessionID: expectedSessionID,
+            context: context, startingByteOffset: startingByteOffset, maximumRows: maximumRows, parsedPage: nil)
+    }
+
+    func importTranscript(
+        _ data: Data, documentID: UUID, interface: AgentInterface, observedAt: Date,
+        provenance: SourceProvenance, cryptography: BackgroundCryptography,
+        expectedSessionID: String?, context: RetainedSourceContext?,
+        startingByteOffset: UInt64?, maximumRows: Int?, parsedPage: ClaudeTranscriptPage?
     ) async throws -> CollectionBatch {
         let scope = CollectionScope(provider: .claudeCode, profileID: profileID, interface: interface, path: .versionedTranscript)
         let operation: CollectionOperation = provenance.collectionOperation
@@ -263,7 +300,11 @@ public struct ClaudeAdapter: CaptureNormalizer, Sendable {
         var recoveredReferences: [CoverageRecoveryReference] = []
         var canonicalSession = expectedSessionID
         let bounded = data.prefix(limits.maximumBytes)
-        let ambiguousTools = try ambiguousToolResults(bounded)
+        let rowBudget = min(limits.maximumRows, maximumRows ?? limits.maximumRows,
+            CollectionBatch.maximumRecoveryEntries - Self.recoveryEntryReserve)
+        guard rowBudget > 0 else { throw ClaudeCollectionError.invalidConfiguration }
+        let page = try parsedPage ?? transcriptPage(bounded, maximumRows: rowBudget)
+        let ambiguousTools = try ambiguousToolResults(page)
         var offset = 0, rowIndex: UInt64 = 0
         for line in bounded.split(separator: 10, omittingEmptySubsequences: false) {
             try Task.checkCancellation()
@@ -291,18 +332,16 @@ public struct ClaudeAdapter: CaptureNormalizer, Sendable {
             }
             // Do not parse a partial write. A complete JSON value without a newline is not committed framing.
             if offset + line.count >= bounded.count { if !line.isEmpty { addGap(.incompleteMessage) }; break }
-            if rowIndex >= limits.maximumRows { addGap(.budgetExhausted); break }
+            if rowIndex >= rowBudget { addGap(.budgetExhausted); break }
             let next = offset + line.count + 1
             defer { offset = next; rowIndex += 1 }
             guard !line.isEmpty else { continue }
             guard line.count <= limits.maximumRowBytes else { addGap(.budgetExhausted, diagnostic: .oversizedRecord); continue }
-            let row: ClaudeJSON
-            do { row = try JSONDecoder().decode(ClaudeJSON.self, from: Data(line)) }
-            catch { addGap(.malformedSource); continue }
+            guard let row = page.rows[Int(rowIndex)].value else { addGap(.malformedSource); continue }
             if let nativeSession = row["sessionId"].nonemptyString {
                 rowSession = try? SessionIdentity(provider: .claudeCode, profileID: profileID, sessionID: nativeSession)
             }
-            rowTime = row["timestamp"].string.flatMap(Self.timestamp)
+            rowTime = page.rows[Int(rowIndex)].date
             // An unknown format still has useful recovery metadata. A trustworthy timestamp
             // outside this audit must not create a recent omission merely because it was read now.
             if case .historical(let audit) = provenance, let rowTime, !audit.includes(contentTime: rowTime) { continue }
@@ -329,6 +368,15 @@ public struct ClaudeAdapter: CaptureNormalizer, Sendable {
                 if type == "mode", case .object(let fields) = row,
                    Set(fields.keys) == ["type", "sessionId", "mode"],
                    row["mode"].string == "normal", let session = row["sessionId"].nonemptyString,
+                   canonicalSession == nil || canonicalSession == session {
+                    fullyRecognized = true
+                    continue
+                }
+                // Setup sessions also persist permission policy separately from their messages.
+                // Recognize the observed control only; changed modes or payloads remain gaps.
+                if type == "permission-mode", case .object(let fields) = row,
+                   Set(fields.keys) == ["type", "sessionId", "permissionMode"],
+                   row["permissionMode"].string == "dontAsk", let session = row["sessionId"].nonemptyString,
                    canonicalSession == nil || canonicalSession == session {
                     fullyRecognized = true
                     continue
@@ -360,7 +408,7 @@ public struct ClaudeAdapter: CaptureNormalizer, Sendable {
                 addGap(.unresolvedCorrelation, required: true); continue
             }
             canonicalSession = sessionID
-            guard let timestamp = row["timestamp"].string, let date = Self.timestamp(timestamp) else {
+            guard let date = rowTime else {
                 addGap(.missingTimestamp, required: true); continue
             }
             rowTime = date
@@ -443,11 +491,6 @@ public struct ClaudeAdapter: CaptureNormalizer, Sendable {
             recoveredReferences: recoveredReferences)
     }
 
-    private static func timestamp(_ value: String) -> Date? {
-        let formatter = ISO8601DateFormatter(); formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter.date(from: value) ?? ISO8601DateFormatter().date(from: value)
-    }
-
     /// A prompt submitted while a turn is running is persisted as a queued-command attachment,
     /// not as a user message. Task notifications and meta commands share that envelope.
     private static func queuedUserPrompt(_ attachment: ClaudeJSON) -> [ClaudeJSON]? {
@@ -485,12 +528,11 @@ public struct ClaudeAdapter: CaptureNormalizer, Sendable {
 
     /// One native tool result cannot have competing canonical bytes or success/error semantics
     /// in the same bounded page. Earlier pages need not contain its original tool-use message.
-    private func ambiguousToolResults(_ data: Data) throws -> Set<String> {
+    private func ambiguousToolResults(_ page: ClaudeTranscriptPage) throws -> Set<String> {
         var seen: [String: Data] = [:], ambiguous: Set<String> = []
-        for line in completeLines(data) {
+        for parsed in page.rows {
             try Task.checkCancellation()
-            guard line.count <= limits.maximumRowBytes,
-                  let row = try? JSONDecoder().decode(ClaudeJSON.self, from: Data(line)),
+            guard let row = parsed.value,
                   row["type"].string == "user", let session = row["sessionId"].nonemptyString,
                   row["message"]["role"].string == "user" else { continue }
             for block in row["message"]["content"].array ?? [] where block["type"].string == "tool_result" {
@@ -506,14 +548,12 @@ public struct ClaudeAdapter: CaptureNormalizer, Sendable {
         return ambiguous
     }
 
-    func toolResultIDs(_ data: Data, sessionID: String) -> Set<String> {
+    func toolResultIDs(_ page: ClaudeTranscriptPage, through byteCount: Int, sessionID: String) -> Set<String> {
         var result = Set<String>()
-        for line in completeLines(data) {
-            guard line.count <= limits.maximumRowBytes,
-                  let row = try? JSONDecoder().decode(ClaudeJSON.self, from: Data(line)),
+        for parsed in page.rows where parsed.endOffset <= byteCount {
+            guard let row = parsed.value, parsed.date != nil,
                   row["type"].string == "user", row["sessionId"].string == sessionID,
-                  row["uuid"].nonemptyString != nil, let timestamp = row["timestamp"].string,
-                  Self.timestamp(timestamp) != nil else { continue }
+                  row["uuid"].nonemptyString != nil else { continue }
             for block in row["message"]["content"].array ?? [] where block["type"].string == "tool_result" {
                 if let id = block["tool_use_id"].nonemptyString { result.insert(id) }
             }
@@ -521,14 +561,12 @@ public struct ClaudeAdapter: CaptureNormalizer, Sendable {
         return result
     }
 
-    func promptIDs(_ data: Data, sessionID: String) -> Set<String> {
+    func promptIDs(_ page: ClaudeTranscriptPage, through byteCount: Int, sessionID: String) -> Set<String> {
         var result = Set<String>()
-        for line in completeLines(data) {
-            guard line.count <= limits.maximumRowBytes,
-                  let row = try? JSONDecoder().decode(ClaudeJSON.self, from: Data(line)),
+        for parsed in page.rows where parsed.endOffset <= byteCount {
+            guard let row = parsed.value, parsed.date != nil,
                   row["type"].string == "user", row["sessionId"].string == sessionID,
                   row["isSidechain"].bool != true, row["uuid"].nonemptyString != nil,
-                  let timestamp = row["timestamp"].string, Self.timestamp(timestamp) != nil,
                   let id = row["promptId"].nonemptyString else { continue }
             if row["message"]["content"].string != nil || row["message"]["content"].array?.contains(where: { $0["type"].string == "text" }) == true {
                 result.insert(id)
@@ -537,10 +575,23 @@ public struct ClaudeAdapter: CaptureNormalizer, Sendable {
         return result
     }
 
-    private func completeLines(_ data: Data) -> [Data.SubSequence] {
+    func transcriptPage(_ data: Data, maximumRows: Int) throws -> ClaudeTranscriptPage {
         let bounded = data.prefix(limits.maximumBytes)
-        guard let newline = bounded.lastIndex(of: 10) else { return [] }
-        return Array(bounded[..<newline].split(separator: 10, omittingEmptySubsequences: false).prefix(limits.maximumRows))
+        guard let newline = bounded.lastIndex(of: 10) else { return .init(rows: []) }
+        let decoder = JSONDecoder()
+        let fraction = ISO8601DateFormatter()
+        fraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let seconds = ISO8601DateFormatter()
+        var offset = 0, rows: [ClaudeTranscriptPage.Row] = []
+        for line in bounded[..<newline].split(separator: 10, omittingEmptySubsequences: false).prefix(maximumRows) {
+            try Task.checkCancellation()
+            let value = line.count <= limits.maximumRowBytes
+                ? try? decoder.decode(ClaudeJSON.self, from: Data(line)) : nil
+            let date = value?["timestamp"].string.flatMap { fraction.date(from: $0) ?? seconds.date(from: $0) }
+            rows.append(.init(offset: offset, endOffset: offset + line.count + 1, value: value, date: date))
+            offset += line.count + 1
+        }
+        return .init(rows: rows)
     }
 
     func documentIdentity(_ path: String, cryptography: BackgroundCryptography) async throws -> UUID {
@@ -698,7 +749,7 @@ private func canonicalBytes(_ segments: [SourceSegment]) -> Data {
     return bytes
 }
 
-private enum ClaudeJSON: Decodable, Sendable {
+fileprivate enum ClaudeJSON: Decodable, Sendable {
     case object([String: ClaudeJSON]), array([ClaudeJSON]), string(String), bool(Bool), number(Double), null
     init(from decoder: any Decoder) throws {
         let c = try decoder.singleValueContainer()

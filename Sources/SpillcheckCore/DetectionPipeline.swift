@@ -153,7 +153,8 @@ public actor DetectionPipeline {
         let work = try await store.collectionWork(id: capture.id)
         let batch = try await normalizer.normalize(packet, capturedAt: capture.capturedAt,
             context: work?.context, cryptography: cryptography)
-        guard batch.pendingRecoveryDependencies.count <= 4096, batch.recoveredReferences.count <= 4096 else {
+        guard batch.pendingRecoveryDependencies.count <= CollectionBatch.maximumRecoveryEntries,
+              batch.recoveredReferences.count <= CollectionBatch.maximumRecoveryEntries else {
             throw PipelineError.budgetExhausted
         }
         let permitsConditionalContinuation = try validateRecoveryContinuations(in: batch, original: packet)

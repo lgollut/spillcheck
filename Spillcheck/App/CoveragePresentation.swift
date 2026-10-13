@@ -183,10 +183,7 @@ extension AppModel {
                 && agentProfiles[source.scope.provider]?.profileID == source.scope.profileID
                 && agentProfiles[source.scope.provider]?.authorizedHosts.contains(source.scope.interface) == true
                 && agentSetupStates[source.scope.provider] == .connected && onRetrySource != nil
-                && coverageReport?.work.items.contains {
-                    ($0.state == .queued || $0.state == .processing)
-                        && $0.context.retry?.identifiesSameSource(as: source) == true
-                } != true
+                && coverageReport?.hasPendingWork(for: source) != true
         case .retryHistory(let provider):
             return !storageUnavailable && monitoringEnabled && !monitoringTransition && !agentSetupBusy.contains(provider)
                 && !catchingUp && retryingHistory.isEmpty
@@ -239,7 +236,7 @@ extension AppModel {
             else if gap.excludedContent == true { state = .excluded }
             else if event.isIntermediateBacklog, let audit = event.audit {
                 state = auditIssueState(audit, scope: gap.scope, report: report)
-            } else if let workID = event.workID, let work = report.work.items.first(where: { $0.id == workID }) {
+            } else if let workID = event.workID, let work = report.work(id: workID) {
                 state = workIssueState(work)
             } else { state = .recoveryUnconfirmed }
             return .init(gap: gap, state: state, first: event.observedAt, last: event.observedAt,
@@ -249,7 +246,7 @@ extension AppModel {
         observations += report.omissions.items.map { omission in
             // Capture losses have no native row locator. Their atomic ledger link identifies
             // the exact lost work even when several sources expired at the same instant.
-            let work = report.work.items.first { $0.omissionID == omission.id }
+            let work = report.work(omissionID: omission.id)
             let state: CoverageIssueState = switch omission.state {
             case .recovered: .recovered
             case .unrecoverable: .historicalLoss
@@ -267,19 +264,25 @@ extension AppModel {
                 workID: work?.id)
         }
         // Keep every unread audit. A later audit for the same profile cannot erase earlier unread work.
+        var unreadAudits = Set(observations.filter { $0.gap.reason == .budgetExhausted && $0.state != .recovered }
+            .compactMap(\.audit))
+        var eventScopes: [CoverageAuditIdentity: Set<CollectionScope>] = [:]
+        for event in report.gapEvents.items {
+            if let audit = event.audit, let scope = event.gap.scope { eventScopes[audit, default: []].insert(scope) }
+        }
         for history in report.history.items where history.progress.hasUnreadContent {
             let audit = CoverageAuditIdentity(auditID: history.progress.audit.id,
                 provider: history.provider, profileID: history.profileID)
-            guard !observations.contains(where: {
-                $0.audit == audit && $0.gap.reason == .budgetExhausted && $0.state != .recovered
-            }) else { continue }
-            let scopes = Set(report.gapEvents.items.filter { $0.audit == audit }.compactMap(\.gap.scope))
+            guard !unreadAudits.contains(audit) else { continue }
+            let scopes = eventScopes[audit] ?? []
             // A shared native profile cannot establish which host produced an old audit.
             let scope = scopes.count == 1 ? scopes.first : nil
             let gap = CoverageGap(reason: .budgetExhausted,
                 interval: DateInterval(start: history.progress.audit.start, end: history.progress.audit.end),
                 scope: scope, operation: .historicalRead)
-            observations.append(.init(gap: gap, state: auditIssueState(audit, scope: scope, report: report),
+            let state = auditIssueState(audit, scope: scope, report: report)
+            if state != .recovered { unreadAudits.insert(audit) }
+            observations.append(.init(gap: gap, state: state,
                 first: history.lastAttemptedAt, last: history.lastAttemptedAt,
                 profile: .init(provider: history.provider, profileID: history.profileID), audit: audit,
                 retry: sourceRetry(for: gap, audit: audit, report: report)))
@@ -297,11 +300,11 @@ extension AppModel {
                 sourceDocumentID: reference.retrySourceDocumentID, sourceURL: reference.sourceURL)
             return selected.hasExactSelection ? selected : nil
         }
-        if let workID, let work = report.work.items.first(where: { $0.id == workID }),
+        if let workID, let work = report.work(id: workID),
            let retry = work.context.retry, retry.hasExactSelection { return retry }
         guard let audit else { return nil }
-        let matching = report.work.items.filter {
-            $0.context.audit == audit && (gap.scope == nil || $0.context.scope == gap.scope)
+        let matching = report.work(audit: audit).filter {
+            gap.scope == nil || $0.context.scope == gap.scope
         }.compactMap { $0.context.retry }.filter(\.hasExactSelection)
         if let only = matching.first, matching.allSatisfy({ $0.identifiesSameSource(as: only) }) { return only }
         return nil
@@ -309,9 +312,7 @@ extension AppModel {
 
     private func auditIssueState(_ audit: CoverageAuditIdentity, scope: CollectionScope?,
                                  report: CoverageReport) -> CoverageIssueState {
-        let work = report.work.items.filter {
-            $0.context.audit == audit && (scope == nil || $0.context.scope == scope)
-        }
+        let work = report.work(audit: audit).filter { scope == nil || $0.context.scope == scope }
         if work.contains(where: { $0.state == .processing }) { return .reading }
         if work.contains(where: { $0.state == .queued }) { return .queued }
         if work.contains(where: { $0.state == .stalled }) { return .stalled }
@@ -335,9 +336,7 @@ extension AppModel {
               [.malformedSource, .sourceUnavailable].contains(gap.reason),
               gap.recovery == nil, gap.contentType == nil, let scope = gap.scope, let operation = gap.operation,
               operation != .hookDelivery else { return false }
-        let persistedRead = (report ?? coverageReport)?.successfulReads.items.filter {
-            $0.scope == scope && $0.operation == operation
-        }.map(\.succeededAt).max()
+        let persistedRead = (report ?? coverageReport)?.latestSuccessfulRead(scope: scope, operation: operation)
         let readAt = [lastOperationReads[scope]?[operation], persistedRead].compactMap { $0 }.max()
         guard let readAt, readAt > event.observedAt else { return false }
         // A read restores the operation, not the skipped content. A newer known failure still wins.

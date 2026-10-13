@@ -73,7 +73,7 @@ public struct CollectionRecoveryCertificate: Codable, Equatable, Sendable {
     }
 }
 
-public struct StoredCollectionWork: Codable, Sendable {
+public struct StoredCollectionWork: Codable, Equatable, Sendable {
     public let id: UUID
     public let context: CollectionWorkContext
     public let state: CollectionWorkState

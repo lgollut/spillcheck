@@ -115,7 +115,7 @@ actor AgentSetupController {
     }
 
     func install(_ draft: AgentProfileDraft) async throws {
-        guard supported(draft), draft.interface != .desktopCode, draft.hasValidHostAuthorization,
+        guard supported(draft), draft.hasValidHostAuthorization,
               !draft.authorizedHosts.isEmpty, draft.authorizedHosts.contains(draft.interface),
               !draft.profileID.isEmpty, draft.profileID.utf8.count <= 256,
               draft.homePath.hasPrefix("/"), draft.executablePath.hasPrefix("/"),
@@ -129,22 +129,39 @@ actor AgentSetupController {
         // the UUID needed for scoped repair/removal; unrelated handlers are never claimed.
         var saved = draft
         saved.version = observedVersion
-        if let prior = profiles[draft.provider], prior.installed,
-           (prior.homePath != draft.homePath || prior.profileID != draft.profileID
-                || prior.interface != draft.interface) {
-            throw CodexSetupError.invalidConfiguration
-        }
+        if saved.provider == .codex { saved.homePath = try Self.codexHomePath(saved) }
         if let prior = profiles[draft.provider] {
-            saved.registrationID = prior.registrationID
-            saved.connectionProof = prior.connectionProof
+            let priorHome = prior.provider == .codex ? try Self.codexHomePath(prior) : prior.homePath
+            let homeChanged = priorHome != saved.homePath
+            if prior.installed && (homeChanged || prior.profileID != saved.profileID
+                || prior.interface != saved.interface) {
+                throw CodexSetupError.invalidConfiguration
+            }
+            if saved.provider == .codex && homeChanged {
+                // A removed profile still owns retained source identities. A new native
+                // store must not inherit those identities or its old connection proof.
+                saved.profileID = UUID().uuidString
+                saved.registrationID = UUID()
+                saved.connectionProof = nil
+            } else {
+                saved.registrationID = prior.registrationID
+                saved.connectionProof = prior.connectionProof
+            }
         }
         if saved.connectionProof?.applies(to: binding(for: saved)) != true { saved.connectionProof = nil }
         // This flag retains authorization and the ownership location for an attempted install.
         // Actual installed/connected status always comes from check() and the durable challenge.
         // A failure after provider rename must still expose removal and prevent abandoning its root.
         saved.installed = true
+        let previous = profiles[draft.provider]
         profiles[draft.provider] = saved
-        try await persist()
+        do { try await persist() }
+        catch {
+            // No provider file has changed yet. A failed opt-in must not widen
+            // collection authorization in the controller's in-memory state.
+            profiles[draft.provider] = previous
+            throw error
+        }
         try restoreSetups(only: draft.provider)
         if draft.provider == .codex { _ = try await codex?.install() }
         else { _ = try await claude?.install() }
@@ -178,8 +195,8 @@ actor AgentSetupController {
     /// The shared hook transport remains authorized and its owned registration/proof is untouched.
     /// No per-host producer suppression is promised for hooks whose payload cannot identify a host.
     func authorizeHosts(_ hosts: Set<AgentInterface>, for provider: AgentProvider) async throws {
-        guard var profile = profiles[provider], profile.interface != .desktopCode,
-              !hosts.isEmpty, hosts.isSubset(of: AgentProfileDraft.supportedHosts),
+        guard var profile = profiles[provider],
+              !hosts.isEmpty, hosts.isSubset(of: AgentProfileDraft.supportedHosts(for: provider)),
               hosts.contains(profile.interface) else { throw CodexSetupError.invalidConfiguration }
         let previous = profile
         profile.authorizedHosts = hosts
@@ -294,7 +311,8 @@ actor AgentSetupController {
     }
 
     private func supported(_ profile: AgentProfileDraft) -> Bool {
-        CollectionCompatibility.isEligible(provider: profile.provider, interface: profile.interface, version: profile.version)
+        !profile.authorizedHosts.isEmpty && profile.hasValidHostAuthorization
+            && CollectionCompatibility.isEligible(provider: profile.provider, interface: profile.interface, version: profile.version)
     }
 
     func consumeChangedExecutables() -> Set<AgentProvider> {
@@ -308,6 +326,12 @@ actor AgentSetupController {
             registrationID: profile.registrationID, interface: profile.interface,
             configurationPath: home.appendingPathComponent(profile.provider == .codex ? "hooks.json" : "settings.json").path,
             helperPath: helperURL.path, socketPath: socketURL.path)
+    }
+
+    private static func codexHomePath(_ profile: AgentProfileDraft) throws -> String {
+        try CodexResumeProfile(profileID: profile.profileID,
+            homeURL: URL(fileURLWithPath: profile.homePath, isDirectory: true),
+            executableURL: URL(fileURLWithPath: profile.executablePath)).homeURL.path
     }
 
     private func persist(profiles proposed: [AgentProvider: AgentProfileDraft]? = nil) async throws {

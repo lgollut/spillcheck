@@ -115,20 +115,66 @@ struct InventoryViewingWorkflowTests {
         #expect(desktop.arguments == ["--desktop", "--resume", identifier.uuidString.lowercased()])
         #expect(try SourceOpeningPlan.terminalResume(session: claude, executableURL: executable).arguments
             == ["--resume", identifier.uuidString.lowercased()])
-        #expect(try SourceOpeningPlan.terminalResume(session: codex, executableURL: executable).arguments
-            == ["resume", identifier.uuidString.lowercased()])
+        let profile = try CodexResumeProfile(profileID: "test",
+            homeURL: URL(fileURLWithPath: "/synthetic/codex-home"), executableURL: executable)
+        #expect(try SourceOpeningPlan.terminalResume(session: codex, codexProfile: profile).arguments
+            == ["-c", "export CODEX_HOME=\"$1\"; shift; exec \"$@\"", "spillcheck-resume",
+                "/synthetic/codex-home", executable.path, "resume", identifier.uuidString.lowercased()])
+        #expect(throws: SourceOpeningFailure.invalidReference) {
+            try SourceOpeningPlan.terminalResume(session: codex, executableURL: executable)
+        }
+        let otherProfile = try CodexResumeProfile(profileID: "other",
+            homeURL: profile.homeURL, executableURL: executable)
+        #expect(throws: SourceOpeningFailure.invalidReference) {
+            try SourceOpeningPlan.terminalResume(session: codex, codexProfile: otherProfile)
+        }
         #expect(desktop.displayCommand.contains("'\\''"))
         #expect(throws: SourceOpeningFailure.invalidReference) { try SourceOpeningPlan.codexURL(session: claude) }
     }
 
+    @Test func codexResumeUsesExactCanonicalHomeAndQuotesAllShellArguments() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("spillcheck-resume-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let home = root.appendingPathComponent("home 'quote' $(exit 41); exit 42", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: false)
+        let alias = root.appendingPathComponent("chosen-home", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: home)
+        let executable = root.appendingPathComponent("fake= 'codex' $(exit 43)")
+        try Data("#!/bin/sh\nprintf '%s\\n' \"$CODEX_HOME\" \"$@\"\n".utf8).write(to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        let profile = try CodexResumeProfile(profileID: "owned-fake-profile", homeURL: alias, executableURL: executable)
+        let reader = try CodexHistoryClientConfiguration(executableURL: executable, codexHomeURL: alias,
+            workingDirectoryURL: root)
+        #expect(profile.homeURL == reader.codexHomeURL)
+        let session = try SessionIdentity(provider: .codex, profileID: profile.profileID, sessionID: UUID().uuidString)
+        let plan = try SourceOpeningPlan.terminalResume(session: session, codexProfile: profile)
+        for copiedCommand in [false, true] {
+            let process = Process(), output = Pipe()
+            process.executableURL = copiedCommand ? URL(fileURLWithPath: "/bin/sh") : plan.executableURL
+            process.arguments = copiedCommand ? ["-c", plan.displayCommand] : plan.arguments
+            process.environment = ["PATH": "/usr/bin:/bin", "CODEX_HOME": "/wrong-ambient-home"]
+            process.standardOutput = output
+            process.standardError = FileHandle.nullDevice
+            try process.run()
+            process.waitUntilExit()
+            #expect(process.terminationStatus == 0)
+            let text = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            #expect(text == "\(profile.homeURL.path)\nresume\n\(session.sessionID.lowercased())\n")
+        }
+    }
+
     @Test func arbitrarySourceTextCannotBecomeURLPathOrCommandArguments() throws {
+        let profile = try CodexResumeProfile(profileID: "test",
+            homeURL: URL(fileURLWithPath: "/synthetic/codex-home"),
+            executableURL: URL(fileURLWithPath: "/synthetic/codex"))
         for identifier in ["new", "../../../settings", "--dangerously-skip-permissions", "$(touch /tmp/NO)",
                            "abc\n--resume", "47cca6f4-1966-43e9-b33a-2b45f2a990a0?prompt=send"] {
             let session = try SessionIdentity(provider: .codex, profileID: "test", sessionID: identifier)
             #expect(throws: SourceOpeningFailure.invalidReference) { try SourceOpeningPlan.codexURL(session: session) }
             #expect(throws: SourceOpeningFailure.invalidReference) {
                 try SourceOpeningPlan.terminalResume(session: session,
-                    executableURL: URL(fileURLWithPath: "/synthetic/codex"))
+                    codexProfile: profile)
             }
         }
     }

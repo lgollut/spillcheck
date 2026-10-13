@@ -37,9 +37,13 @@ struct AgentProfileDraft: Codable, Equatable, Sendable {
 
     var isComplete: Bool { !executablePath.isEmpty && !homePath.isEmpty && !version.isEmpty }
 
-    static let supportedHosts: Set<AgentInterface> = [.standaloneCLI, .t3]
+    /// Existing and inferred authorization never expands when another route becomes eligible.
+    static let defaultHosts: Set<AgentInterface> = [.standaloneCLI, .t3]
+    static func supportedHosts(for provider: AgentProvider) -> Set<AgentInterface> {
+        defaultHosts.union([.desktopCode])
+    }
     static func legacyHosts(interface: AgentInterface) -> Set<AgentInterface> {
-        interface == .desktopCode ? [] : supportedHosts
+        interface == .desktopCode ? [] : defaultHosts
     }
     var collectionInterfaces: [AgentInterface] {
         authorizedHosts.sorted { $0.rawValue < $1.rawValue }
@@ -47,13 +51,16 @@ struct AgentProfileDraft: Codable, Equatable, Sendable {
     /// Shared hooks identify their registration transport. Removing that transport from
     /// authorization would silently discard events from other hosts using the same hook.
     var hasValidHostAuthorization: Bool {
-        authorizedHosts.isSubset(of: Self.supportedHosts)
-            && (interface == .desktopCode ? authorizedHosts.isEmpty : authorizedHosts.contains(interface))
+        authorizedHosts.isSubset(of: Self.supportedHosts(for: provider))
+            && (interface == .desktopCode && authorizedHosts.isEmpty || authorizedHosts.contains(interface))
+    }
+    var requiresDesktopDeliveryRoute: Bool {
+        installed && interface == .desktopCode && authorizedHosts.contains(.desktopCode)
     }
     /// Says why this profile's sessions aren't collected, and what to choose instead.
     var unsupportedMessage: String {
         interface == .desktopCode
-            ? "\(AppIdentity.name) doesn’t collect from the \(provider.displayName) desktop app yet."
+            ? "Enable partial desktop support for this shared \(provider.displayName) profile to collect saved local conversations."
             : "This collection route has not been established, so its sessions aren’t collected."
     }
 
@@ -216,31 +223,65 @@ struct InventoryGroups {
     var all: [EntrySummary] { active + notSecrets + handled }
 }
 
-/// One authorized host in a shared native profile. Registration proof does not infer its producer.
+/// A host-specific presentation or an aggregate for a profile whose transport
+/// does not identify the current producer host.
 struct AgentHostRoute: Identifiable {
+    let provider: AgentProvider
     let interface: AgentInterface
     let assessments: [CollectionAssessment]
     let limitations: [CoverageGap]
+    var lastReadAt: Date? = nil
+    var sharedProfile = false
+    var partialDesktopSupport = false
     var id: AgentInterface { interface }
-    var name: String { interface.hostLabel }
+    var name: String { sharedProfile ? "Shared profile" : interface.hostLabel }
     var collecting: Bool { assessments.contains { $0.canPerform(.liveRead) } }
     var summary: String {
-        let live = collecting ? "Live reads available" : "Live reads unverified or unavailable"
-        let history = assessments.contains { $0.canPerform(.historicalRead) }
-            ? "Catch-up available" : "Catch-up unverified or unavailable"
-        let evidence = !assessments.isEmpty && assessments.allSatisfy { $0.acceptanceEvidence == .validated }
-            ? "Recorded acceptance" : "Full acceptance unverified"
-        return [live, history, status == .partial ? "Partial coverage" : nil, evidence]
-            .compactMap { $0 }.joined(separator: " · ")
+        var parts = [operationSummary(.liveRead), operationSummary(.historicalRead)]
+        if assessments.contains(where: { $0.scope.provider == .codex && $0.scope.path == .hook }) {
+            parts.append("Hook collection excludes intermediate replies")
+        }
+        if sharedProfile { parts.append("Host not identified") }
+        if partialDesktopSupport {
+            parts.append(provider == .claudeCode ? "Desktop side questions unsupported" : "Automatic side-chat collection unavailable")
+        }
+        return parts.joined(separator: " · ")
+    }
+    var acceptanceSummary: String {
+        if sharedProfile {
+            return "Collection status applies to the shared \(provider.displayName) profile. Its configured route does not identify the app or CLI producing a session. Host-specific acceptance is separate."
+        }
+        return !assessments.isEmpty && assessments.allSatisfy { $0.acceptanceEvidence == .validated }
+            ? "Recorded acceptance is verified for this route and version. Actual coverage is shown separately."
+            : "Recorded acceptance is unverified for this route and version. This does not by itself prevent collection."
+    }
+    private func operationSummary(_ operation: CollectionOperation) -> String {
+        let name = operation == .liveRead ? "Live reads" : "Catch-up"
+        if operation == .historicalRead, !assessments.isEmpty,
+           assessments.allSatisfy({ $0.scope.path == .hook }) {
+            return "Hook content has no catch-up"
+        }
+        let failures = assessments.flatMap(\.failures).filter { $0.operation == operation }
+        if assessments.contains(where: { $0.canPerform(operation) }) {
+            return failures.isEmpty ? "\(name) available" : "\(name) partially available"
+        }
+        if !failures.isEmpty {
+            return failures.allSatisfy { $0.reason == .transientFailure }
+                ? "\(name) waiting to retry" : "\(name) unavailable"
+        }
+        return operation == .liveRead ? "Awaiting first live read" : "Catch-up not observed yet"
     }
     var status: CollectionCompatibilityStatus {
         if !limitations.isEmpty || assessments.contains(where: { $0.status == .partial }) { return .partial }
+        if partialDesktopSupport, assessments.contains(where: { !$0.usableOperations.isEmpty }) { return .partial }
+        if sharedProfile, assessments.contains(where: { $0.status == .compatible }),
+           assessments.contains(where: { $0.status == .incompatible }) { return .partial }
         if assessments.contains(where: { $0.status == .compatible }) { return .compatible }
         return assessments.contains(where: { $0.status == .incompatible }) ? .incompatible : .unverified
     }
 }
 
-/// Shared owned registration with independently assessed, authorized collection hosts.
+/// Shared owned registration with independently assessed, authorized collection transports.
 struct AgentRoute: Identifiable {
     let provider: AgentProvider
     let profile: AgentProfileDraft?
@@ -249,22 +290,21 @@ struct AgentRoute: Identifiable {
     var assessment: CollectionAssessment? = nil
     var assessments: [CollectionAssessment] = []
     var limitations: [CoverageGap] = []
+    var lastReadDates: [CollectionScope: Date] = [:]
+    var monitoringActive = true
     var hostRoutes: [AgentHostRoute] {
-        (profile?.collectionInterfaces ?? []).map { interface in
-            AgentHostRoute(interface: interface,
-                assessments: assessments.filter { $0.scope.interface == interface },
-                limitations: limitations.filter { $0.scope?.interface == interface })
-        }
+        guard let profile, !profile.collectionInterfaces.isEmpty else { return [] }
+        // Shared hooks and passive profile history carry a configured transport.
+        // Keep distinct scopes for retry/deduplication without assigning a producer host.
+        return [AgentHostRoute(provider: provider, interface: profile.interface, assessments: assessments,
+            limitations: limitations, lastReadAt: lastReadDates.values.max(), sharedProfile: true,
+            partialDesktopSupport: profile.authorizedHosts.contains(.desktopCode))]
     }
 
     var id: AgentProvider { provider }
-    var name: String {
-        guard let profile, !profile.executablePath.isEmpty || profile.installed else { return provider.displayName }
-        let hosts = profile.collectionInterfaces.map(\.hostLabel).joined(separator: " and ")
-        return hosts.isEmpty ? provider.displayName : "\(provider.displayName) \(hosts)"
-    }
+    var name: String { provider.displayName }
     var monogram: String { provider == .codex ? "CX" : "CC" }
-    var collecting: Bool { state == .connected && hostRoutes.contains(where: \.collecting) }
+    var collecting: Bool { monitoringActive && state == .connected && hostRoutes.contains(where: \.collecting) }
     var shownInCoverage: Bool { state != .notDetected && state != .notChecked }
     /// Found on an eligible route with a complete profile, so hooks can be added now.
     var connectable: Bool { state == .detected && profile?.isComplete == true }
@@ -306,15 +346,63 @@ struct SetupCheckCommand {
 
 @MainActor @Observable
 final class AppModel {
+    /// Reader observations only. Durable omission limitations are derived in `routes` so a
+    /// completed recovery can clear them without requiring another provider batch.
     var collectionAssessments: [CollectionScope: CollectionAssessment] = [:]
     var collectionLimitations: [CoverageGap] = []
+    var lastReadDates: [CollectionScope: Date] = [:]
+    var lastOperationReads: [CollectionScope: [CollectionOperation: Date]] = [:]
+    var coverageReport: CoverageReport?
+    var retryingHistory: Set<AgentProvider> = []
+    var exportingDiagnostics = false
+    @ObservationIgnored var onRetryHistory: ((AgentProvider) -> Void)?
+    @ObservationIgnored var onRetrySource: ((CoverageSourceRetryDescriptor) -> Void)?
+    @ObservationIgnored var onExportDiagnostics: (() -> Void)?
     private(set) var monitoring = MonitoringState()
     @ObservationIgnored var onMonitoringChanged: (() -> Void)?
     @ObservationIgnored var onMonitoringRequested: ((Bool) -> Void)?
     var storageReady = false
     /// Protected storage couldn't open; `storageMessage` says why.
     var storageFailed = false
+    var startupFailure: StorageStartupFailure?
     var storageMessage: String? = "Opening protected storage…"
+    enum StorageAvailability { case opening, available, failed }
+    var storageAvailability: StorageAvailability {
+        if isDemo { return .available }
+        if storageFailed { return .failed }
+        return storageReady ? .available : .opening
+    }
+    var storageUnavailable: Bool { storageAvailability != .available }
+    enum MonitoringIndicator { case unavailable, paused, waiting, active, attention }
+    var monitoringIndicator: MonitoringIndicator {
+        if storageUnavailable { return .unavailable }
+        if !monitoringEnabled { return .paused }
+        if coverageNeedsAttention || collectionStorageNeedsAttention { return .attention }
+        return monitoringProven || busy || catchingUp ? .active : .waiting
+    }
+    var liveReadReadinessText: String {
+        if storageUnavailable { return "Unavailable" }
+        let shown = routes.filter(\.shownInCoverage)
+        guard !shown.isEmpty else { return "Nothing connected" }
+        return "\(shown.filter(\.collecting).count) of \(shown.count) ready for live reads"
+    }
+    var canExportStartupDiagnostics: Bool { storageFailed && startupFailure != nil }
+    var storageStatusTitle: String? {
+        guard storageUnavailable else { return nil }
+        return storageFailed ? "Vault unavailable" : "Opening vault"
+    }
+    var storageSummaryText: String? {
+        guard storageUnavailable else { return nil }
+        return storageFailed ? "Analysis and inventory are unavailable until the vault opens."
+            : "Analysis and inventory will be available after the vault opens."
+    }
+    var inventoryStatusTitle: String? {
+        guard storageUnavailable else { return nil }
+        return storageFailed ? "Inventory unavailable" : "Opening inventory"
+    }
+    var monitoringStatusText: String {
+        storageStatusTitle ?? (monitoringEnabled ? "Monitoring on" : (stopped ? "Stopped" : "Paused"))
+    }
     var monitoringTransition = false
     private var queueProcessing = false
     private(set) var lastCheckedAt: Date?
@@ -433,6 +521,7 @@ final class AppModel {
         if case .processing = monitoring.queueActivity { true } else { false }
     }
     var status: String {
+        if let storageStatusTitle { return storageStatusTitle }
         let queueStatus: String
         switch monitoring.queueActivity {
         case .idle: queueStatus = "Idle"
@@ -557,18 +646,54 @@ final class AppModel {
                 guard $0.scope.provider == provider else { return false }
                 guard let profile else { return true }
                 return $0.scope.profileID == profile.profileID && profile.authorizedHosts.contains($0.scope.interface)
-            }
+            }.map(assessmentWithCurrentLimitations)
             let assessment = assessments.first(where: { $0.canPerform(.liveRead) }) ?? assessments.first
             return AgentRoute(provider: provider, profile: agentProfiles[provider], state: state,
                               waitingForEvent: state == .installedUnverified && verificationPrompts[provider] != nil,
                               assessment: assessment, assessments: assessments.sorted {
                                   $0.scope.interface.rawValue < $1.scope.interface.rawValue
-                              }, limitations: collectionLimitations.filter { $0.scope?.provider == provider })
+                              }, limitations: collectionLimitations.filter {
+                                  $0.scope?.provider == provider && $0.scope?.profileID == profile?.profileID
+                              }, lastReadDates: lastReadDates.filter {
+                                  $0.key.provider == provider && $0.key.profileID == profile?.profileID
+                              }, monitoringActive: monitoringEnabled)
         }
+    }
+
+    private func assessmentWithCurrentLimitations(_ assessment: CollectionAssessment) -> CollectionAssessment {
+        let required = collectionLimitations.filter {
+            $0.scope == assessment.scope && $0.isRequiredFormatFailure == true
+                && ($0.contentType != nil || $0.recovery != nil
+                    || ($0.operation.map { operation in
+                        !assessment.canPerform(operation) || assessment.failures.contains { $0.operation == operation }
+                    } ?? true))
+        }
+        return CollectionAssessment(scope: assessment.scope,
+            observedExecutableVersion: assessment.observedExecutableVersion, format: assessment.format,
+            usableOperations: assessment.usableOperations,
+            unavailableContent: assessment.unavailableContent.union(required.compactMap(\.contentType)),
+            failures: assessment.failures + required.map {
+                .init(reason: $0.operation == nil ? .changedContentFormat : .sourceUnavailable,
+                      operation: $0.operation, contentType: $0.contentType)
+            }, acceptanceEvidence: assessment.acceptanceEvidence)
     }
 
     /// A remembered connection proof is separate from recent collection and analyzed coverage.
     var monitoringProven: Bool { routes.contains(where: \.collecting) }
+
+    var hasAnalyzedContent: Bool { (activity?.messageCount ?? 0) > 0 }
+
+    /// Retained analysis stays visible before this process observes another live read.
+    var coverageSummaryText: String {
+        if let storageSummaryText { return storageSummaryText }
+        if hasAnalyzedContent || monitoringProven {
+            let window = activity?.window ?? AnalyzedActivity.recentWindow(endingAt: .now)
+            return "\(plural(activity?.messageCount ?? 0, "message")) analyzed · \(DisplayTime.day(window.start)) – \(DisplayTime.day(window.end))"
+        }
+        return routes.contains { $0.state == .connected }
+            ? "Registration verified · waiting for content"
+            : "Verify an agent to start monitoring"
+    }
 
     /// Opens the setup assistant at `step`, or where the user still has something to do: confirming
     /// hooks that are already added, otherwise choosing agents.
@@ -605,7 +730,8 @@ final class AppModel {
     }
 
     var coverageWord: String {
-        switch monitoring.coverage {
+        if storageUnavailable { return storageFailed ? "Unavailable" : "Opening" }
+        return switch monitoring.coverage {
         case .notConfigured: "Not proven"
         case .complete: monitoringProven ? "No recent gaps" : "Not proven"
         case .partial: "Partial"
@@ -613,49 +739,12 @@ final class AppModel {
     }
 
     var coverageStateText: String {
-        switch monitoring.coverage {
+        if storageUnavailable { return storageFailed ? "Coverage unavailable" : "Opening protected storage" }
+        return switch monitoring.coverage {
         case .notConfigured: "Coverage not proven"
         case .complete: monitoringProven ? "No recent gaps" : "Coverage not proven"
         case .partial: "Partial coverage"
         }
-    }
-
-    struct CoverageGapRow: Identifiable {
-        let id: String
-        let text: String
-        var action: (label: String, route: MainRoute)?
-    }
-
-    var coverageGaps: [CoverageGapRow] {
-        var rows: [CoverageGapRow] = []
-        for route in routes {
-            switch route.state {
-            case .unsupported:
-                rows.append(.init(id: "route-\(route.provider.rawValue)",
-                    text: "\(route.name): this collection route has not been established.",
-                    action: ("Manage agents", .settings(.agents))))
-            case .unavailable:
-                rows.append(.init(id: "route-\(route.provider.rawValue)",
-                    text: "\(route.name): its executable, hooks, or configuration need attention. Coverage identifies affected content.",
-                    action: ("Manage agents", .settings(.agents))))
-            default: break
-            }
-        }
-        if case .partial(let gaps) = monitoring.coverage {
-            let grouped = Dictionary(grouping: gaps) { gap in
-                [gap.scope?.provider.rawValue ?? "legacy", gap.scope?.profileID ?? "",
-                 gap.scope?.interface.rawValue ?? "", gap.scope?.path.rawValue ?? "",
-                 gap.operation?.rawValue ?? "", gap.contentType?.rawValue ?? "", gap.reason.rawValue].joined(separator: ":")
-            }
-            for key in grouped.keys.sorted() {
-                guard let gap = grouped[key]?.first else { continue }
-                let scopeText = gap.scope.map { "\($0.provider.displayName) \($0.interface.hostLabel)" } ?? "Collection"
-                let typeText = gap.contentType.map { " · \($0.pluralLabel)" } ?? ""
-                let operationText = gap.operation.map { " · \($0.label)" } ?? ""
-                rows.append(.init(id: key, text: "\(scopeText)\(typeText)\(operationText): \(Self.gapText(gap.reason))"))
-            }
-        }
-        return rows
     }
 
     static func gapText(_ reason: CoverageGapReason) -> String {
@@ -679,17 +768,22 @@ final class AppModel {
     }
 
     var processingText: String {
+        if let storageStatusTitle { return storageStatusTitle }
         if stopped { return "Monitoring stopped" }
         if !monitoringEnabled { return "Not checking while paused" }
         if catchingUp { return "Reading recent history" }
         if busy { return "Analyzing new content" }
-        return lastCheckedAt.map { "Up to date · last checked \($0.formatted(date: .omitted, time: .shortened))" } ?? "Up to date"
+        if coverageNeedsAttention { return "Idle · coverage needs attention" }
+        if !monitoringProven { return "Waiting for agent content" }
+        return lastCheckedAt.map { "Idle · last analyzed \($0.formatted(date: .omitted, time: .shortened))" } ?? "Waiting for agent content"
     }
 
     var processingShort: String {
+        if storageUnavailable { return storageFailed ? "Unavailable" : "Opening" }
         if !monitoringEnabled { return "Not checking" }
         if catchingUp { return "Catching up" }
-        return busy ? "Analyzing" : "Up to date"
+        if busy { return "Analyzing" }
+        return monitoringProven || hasAnalyzedContent ? "Idle" : "Waiting"
     }
 
     // MARK: Settled activity
@@ -739,7 +833,8 @@ final class AppModel {
         }
     }
 
-    var lastCatchUp: Date? { historyProgress.map(\.progress.audit.end).max() }
+    var lastCatchUp: Date? { historyProgress.compactMap(\.completedAt).max() }
+    var lastCatchUpAttempt: Date? { historyProgress.compactMap(\.lastAttemptedAt).max() }
 
     // MARK: Toasts
 

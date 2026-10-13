@@ -12,6 +12,7 @@ public enum AgentInterface: String, Codable, CaseIterable, Sendable {
 }
 
 public enum ContentType: String, Codable, CaseIterable, Sendable {
+    /// userPrompt also covers provider user-role input supplied by hooks or parent agents.
     case userPrompt, toolOutput, toolError, intermediateResponse, finalResponse
 }
 
@@ -208,6 +209,12 @@ public struct SourceOrigin: Hashable, Codable, Sendable {
     }
 }
 
+/// Hook payloads have no producer timestamp. Their durable first observation must
+/// not be presented as a timestamp supplied by the originating conversation.
+public enum SourceTimeBasis: String, Codable, Sendable {
+    case firstObservation
+}
+
 public struct SourceRecordMetadata: Hashable, Codable, Sendable {
     public let identity: SourceIdentity
     public let contentType: ContentType
@@ -216,11 +223,14 @@ public struct SourceRecordMetadata: Hashable, Codable, Sendable {
     public let locator: SourceLocator
     public let protectedMetadata: ProtectedPayloadReference?
     public let origin: SourceOrigin
+    /// Nil preserves the pre-existing native-source timestamp contract.
+    public let timeBasis: SourceTimeBasis?
 
     public init(
         identity: SourceIdentity, contentType: ContentType, contentTime: Date,
         observedAt: Date, locator: SourceLocator = .upstreamItem,
-        protectedMetadata: ProtectedPayloadReference? = nil, origin: SourceOrigin
+        protectedMetadata: ProtectedPayloadReference? = nil, origin: SourceOrigin,
+        timeBasis: SourceTimeBasis? = nil
     ) throws {
         guard contentTime.timeIntervalSince1970.isFinite, observedAt.timeIntervalSince1970.isFinite else {
             throw ContractError.invalidTime
@@ -232,6 +242,7 @@ public struct SourceRecordMetadata: Hashable, Codable, Sendable {
         self.locator = locator
         self.protectedMetadata = protectedMetadata
         self.origin = origin
+        self.timeBasis = timeBasis
     }
 }
 

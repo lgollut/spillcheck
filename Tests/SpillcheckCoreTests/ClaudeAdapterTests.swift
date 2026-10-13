@@ -26,6 +26,20 @@ private func claudeText(_ source: CollectedSource) -> String { source.record.seg
 
 @Suite("Claude validated collection")
 struct ClaudeAdapterTests {
+    @Test func malformedQueuedUserPromptIsRequiredContentLoss() async throws {
+        let crypto = try BackgroundCryptography.ephemeralForTesting()
+        let adapter = try ClaudeAdapter(profileID: "test", agentVersion: "2.1.295", allowedTranscriptRoots: [])
+        let data = try JSONSerialization.data(withJSONObject: ["type": "attachment", "uuid": "queued",
+            "sessionId": "session", "timestamp": "2026-10-09T12:00:00Z",
+            "attachment": ["type": "queued_command", "commandMode": "prompt", "prompt": 42]]) + Data([10])
+        let batch = try await adapter.importTranscript(data, documentID: UUID(), interface: .standaloneCLI,
+            observedAt: Date(), cryptography: crypto)
+        #expect(batch.sources.isEmpty && batch.recoveredReferences.isEmpty)
+        let gap = try #require(batch.coverageGaps.first)
+        #expect(gap.reason == .malformedSource && gap.isRequiredFormatFailure == true && gap.contentType == .userPrompt)
+        #expect(gap.sourceKind == .claudeQueuedPrompt && gap.diagnosticCode == .invalidFieldType)
+    }
+
     @Test func observedSessionMetadataHasNoContentAndPreservesCanonicalMessages() async throws {
         let crypto = try BackgroundCryptography.ephemeralForTesting()
         let adapter = try ClaudeAdapter(profileID: "test", agentVersion: "2.1.295", allowedTranscriptRoots: [])
@@ -58,6 +72,57 @@ struct ClaudeAdapterTests {
         #expect(visible.recoveredReferences.isEmpty)
     }
 
+    @Test func observedNormalModeControlsRecoverWithoutContent() async throws {
+        let crypto = try BackgroundCryptography.ephemeralForTesting()
+        let adapter = try ClaudeAdapter(profileID: "test", agentVersion: "2.1.296", allowedTranscriptRoots: [])
+        let document = UUID()
+        // The owned T3 parent emitted this exact three-field shape twice, without timestamps or UUIDs.
+        let control = try JSONSerialization.data(withJSONObject: ["type": "mode", "sessionId": "session",
+            "mode": "normal"]) + Data([10])
+        let batch = try await adapter.importTranscript(control + control, documentID: document,
+            interface: .t3, observedAt: Date(), cryptography: crypto)
+        #expect(batch.sources.isEmpty && batch.coverageGaps.isEmpty)
+        #expect(batch.recoveredReferences.map(\.locator) == [
+            .transcript(documentID: document, recordIndex: 0),
+            .transcript(documentID: document, recordIndex: 1),
+        ])
+        let session = try SessionIdentity(provider: .claudeCode, profileID: "test", sessionID: "session")
+        #expect(batch.recoveredReferences.allSatisfy {
+            $0.session == session && $0.contentTime == nil && $0.parserContract == ClaudeAdapter.parserContractVersion
+        })
+    }
+
+    @Test func changedModeControlsRemainVisibleAsGaps() async throws {
+        let crypto = try BackgroundCryptography.ephemeralForTesting()
+        let adapter = try ClaudeAdapter(profileID: "test", agentVersion: "2.1.296", allowedTranscriptRoots: [])
+        let control: [String: Any] = ["type": "mode", "sessionId": "session", "mode": "normal"]
+        var changes: [[String: Any]] = []
+        for (key, value) in [("message", ["content": "required text"] as Any),
+                             ("content", "required text"), ("unknownPayload", "required text"),
+                             ("message", NSNull()), ("content", NSNull()),
+                             ("mode", "future_mode"), ("mode", "normal "), ("mode", ""),
+                             ("mode", 1), ("mode", false), ("mode", NSNull()),
+                             ("sessionId", 1), ("sessionId", false), ("sessionId", ""),
+                             ("sessionId", NSNull()), ("type", false)] {
+            var changed = control
+            changed[key] = value
+            changes.append(changed)
+        }
+        for key in ["type", "sessionId", "mode"] {
+            var changed = control
+            changed.removeValue(forKey: key)
+            changes.append(changed)
+        }
+        for changed in changes {
+            let data = try JSONSerialization.data(withJSONObject: changed) + Data([10])
+            let batch = try await adapter.importTranscript(data, documentID: UUID(),
+                interface: .t3, observedAt: Date(), cryptography: crypto)
+            #expect(batch.sources.isEmpty && batch.recoveredReferences.isEmpty)
+            #expect(batch.coverageGaps.count == 1)
+            #expect(batch.coverageGaps.allSatisfy { [.unsupportedContent, .malformedSource].contains($0.reason) })
+        }
+    }
+
     @Test func queuedPromptsAreCollectedAndContentBearingAttachmentsStayVisible() async throws {
         let crypto = try BackgroundCryptography.ephemeralForTesting()
         let adapter = try ClaudeAdapter(profileID: "test", agentVersion: "2.1.295", allowedTranscriptRoots: [])
@@ -73,6 +138,76 @@ struct ClaudeAdapterTests {
         #expect(batch.coverageGaps.count == 3)
         #expect(batch.coverageGaps.allSatisfy { $0.reason == .unsupportedContent && $0.isRequiredFormatFailure != true })
         #expect(batch.recoveredReferences.count == 6)
+    }
+
+    @Test func numericBudgetAttachmentsAreMetadataButChangedPayloadsStayVisible() async throws {
+        let crypto = try BackgroundCryptography.ephemeralForTesting()
+        let adapter = try ClaudeAdapter(profileID: "test", agentVersion: "2.1.296", allowedTranscriptRoots: [])
+        func row(_ attachment: [String: Any]) throws -> Data {
+            try JSONSerialization.data(withJSONObject: ["type": "attachment", "sessionId": "session",
+                "uuid": "budget-row", "timestamp": "2026-10-10T18:00:00Z", "attachment": attachment]) + Data([10])
+        }
+        let budget: [String: Any] = ["type": "budget_usd", "used": 0.25, "total": 3, "remaining": 2.75]
+        let recognized = try await adapter.importTranscript(row(budget), documentID: UUID(),
+            interface: .standaloneCLI, observedAt: Date(), cryptography: crypto)
+        #expect(recognized.sources.isEmpty && recognized.coverageGaps.isEmpty)
+        #expect(recognized.recoveredReferences.count == 1)
+
+        var textAmount = budget, newContent = budget, missingAmount = budget, booleanAmount = budget, negativeAmount = budget
+        textAmount["used"] = "unexpected text"
+        newContent["content"] = "new required text"
+        missingAmount.removeValue(forKey: "remaining")
+        booleanAmount["used"] = true
+        negativeAmount["used"] = -1
+        for changed in [textAmount, newContent, missingAmount, booleanAmount, negativeAmount] {
+            let batch = try await adapter.importTranscript(row(changed), documentID: UUID(),
+                interface: .t3, observedAt: Date(), cryptography: crypto)
+            #expect(batch.sources.isEmpty && batch.recoveredReferences.isEmpty)
+            #expect(batch.coverageGaps.map(\.reason) == [.unsupportedContent])
+        }
+    }
+
+    @Test func emptyHookControlResponsesRecoverButOutputAndUnknownShapesRemainGaps() async throws {
+        let crypto = try BackgroundCryptography.ephemeralForTesting()
+        let adapter = try ClaudeAdapter(profileID: "test", agentVersion: "2.1.296", allowedTranscriptRoots: [])
+        func row(_ attachment: [String: Any]) throws -> Data {
+            try JSONSerialization.data(withJSONObject: ["type": "attachment", "sessionId": "session",
+                "uuid": "hook-row", "timestamp": "2026-10-10T18:00:00Z", "attachment": attachment]) + Data([10])
+        }
+        let control: [String: Any] = ["type": "hook_success", "hookName": "PostToolUse", "toolUseID": "tool",
+            "hookEvent": "PostToolUse", "command": "owned-fixture-hook", "durationMs": 12.5,
+            "exitCode": 0, "content": "", "stdout": "{}\n", "stderr": ""]
+        var batchControl = control
+        batchControl["accountMemoryBatch"] = false
+        for attachment in [control, batchControl] {
+            let batch = try await adapter.importTranscript(row(attachment), documentID: UUID(),
+                interface: .standaloneCLI, observedAt: Date(), cryptography: crypto)
+            #expect(batch.sources.isEmpty && batch.coverageGaps.isEmpty)
+            #expect(batch.recoveredReferences.count == 1)
+        }
+
+        var changes: [[String: Any]] = []
+        for key in ["content", "stdout", "stderr"] {
+            var changed = control
+            changed[key] = "required hook output"
+            changes.append(changed)
+        }
+        for (key, value) in [("stdout", "{\"additionalContext\":\"required text\"}" as Any),
+                             ("exitCode", 1), ("exitCode", false), ("durationMs", false),
+                             ("accountMemoryBatch", "unknown"), ("accountMemoryBatch", true), ("newPayload", "required text")] {
+            var changed = control
+            changed[key] = value
+            changes.append(changed)
+        }
+        var missingOutput = control
+        missingOutput.removeValue(forKey: "stdout")
+        changes.append(missingOutput)
+        for changed in changes {
+            let batch = try await adapter.importTranscript(row(changed), documentID: UUID(),
+                interface: .t3, observedAt: Date(), cryptography: crypto)
+            #expect(batch.sources.isEmpty && batch.recoveredReferences.isEmpty)
+            #expect(batch.coverageGaps.map(\.reason) == [.unsupportedContent])
+        }
     }
 
     @Test func recordedCLIHasEveryTypedContentIncludingNativeChild() async throws {
@@ -152,7 +287,7 @@ struct ClaudeAdapterTests {
         let crypto = try BackgroundCryptography.ephemeralForTesting()
         let batch = try await adapter.normalize(claudePacket(["session_id":"session","hook_event_name":"PostToolBatch","transcript_path":file.path,
             "tool_calls":[["tool_use_id":"call","tool_response":"different"]]]), capturedAt: Date(), cryptography: crypto)
-        #expect(batch.coverageGaps.contains(.init(reason: .unresolvedCorrelation)))
+        #expect(batch.coverageGaps.contains { $0.reason == .unresolvedCorrelation && $0.scope?.path == .versionedTranscript && $0.operation == .liveRead && $0.observedAt != nil })
         #expect(batch.sources.map(claudeText) == ["canonical"])
         #expect(batch.sources[0].record.metadata.contentType == .toolError)
     }
@@ -200,6 +335,18 @@ struct ClaudeAdapterTests {
         #expect(batch.coverageGaps.isEmpty)
     }
 
+    @Test func selectedChildPollRejectsAFileOutsideItsParentsSubagentDirectory() async throws {
+        let directory = try claudeTemporaryDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let parent = directory.appendingPathComponent("parent.jsonl"), unrelated = directory.appendingPathComponent("other.jsonl")
+        try claudeRow(session: "parent", content: "FAKE_PARENT_PROMPT").write(to: parent)
+        try claudeRow(session: "other", content: "FAKE_UNRELATED_PROMPT").write(to: unrelated)
+        let adapter = try ClaudeAdapter(profileID: "test", agentVersion: "2.1.293", allowedTranscriptRoots: [directory])
+        let batch = try await adapter.normalize(claudePacket(["session_id": "parent", "hook_event_name": "SpillcheckTranscriptPoll",
+            "transcript_path": parent.path, "agent_transcript_path": unrelated.path]), capturedAt: Date(), cryptography: .ephemeralForTesting())
+        #expect(batch.sources.isEmpty && batch.checkpoints.isEmpty)
+        #expect(batch.coverageGaps.map(\.reason) == [.unresolvedCorrelation])
+    }
+
     @Test func completeJSONWithoutNewlineCannotSatisfyToolOrPromptPreflushGuard() async throws {
         let directory=try claudeTemporaryDirectory(); defer { try? FileManager.default.removeItem(at:directory) }
         let file=directory.appendingPathComponent("source.jsonl")
@@ -245,7 +392,7 @@ struct ClaudeAdapterTests {
         #expect(batch.checkpoints[0].byteOffset == UInt64(data.count - 14))
         let small = try ClaudeAdapter(profileID: "test", agentVersion: "2.1.293", allowedTranscriptRoots: [], limits: .init(maximumBytes:32,maximumRowBytes:32))
         let bounded = try await small.importTranscript(missing, documentID: UUID(), interface:.standaloneCLI, observedAt: Date(), cryptography: crypto)
-        #expect(bounded.coverageGaps.contains(.init(reason:.budgetExhausted)))
+        #expect(bounded.coverageGaps.contains { $0.reason == .budgetExhausted && $0.scope?.path == .versionedTranscript && $0.observedAt != nil })
     }
 
     @Test func structuredStringsPreserveExactUTF8AndBinaryIsExcluded() async throws {
@@ -278,7 +425,8 @@ struct ClaudeAdapterTests {
         #expect(adapter.capabilities(interface:.t3).allSatisfy { $0.validation == .unverified && $0.canObserveActiveSession })
         let supported = try ClaudeAdapter(profileID:"test",agentVersion:"2.1.293",allowedTranscriptRoots:[])
         let unsafe = try await supported.normalize(claudePacket(["session_id":"session","hook_event_name":"Stop","transcript_path":"/not/allowed.jsonl"]),capturedAt:Date(),cryptography:crypto)
-        #expect(unsafe.coverageGaps == [.init(reason:.sourceUnavailable)])
+        #expect(unsafe.coverageGaps.count == 1 && unsafe.coverageGaps.first?.reason == .sourceUnavailable
+            && unsafe.coverageGaps.first?.scope?.profileID == "test" && unsafe.coverageGaps.first?.observedAt != nil)
     }
 
     @Test func producerVersionIsIndependentFromSelectedExecutableAndAcceptanceEvidence() async throws {

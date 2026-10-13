@@ -31,6 +31,8 @@ command = ["xcrun", "swiftc", "-parse-as-library", "-swift-version", "6", "-targ
            str(root / "Spillcheck/App/NotificationController.swift"),
            str(root / "Spillcheck/App/SourceOpeningController.swift"),
            str(root / "Spillcheck/App/AppModel.swift"),
+           str(root / "Spillcheck/App/CoveragePresentation.swift"),
+           str(root / "Spillcheck/App/CoverageDiagnostics.swift"),
            str(root / "Spillcheck/App/Theme.swift"),
            str(root / "Spillcheck/App/InventoryDetailView.swift"),
            str(root / "Spillcheck/App/InventoryView.swift"),

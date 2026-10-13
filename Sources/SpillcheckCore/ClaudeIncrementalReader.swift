@@ -73,6 +73,13 @@ extension ClaudeAdapter {
         let budget = min(limits.maximumBytes, maximumBytes ?? limits.maximumBytes)
         guard budget > 0 else { throw ClaudeCollectionError.invalidConfiguration }
         let documentID = try await documentIdentity(path, cryptography: cryptography)
+        let scope = CollectionScope(provider: .claudeCode, profileID: profileID, interface: interface, path: .versionedTranscript)
+        func gap(_ reason: CoverageGapReason, diagnostic: CoverageDiagnosticCode? = nil) -> CoverageGap {
+            .init(reason: reason, capabilityID: documentID, scope: scope, operation: provenance.collectionOperation,
+                recovery: .init(session: expectedSessionID.flatMap { try? SessionIdentity(provider: .claudeCode, profileID: profileID, sessionID: $0) },
+                    parserContract: Self.parserContractVersion, sourceDocumentID: documentID, sourceURL: URL(fileURLWithPath: path)),
+                diagnosticCode: diagnostic ?? reason.defaultDiagnosticCode, observedAt: observedAt)
+        }
         let checkpointID = try await checkpointIdentity(path: path, provenance: provenance, cryptography: cryptography)
         let fd = try openTranscript(path: path)
         defer { close(fd) }
@@ -84,14 +91,14 @@ extension ClaudeAdapter {
         var cursor: ClaudeReadCursor?
         if checkpoint?.sourceDocumentID == checkpointID, let state = checkpoint?.adapterState {
             cursor = try? JSONDecoder().decode(ClaudeReadCursor.self, from: state)
-            if cursor == nil { gaps.append(.init(reason: .sourceChanged, capabilityID: documentID)) }
+            if cursor == nil { gaps.append(gap(.sourceChanged)) }
         }
         if let saved = cursor, saved.version != 1 || saved.forwardOffset > saved.signature.size
             || saved.reverseEnd > saved.forwardOffset || !(0...2048).contains(saved.prefixLength)
             || !(0...2048).contains(saved.anchorLength) || UInt64(saved.prefixLength) > saved.signature.size
             || saved.anchorStart > saved.forwardOffset || UInt64(saved.anchorLength) > saved.forwardOffset - saved.anchorStart
             || saved.toolIDs.count > 2048 || saved.promptIDs.count > 2048 {
-            cursor = nil; gaps.append(.init(reason: .sourceChanged, capabilityID: documentID))
+            cursor = nil; gaps.append(gap(.sourceChanged))
         }
         if let saved = cursor, saved.parserContract != Self.parserContractVersion {
             // Preserve the checkpoint identity and analyzed receipts. Restart only bounded source
@@ -135,7 +142,7 @@ extension ClaudeAdapter {
         }
         if let saved = cursor {
             if saved.prefixLength + saved.anchorLength >= budget {
-                return ClaudeIncrementalRead(batch: .init(sources: [], coverageGaps: [.init(reason: .budgetExhausted)]),
+                return ClaudeIncrementalRead(batch: .init(sources: [], coverageGaps: [gap(.budgetExhausted)]),
                     bytesRead: 0, hasForwardContent: true, hasUnreadContent: true, canContinueHistory: true,
                     oldestContentTime: nil, newestContentTime: currentAuditBound(saved.lastContentTime),
                     toolIDs: Set(saved.toolIDs), promptIDs: Set(saved.promptIDs), hasFinalResponse: saved.hasFinalResponse)
@@ -156,7 +163,7 @@ extension ClaudeAdapter {
                 let digest = try await cryptography.revision(canonicalBytes: data).keyedDigest
                 valid = data.count == saved.anchorLength && digest == saved.anchorDigest
             }
-            if !valid { cursor = nil; gaps.append(.init(reason: .sourceChanged, capabilityID: documentID)) }
+            if !valid { cursor = nil; gaps.append(gap(.sourceChanged)) }
         }
         // Cold selection starts at the tail. An old conversation's recent rows are immediately
         // eligible without reading its old multi-megabyte prefix or using its mtime as a date filter.
@@ -191,17 +198,29 @@ extension ClaudeAdapter {
             if let first = selected.firstIndex(of: 10) {
                 let skip = selected.distance(from: selected.startIndex, to: first) + 1
                 start += UInt64(skip); selected = Data(selected.dropFirst(skip))
+                if selected.isEmpty {
+                    // The whole bounded page was the tail of one oversized committed row.
+                    // Reusing its end would reread this same newline forever. Drain its prefix
+                    // backwards while keeping the omission visible to the frozen audit.
+                    gaps.append(gap(.budgetExhausted, diagnostic: .oversizedRecord))
+                    state.reverseEnd = low; state.drainingReverse = true
+                    if cold { state.forwardOffset = end }
+                }
             } else {
-                gaps.append(.init(reason: .budgetExhausted, capabilityID: documentID))
+                gaps.append(gap(.budgetExhausted, diagnostic: .oversizedRecord))
                 if reverse { state.reverseEnd = low; state.drainingReverse = true }
                 else { state.forwardOffset = low + UInt64(data.count); state.reverseEnd = low; state.drainingForward = true }
                 selected.removeAll()
             }
         }
-        if reverse, state.drainingReverse {
+        if reverse, state.drainingReverse, !selected.isEmpty {
             if let last = selected.lastIndex(of: 10) {
                 selected = Data(selected[...last]); state.drainingReverse = false
-            } else { selected.removeAll() }
+            } else {
+                // This slice reached the oversized row's beginning. The next reverse page
+                // ends at that boundary and can still collect earlier complete records.
+                state.reverseEnd = start; state.drainingReverse = false; selected.removeAll()
+            }
         }
         if !reverse, !cold, state.drainingForward {
             if let first = selected.firstIndex(of: 10) {
@@ -223,9 +242,13 @@ extension ClaudeAdapter {
         }
         var imported = try await importTranscript(selected, documentID: documentID, interface: interface,
             observedAt: observedAt, provenance: provenance, cryptography: cryptography,
-            expectedSessionID: expectedSessionID, context: context, startingByteOffset: start)
+            expectedSessionID: expectedSessionID, context: context ?? .init(sessionIdentifier: expectedSessionID ?? "", transcriptPath: path),
+            startingByteOffset: start)
         let consumed = imported.checkpoints.first?.byteOffset ?? 0
+        // A row-limited import can leave complete rows before an unfinished tail.
+        // Keep draining those rows before the unchanged-file shortcut may wait for an append.
         state.waitingForAppend = !selected.isEmpty && selected.last != 10
+            && !selected.dropFirst(Int(consumed)).contains(10)
             && start + UInt64(selected.count) >= signature.size && selected.count < limits.maximumRowBytes
         if reverse {
             if !selected.isEmpty { state.reverseEnd = start }
@@ -235,7 +258,7 @@ extension ClaudeAdapter {
             if consumed == 0, selected.count >= limits.maximumRowBytes {
                 // Drain an oversized physical row without retaining its raw fragments in a cursor.
                 state.forwardOffset = start + UInt64(selected.count); state.drainingForward = true
-                gaps.append(.init(reason: .budgetExhausted, capabilityID: documentID))
+                gaps.append(gap(.budgetExhausted, diagnostic: .oversizedRecord))
             }
         }
         // A reverse page may contain more physical rows than the adapter row budget. Reparse only
@@ -285,12 +308,12 @@ extension ClaudeAdapter {
         let forward = state.forwardOffset < snapshotEnd && !state.waitingForAppend
         let outsideSnapshot = historical && signature.size > snapshotEnd
         let unread = olderPrefixUnread(state) || forward || state.drainingForward || state.drainingReverse || outsideSnapshot
-        if outsideSnapshot { gaps.append(.init(reason: .incompleteMessage, capabilityID: documentID)) }
+        if outsideSnapshot { gaps.append(gap(.incompleteMessage)) }
         // A tail-only live cursor reports its unread prefix once, when the cursor is created.
         if olderPrefixUnread(state), historical || cold {
-            gaps.append(.init(reason: .unresolvedCorrelation, capabilityID: documentID))
+            gaps.append(gap(.unresolvedCorrelation))
         }
-        if forward { gaps.append(.init(reason: .budgetExhausted, capabilityID: documentID)) }
+        if forward { gaps.append(gap(.budgetExhausted)) }
         gaps = Array(Set(gaps))
         let encoded = try JSONEncoder().encode(state)
         let revision = try await cryptography.revision(canonicalBytes: encoded)

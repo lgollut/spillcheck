@@ -46,6 +46,10 @@ public struct CollectionAuthorityChoice: Codable, Hashable, Sendable {
         self.adapterVersion = adapterVersion
         self.authorityID = authorityID
     }
+
+    public var collectionPath: CollectionPath? {
+        CollectionCompatibility.collectionPath(provider: session.provider, authorityID: authorityID)
+    }
 }
 
 public typealias SourceAuthorityLookup = @Sendable (SessionIdentity) async throws -> CollectionAuthorityChoice?
@@ -55,9 +59,31 @@ public struct StoredHistoricalProgress: Codable, Equatable, Sendable {
     public let provider: AgentProvider
     public let profileID: String
     public let progress: HistoricalReadProgress
+    /// Settlement time of the latest successful or failed read attempt, never the audit's window end.
+    public let lastAttemptedAt: Date?
+    /// Set only when the reader exhausted its work without terminal unread content.
+    public let completedAt: Date?
+    public let continuationQueued: Bool?
+
+    public init(provider: AgentProvider, profileID: String, progress: HistoricalReadProgress,
+                lastAttemptedAt: Date? = nil, completedAt: Date? = nil, continuationQueued: Bool? = nil) {
+        self.provider = provider
+        self.profileID = profileID
+        self.progress = progress
+        self.lastAttemptedAt = lastAttemptedAt
+        self.completedAt = completedAt
+        self.continuationQueued = continuationQueued
+    }
 }
 
 /// The initial request and all continuation cursors contain structural selection only.
 public protocol HistoricalCaptureProducer: Sendable {
     func initialHistoricalCapture(audit: HistoricalAuditContext) async throws -> CapturePacket
+}
+
+/// Explicit retry of one retained original source. Implementations must not turn a missing
+/// source identity into profile-wide discovery or silently choose another collection authority.
+public protocol SourceHistoricalCaptureProducer: HistoricalCaptureProducer {
+    func initialHistoricalCapture(audit: HistoricalAuditContext,
+                                  source: CoverageSourceRetryDescriptor) async throws -> CapturePacket
 }

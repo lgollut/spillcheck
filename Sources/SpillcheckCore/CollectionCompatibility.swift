@@ -66,7 +66,11 @@ public struct CollectionAssessment: Hashable, Codable, Sendable {
         self.observedExecutableVersion = observedExecutableVersion
         self.format = format
         self.usableOperations = usableOperations
-        self.unavailableContent = unavailableContent
+        // A successful hook read cannot establish content the protocol never emits.
+        // This records availability, not the separate beta decision to accept this
+        // limitation specifically for Codex side chats.
+        self.unavailableContent = unavailableContent.union(
+            scope.provider == .codex && scope.path == .hook ? [.intermediateResponse] : [])
         self.failures = failures
         self.acceptanceEvidence = acceptanceEvidence
     }
@@ -85,13 +89,23 @@ public struct CollectionAssessment: Hashable, Codable, Sendable {
 }
 
 public enum CollectionCompatibility {
+    /// Resolve the canonical representation, not the host interface. Unknown stored authority
+    /// identifiers stay unknown instead of silently becoming public history.
+    public static func collectionPath(provider: AgentProvider, authorityID: String) -> CollectionPath? {
+        switch provider {
+        case .codex:
+            authorityID == CodexHookContentAdapter.authorityID ? .hook
+                : CodexCollectionAuthority(rawValue: authorityID)?.collectionPath
+        case .claudeCode: nil // Claude's transcript route does not persist an authority choice.
+        }
+    }
+
     /// Used only to permit assessment of an authorized configuration. Adapters still recognize
     /// each record and readers still validate each passive operation. No release allowlist.
     public static func isEligible(provider: AgentProvider, interface: AgentInterface,
                                   version: String) -> Bool {
         !version.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !version.utf8.contains(0) && version.utf8.count <= 256
-            && interface != .desktopCode
     }
 
     /// These are the previously published genuine acceptance tuples, never eligibility rules.
@@ -114,4 +128,10 @@ public enum CollectionCompatibility {
     }
 
     public static let unknownProducerVersion = "unknown"
+}
+
+extension SourceProvenance {
+    var collectionOperation: CollectionOperation {
+        if case .historical = self { .historicalRead } else { .liveRead }
+    }
 }

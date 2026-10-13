@@ -60,9 +60,10 @@ public struct MaskedNotification: Equatable, Sendable {
 
     public static func health(_ incident: CollectionHealthIncident) -> Self {
         let affected = [incident.contentType?.pluralLabel, incident.operation?.label].compactMap { $0 }.joined(separator: " · ")
+        let route = incident.scope.provider == .codex ? "Shared profile" : incident.scope.interface.hostLabel
         return Self(identifier: incident.notificationIdentifier, target: .collectionHealth(incident.id),
              title: "Collection needs attention",
-             body: "\(incident.scope.provider.displayName) · \(incident.scope.interface.hostLabel) · \(affected.isEmpty ? "Required collection" : affected) unavailable. Other readable content continues. Open Spillcheck to review coverage.")
+             body: "\(incident.scope.provider.displayName) · \(route) · \(affected.isEmpty ? "Required collection" : affected) unavailable. Other readable content continues. Open Spillcheck to review coverage.")
     }
 }
 

@@ -9,7 +9,7 @@ public struct CodexActiveSource: Sendable, Equatable {
     public init(threadID: String, interface: AgentInterface,
                 authority: CodexCollectionAuthority, transcriptURL: URL? = nil) throws {
         guard !threadID.isEmpty, threadID.utf8.count <= 4096, !threadID.utf8.contains(0),
-              interface != .desktopCode, authority != .nativeRolloutTranscript || interface == .t3,
+              authority != .nativeRolloutTranscript || interface == .t3,
               authority != .nativeRolloutTranscript || (transcriptURL?.isFileURL == true
                 && transcriptURL?.path.hasPrefix("/") == true && transcriptURL?.pathExtension == "jsonl") else {
             throw CodexCollectionError.invalidConfiguration
@@ -33,20 +33,25 @@ public actor CodexActiveHistoryMonitor {
     private let enqueue: Enqueue
     private let onGap: GapHandler
     private let historyClient: CodexAppServerHistoryClient?
+    private let authorityLookup: SourceAuthorityLookup?
     private var task: Task<Void, Never>?
     private var generation = UUID()
     private var signatures: [String: Signature] = [:]
     private var lastActivity: [String: Date] = [:]
     private var nextPoll: [String: Date] = [:]
+    /// One gap per continuous capacity failure. Bounded by the configured source set.
+    private var capacityFailureReported: Set<String> = []
     private var nextIndex = 0
     private struct Signature: Equatable {
         let device: UInt64, inode: UInt64, size: Int64, modifiedSeconds: Int64, modifiedNanos: Int64
     }
     public init(profileID: String, sources: [CodexActiveSource],
                 historyClient: CodexAppServerHistoryClient? = nil, enqueue: @escaping Enqueue,
+                authorityLookup: SourceAuthorityLookup? = nil,
                 onGap: @escaping GapHandler = { _ in }) throws {
         guard !profileID.isEmpty, profileID.utf8.count <= 256, sources.count <= 256 else { throw CodexCollectionError.invalidConfiguration }
         self.profileID = profileID; self.sources = sources; self.historyClient = historyClient
+        self.authorityLookup = authorityLookup
         self.enqueue = enqueue; self.onGap = onGap
         let now = Date()
         for source in sources { lastActivity[source.threadID] = now }
@@ -64,7 +69,9 @@ public actor CodexActiveHistoryMonitor {
 
     /// Selecting a source also records activity for it. At capacity, the least recently active
     /// source is replaced; its thread is still read by any later hook capture.
-    public func addSource(_ source: CodexActiveSource, at date: Date = Date()) throws {
+    public func addSource(_ source: CodexActiveSource, at date: Date = Date()) async throws {
+        // An unknown owner keeps the source; each poll rechecks ownership and reports a failure.
+        if (try? await isHookOwned(source)) == true { return }
         if let previous = sources.first(where: { $0.threadID == source.threadID }) {
             guard previous.authority == source.authority, previous.transcriptURL == source.transcriptURL else {
                 throw CodexCollectionError.authorityConflict
@@ -75,6 +82,7 @@ public actor CodexActiveHistoryMonitor {
             }) {
                 let removed = sources.remove(at: stalest)
                 lastActivity.removeValue(forKey: removed.threadID); nextPoll.removeValue(forKey: removed.threadID)
+                capacityFailureReported.remove(removed.threadID)
                 if let url = removed.transcriptURL { signatures.removeValue(forKey: url.path) }
                 if nextIndex > stalest { nextIndex -= 1 }
             }
@@ -87,11 +95,20 @@ public actor CodexActiveHistoryMonitor {
         let permit = generation
         guard !sources.isEmpty else { return 0 }
         var count = 0, selected = 0, inspected = 0
-        // At most 32 due sources per pass; rotate fairly through the configured set.
+        var failure: (any Error)?
+        // At most 32 due sources per pass; rotate fairly through the configured set. A failing
+        // source is reported and skipped so it cannot starve the sources after it.
         while inspected < sources.count, selected < 32 {
             guard permit == generation, !Task.isCancelled else { return count }
             let source = sources[(nextIndex + inspected) % sources.count]
             inspected += 1
+            do { if try await isHookOwned(source) { continue } }
+            catch {
+                if !Task.isCancelled { await onGap(gap(.deliveryUncertain, source: source, at: date)) }
+                failure = failure ?? error
+                continue
+            }
+            guard permit == generation, !Task.isCancelled else { return count }
             var delay: TimeInterval?
             if source.authority == .publicNativeItems {
                 delay = Self.publicPollDelay(idle: date.timeIntervalSince(lastActivity[source.threadID] ?? date))
@@ -103,22 +120,39 @@ public actor CodexActiveHistoryMonitor {
             if source.authority == .nativeRolloutTranscript, let url = source.transcriptURL {
                 var info = stat()
                 guard lstat(url.path, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_uid == getuid() else {
-                    await onGap(.init(reason: .sourceUnavailable)); continue
+                    await onGap(gap(.sourceUnavailable, source: source, at: date)); continue
                 }
                 let current = Signature(device: UInt64(info.st_dev), inode: info.st_ino, size: info.st_size,
                     modifiedSeconds: Int64(info.st_mtimespec.tv_sec), modifiedNanos: Int64(info.st_mtimespec.tv_nsec))
                 guard signatures[url.path] != current else { continue }
                 signature = current; event["transcript_path"] = url.path
             }
-            let packet = try CapturePacket(metadata: .init(agent: .codex, interface: source.interface, profileID: profileID),
-                eventJSON: JSONSerialization.data(withJSONObject: event, options: [.sortedKeys]))
-            try await enqueue(packet, date)
+            do {
+                let packet = try CapturePacket(metadata: .init(agent: .codex, interface: source.interface, profileID: profileID),
+                    eventJSON: JSONSerialization.data(withJSONObject: event, options: [.sortedKeys]))
+                try await enqueue(packet, date)
+            }
+            catch CodexEnrolledRoutingError.hookOwnedPoll { continue }
+            catch StorageError.capacityExceeded(.sourceAuthorities) {
+                if permit == generation, !Task.isCancelled, capacityFailureReported.insert(source.threadID).inserted {
+                    await onGap(gap(.budgetExhausted, source: source, at: date, diagnostic: .authorityStorageLimit))
+                }
+                if let delay { nextPoll[source.threadID] = date.addingTimeInterval(delay) }
+                continue
+            }
+            catch {
+                if !Task.isCancelled { await onGap(gap(.deliveryUncertain, source: source, at: date)) }
+                failure = failure ?? error
+                continue
+            }
             guard permit == generation, !Task.isCancelled else { return count }
+            capacityFailureReported.remove(source.threadID)
             if let url = source.transcriptURL, let signature { signatures[url.path] = signature }
             if let delay { nextPoll[source.threadID] = date.addingTimeInterval(delay) }
             count += 1
         }
         if !sources.isEmpty { nextIndex = (nextIndex + inspected) % sources.count }
+        if let failure { throw failure }
         return count
     }
     public func start(interval: Duration = .seconds(1)) {
@@ -127,7 +161,7 @@ public actor CodexActiveHistoryMonitor {
         task = Task { [weak self] in
             while !Task.isCancelled {
                 do { _ = try await self?.pollOnce() }
-                catch { if !Task.isCancelled { await self?.reportFailure() } }
+                catch { /* pollOnce reports the exact failed source before propagating. */ }
                 do { try await Task.sleep(for: interval) } catch { break }
             }
         }
@@ -138,5 +172,20 @@ public actor CodexActiveHistoryMonitor {
         pending?.cancel(); await pending?.value
         await historyClient?.close()
     }
-    private func reportFailure() async { await onGap(.init(reason: .deliveryUncertain)) }
+    private func isHookOwned(_ source: CodexActiveSource) async throws -> Bool {
+        guard let authorityLookup else { return false }
+        let session = try SessionIdentity(provider: .codex, profileID: profileID, sessionID: source.threadID)
+        guard let choice = try await authorityLookup(session) else { return false }
+        guard choice.session == session else { throw CodexCollectionError.authorityConflict }
+        return choice.authorityID == CodexHookContentAdapter.authorityID
+    }
+    private func gap(_ reason: CoverageGapReason, source: CodexActiveSource, at date: Date,
+                     diagnostic: CoverageDiagnosticCode? = nil) -> CoverageGap {
+        .init(reason: reason,
+            scope: .init(provider: .codex, profileID: profileID, interface: source.interface, path: source.authority.collectionPath),
+            operation: .liveRead,
+            recovery: .init(session: try? .init(provider: .codex, profileID: profileID, sessionID: source.threadID),
+                parserContract: CodexAdapter.parserContract, sourceURL: source.transcriptURL),
+            diagnosticCode: diagnostic ?? reason.defaultDiagnosticCode, observedAt: date)
+    }
 }

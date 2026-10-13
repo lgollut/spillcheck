@@ -13,7 +13,7 @@ public enum CodexHookEdit: Sendable { case install, remove }
 /// are replaced/removed. Other handlers, matchers and root settings survive semantically unchanged.
 public struct CodexHookConfiguration: Sendable {
     public static let events = ["SessionStart", "UserPromptSubmit", "PostToolUse",
-                                "SubagentStart", "SubagentStop", "Stop", "SessionEnd"]
+                                "SubagentStart", "SubagentStop", "Stop", "Interrupt", "SessionEnd"]
     public let registrationID: UUID
     public let helperURL: URL
     public let socketURL: URL

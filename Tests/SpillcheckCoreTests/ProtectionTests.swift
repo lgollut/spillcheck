@@ -449,7 +449,8 @@ struct ProtectionTests {
     @Test @MainActor func missingManifestWithEvenHMACOnlyProtectedStateNeverProvisions() async throws {
         // Deliberately invalid access group: missing-manifest rejection must precede any Keychain/LA call.
         await #expect(throws: KeyUnavailable.missingManifest) {
-            try await ProtectionBootstrap.prepare(manifest: nil, storeState: .protectedDataPresent,
+            try await ProtectionBootstrap.prepare(at: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString),
+                                                  manifest: nil, storeState: .protectedDataPresent,
                                                   configuration: ProtectionConfiguration(accessGroup: "invalid-fixture-group"))
         }
     }
@@ -460,15 +461,16 @@ struct ProtectionTests {
                                      inventoryRightID: "invalid")
         #expect(throws: KeyUnavailable.invalidManifest) { try bad.validate() }
         await #expect(throws: KeyUnavailable.invalidManifest) {
-            try await ProtectionBootstrap.prepare(manifest: bad, storeState: .empty,
+            try await ProtectionBootstrap.prepare(at: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString),
+                                                  manifest: bad, storeState: .empty,
                                                   configuration: ProtectionConfiguration(accessGroup: "invalid-fixture-group"))
         }
         let manifest = ProtectionManifest.fresh(identifierPrefix: "com.spillcheck.test.missing")
         // An unsigned test process cannot access this deliberately unprovisioned group.
         // Failure must be explicit, including when the store currently contains no blobs.
         await #expect(throws: (any Error).self) {
-            try await ProtectionBootstrap.prepare(manifest: manifest, storeState: .empty,
-                                                  configuration: ProtectionConfiguration(accessGroup: "invalid-fixture-group", identifierPrefix: "com.spillcheck.test.missing"))
+            try await ProtectionBootstrap.load(manifest: manifest,
+                                               configuration: ProtectionConfiguration(accessGroup: "invalid-fixture-group", identifierPrefix: "com.spillcheck.test.missing"))
         }
     }
 }

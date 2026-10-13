@@ -428,6 +428,7 @@ private struct NativeWorkflowProbe {
             // Live polling alternates processing and idle several times a second. The displayed state
             // settles once instead of following each item, then returns to idle after a quiet period.
             let activityModel = AppModel()
+            activityModel.storageReady = true
             var busyChanges = 0, shownBusy = activityModel.busy, texts = Set<String>()
             for tick in 0..<16 {
                 activityModel.updatePipeline(PipelineActivity(processing: tick.isMultiple(of: 2), pendingCount: 0))
@@ -437,10 +438,12 @@ private struct NativeWorkflowProbe {
             }
             try require(busyChanges == 1 && activityModel.busy && texts == ["Analyzing new content"], "burst-activity-flickers")
             try await Task.sleep(for: .milliseconds(Int(AppModel.idleDelay * 1000) + 400))
-            try require(!activityModel.busy && activityModel.processingText.hasPrefix("Up to date"), "burst-activity-never-settles")
+            try require(!activityModel.busy && activityModel.processingText == "Waiting for agent content"
+                && activityModel.processingShort == "Waiting", "idle-without-read-evidence-claimed-complete")
             checks.append("burst-activity-settles-without-flicker")
 
             let blipModel = AppModel()
+            blipModel.storageReady = true
             blipModel.updatePipeline(PipelineActivity(processing: true, pendingCount: 0))
             try await Task.sleep(for: .milliseconds(100))
             blipModel.updatePipeline(PipelineActivity(processing: false, pendingCount: 0))
@@ -452,6 +455,7 @@ private struct NativeWorkflowProbe {
 
             // A catch-up lasts exactly as long as history work is queued; live work alone doesn't extend it.
             let catchUpModel = AppModel()
+            catchUpModel.storageReady = true
             catchUpModel.beginCatchUp()
             try require(catchUpModel.catchingUp && catchUpModel.processingText == "Reading recent history", "catch-up-not-shown")
             catchUpModel.updatePipeline(PipelineActivity(processing: true, pendingCount: 4))

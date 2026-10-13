@@ -150,21 +150,40 @@ public actor DetectionPipeline {
         diagnosticStage(.decodeCapture)
         let packet = try CapturePacket(body: opened.body)
         diagnosticStage(.normalize)
-        let batch = try await normalizer.normalize(packet, capturedAt: capture.capturedAt, cryptography: cryptography)
+        let work = try await store.collectionWork(id: capture.id)
+        let batch = try await normalizer.normalize(packet, capturedAt: capture.capturedAt,
+            context: work?.context, cryptography: cryptography)
+        guard batch.pendingRecoveryDependencies.count <= 4096, batch.recoveredReferences.count <= 4096 else {
+            throw PipelineError.budgetExhausted
+        }
+        let permitsConditionalContinuation = try validateRecoveryContinuations(in: batch, original: packet)
         diagnosticStage(.captureScope)
         let scope = try opened.scope ?? LiveCaptureScope(startedAt: liveSince)
         let audit = try opened.historicalAudit ?? HistoricalAuditContext(
             id: scope.catchupAuditID ?? capture.id, reason: scope.catchupReason, endingAt: scope.startedAt)
         var reducedCoverage = false
-        var coverageGaps = batch.coverageGaps
-        var recoveredReferences = batch.recoveredReferences
+        var skippedRequestedContent = false
+        var coverageGaps = batch.coverageGaps.map { gap in
+            guard let context = work?.context else { return gap }
+            return gap.contextualized(scope: context.scope, operation: context.operation, observedAt: now)
+        }
+        // A conditional target cannot bypass its receipt gate through an ordinary reference,
+        // even if a malformed batch forgot to include the declared provisional gap.
+        let conditionalReferences = batch.pendingRecoveryDependencies.compactMap { $0.provisionalGap.recovery }
+        var recoveredReferences = batch.recoveredReferences.filter { reference in
+            !conditionalReferences.contains { $0.identifiesSameLocation(as: reference) }
+        }
         for collected in batch.sources {
             try Task.checkCancellation()
             diagnosticStage(.captureScope)
             let source = try scopedSource(collected.record, scope: scope, audit: audit,
                                           forceHistorical: opened.historicalAudit != nil)
             // No audit window reaches this far back, so processed-source receipts can be compacted.
-            if source.metadata.contentTime < now.addingTimeInterval(-HistoricalAuditContext.analysisHorizon) { continue }
+            if source.metadata.contentTime < now.addingTimeInterval(-HistoricalAuditContext.analysisHorizon) {
+                if case .historical(let originalAudit) = source.metadata.origin.provenance,
+                   originalAudit.includes(contentTime: source.metadata.contentTime) { skippedRequestedContent = true }
+                continue
+            }
             let receipt = AnalysisReceipt(source: source.metadata.identity, revision: source.revision,
                 detectorVersion: detectorVersion)
             if await store.snapshot().analysisReceipts.contains(receipt) { continue }
@@ -172,7 +191,10 @@ public actor DetectionPipeline {
                !audit.includes(contentTime: source.metadata.contentTime) { continue }
             diagnosticStage(.scan)
             let output = try await detector.scan(source)
-            coverageGaps.append(contentsOf: output.coverageGaps)
+            coverageGaps.append(contentsOf: output.coverageGaps.map { gap in
+                guard let context = work?.context else { return gap }
+                return gap.contextualized(scope: context.scope, operation: context.operation, observedAt: now)
+            })
             if !output.coverageGaps.isEmpty {
                 recoveredReferences.removeAll { reference in
                     reference.session == source.metadata.identity.session
@@ -199,9 +221,139 @@ public actor DetectionPipeline {
         }
         try Task.checkCancellation()
         diagnosticStage(.completeCapture)
+        let pendingRecovery = try resolveRecoveryDependencies(in: batch, coverageGaps: coverageGaps,
+            context: work?.context, scope: scope, audit: audit,
+            forceHistorical: opened.historicalAudit != nil,
+            permitsConditionalContinuation: permitsConditionalContinuation,
+            snapshot: await store.snapshot(), now: now)
+        coverageGaps.removeAll { pendingRecovery.settledGaps.contains($0) }
+        for reference in pendingRecovery.references where !recoveredReferences.contains(reference) {
+            recoveredReferences.append(reference)
+        }
+        let historicalProgress = batch.historicalProgress.map { progress in
+            HistoricalReadProgress(audit: progress.audit, bytesRead: progress.bytesRead,
+                oldestContentTime: progress.oldestContentTime, newestContentTime: progress.newestContentTime,
+                hasUnreadContent: progress.hasUnreadContent || pendingRecovery.hasUnresolved)
+        }
+        let continuation = pendingRecovery.hasUnresolved
+            ? batch.unresolvedRecoveryContinuation : batch.continuation
+        // A parser returning an empty batch is not evidence of a successful read. Checkpoints
+        // or measured historical progress can establish a valid empty source; failures cannot.
+        let readObserved = batch.readEvidenceEligible && (batch.observedRead || !batch.sources.isEmpty || !batch.checkpoints.isEmpty
+            || batch.historicalProgress.map { $0.bytesRead > 0 || !$0.hasUnreadContent } == true)
+        let successfulRead = readObserved && !skippedRequestedContent && !pendingRecovery.hasUnresolved && !coverageGaps.contains {
+            $0.requiresAnalysis && ($0.reason != .budgetExhausted || continuation == nil)
+        }
         try await store.completeCapture(capture, checkpoints: batch.checkpoints,
-            continuation: batch.continuation, historicalProgress: batch.historicalProgress,
-            coverageGaps: coverageGaps, recoveredReferences: recoveredReferences, permit: permit, at: now)
+            continuation: continuation, historicalProgress: historicalProgress,
+            coverageGaps: coverageGaps, recoveredReferences: recoveredReferences,
+            successfulRead: successfulRead, observedReaderVersion: batch.observedReaderVersion,
+            observedProducerVersions: Set(batch.sources.map { $0.record.metadata.origin.agentVersion }),
+            permit: permit, at: now)
+    }
+
+    private struct RecoveryOriginal: Hashable {
+        let metadata: SourceRecordMetadata
+        let revision: ContentRevision
+    }
+
+    /// Validate both branches before any source commits. The normalizer owns the cursor
+    /// format and must encode sticky incomplete-read state into the failure branch.
+    /// The store still enforces its configured event/queue limits on atomic replacement.
+    private func validateRecoveryContinuations(in batch: CollectionBatch, original: CapturePacket) throws -> Bool {
+        for continuation in [batch.continuation, batch.unresolvedRecoveryContinuation].compactMap({ $0 }) {
+            guard continuation.metadata == original.metadata,
+                  continuation.body.count <= CapturePacket.maximumBodyBytes else {
+                throw StorageError.invalidPayload
+            }
+        }
+        if batch.unresolvedRecoveryContinuation != nil {
+            guard !batch.pendingRecoveryDependencies.isEmpty, batch.continuation != nil else {
+                throw StorageError.invalidPayload
+            }
+            return true
+        }
+        guard batch.pendingRecoveryDependencies.isEmpty || batch.continuation == nil else {
+            throw StorageError.invalidPayload
+        }
+        return false
+    }
+
+    /// Parser equivalence is conditional until the original's full scan is durable. A
+    /// stored receipt alone is insufficient: the current batch must carry the same freshly
+    /// parsed record inside this capture's admitted window, and either finish or preserve
+    /// denied recovery in a separately validated continuation.
+    private func resolveRecoveryDependencies(in batch: CollectionBatch, coverageGaps: [CoverageGap],
+        context: CollectionWorkContext?, scope: LiveCaptureScope, audit: HistoricalAuditContext,
+        forceHistorical: Bool, permitsConditionalContinuation: Bool, snapshot: InventorySnapshot, now: Date
+    ) throws -> (settledGaps: Set<CoverageGap>, references: Set<CoverageRecoveryReference>, hasUnresolved: Bool) {
+        guard !batch.pendingRecoveryDependencies.isEmpty else { return ([], [], false) }
+        guard batch.continuation == nil || permitsConditionalContinuation,
+              batch.readEvidenceEligible, let context,
+              !detectorVersion.hasSuffix("+partial"), !detectorVersion.hasSuffix("+reduced") else {
+            return ([], [], true)
+        }
+        var originals: [RecoveryOriginal: SourceRecord] = [:]
+        var identities: [SourceIdentity: Set<RecoveryOriginal>] = [:]
+        for collected in batch.sources {
+            let record = collected.record
+            let key = RecoveryOriginal(metadata: record.metadata, revision: record.revision)
+            originals[key] = record
+            identities[record.metadata.identity, default: []].insert(key)
+        }
+        var declarations: [CoverageGap: Set<RecoveryOriginal>] = [:]
+        let originalGaps = Set(batch.coverageGaps)
+        var invalidDeclarations: Set<CoverageGap> = []
+        for dependency in batch.pendingRecoveryDependencies {
+            let contextualized = dependency.provisionalGap.contextualized(scope: context.scope,
+                operation: context.operation, observedAt: now)
+            if !originalGaps.contains(dependency.provisionalGap) { invalidDeclarations.insert(contextualized) }
+            declarations[contextualized, default: []].insert(.init(
+                metadata: dependency.originalMetadata, revision: dependency.originalRevision))
+        }
+        var settled: Set<CoverageGap> = []
+        var references: Set<CoverageRecoveryReference> = []
+        var unresolved = false
+        let currentGaps = Set(coverageGaps)
+        for (contextualized, candidates) in declarations {
+            try Task.checkCancellation()
+            guard !invalidDeclarations.contains(contextualized), currentGaps.contains(contextualized),
+                  candidates.count == 1, let key = candidates.first, let original = originals[key],
+                  identities[key.metadata.identity]?.count == 1,
+                  original.segments.contains(where: { !$0.utf8.isEmpty }),
+                  contextualized.scope == context.scope, contextualized.operation == context.operation,
+                  key.metadata.identity.session.provider == context.scope.provider,
+                  key.metadata.identity.session.profileID == context.scope.profileID,
+                  key.metadata.origin.interface == context.scope.interface,
+                  let reference = contextualized.recovery,
+                  reference.session == key.metadata.identity.session,
+                  reference.locator == key.metadata.locator, reference.locator != .unavailable,
+                  let itemID = reference.itemID, !itemID.isEmpty, itemID != key.metadata.identity.itemID,
+                  !coverageGaps.contains(where: { gap in
+                      guard let affected = gap.recovery else { return false }
+                      return affected.session == key.metadata.identity.session
+                          && affected.locator == key.metadata.locator
+                          && (affected.itemID == nil || affected.itemID == key.metadata.identity.itemID)
+                  }) else { unresolved = true; continue }
+            let scoped = try scopedSource(original, scope: scope, audit: audit, forceHistorical: forceHistorical)
+            let time = scoped.metadata.contentTime
+            guard time >= now.addingTimeInterval(-HistoricalAuditContext.analysisHorizon), time <= now else {
+                unresolved = true; continue
+            }
+            if case .historical(let originalAudit) = scoped.metadata.origin.provenance,
+               originalAudit != audit || !originalAudit.includes(contentTime: time) {
+                unresolved = true; continue
+            }
+            let receipt = AnalysisReceipt(source: scoped.metadata.identity, revision: scoped.revision,
+                detectorVersion: detectorVersion)
+            guard snapshot.analysisReceipts.contains(receipt),
+                  snapshot.sourceKinds[scoped.metadata.identity] == scoped.metadata.contentType else {
+                unresolved = true; continue
+            }
+            settled.insert(contextualized)
+            references.insert(reference)
+        }
+        return (settled, references, unresolved)
     }
 
     private func prepare(source: SourceRecord, context: RetainedSourceContext?, output: DetectorOutput,
@@ -266,7 +418,8 @@ public actor DetectionPipeline {
         let old = source.metadata
         return try SourceRecord(metadata: SourceRecordMetadata(identity: old.identity, contentType: old.contentType,
             contentTime: old.contentTime, observedAt: old.observedAt, locator: old.locator,
-            protectedMetadata: protectedReference ?? old.protectedMetadata, origin: origin ?? old.origin),
+            protectedMetadata: protectedReference ?? old.protectedMetadata, origin: origin ?? old.origin,
+            timeBasis: old.timeBasis),
             revision: source.revision, segments: source.segments)
     }
 

@@ -36,6 +36,114 @@ private actor ClaudeHistoryFailureObserver {
 
 @Suite("Claude bounded history")
 struct ClaudeHistoryTests {
+    @Test func temporarilyMissingHistorySourceRetriesSameAuditAcrossRestartAndRecoversExactly() async throws {
+        let directory = try historyDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let missing = directory.appendingPathComponent("temporarily-missing.jsonl"), good = directory.appendingPathComponent("good.jsonl")
+        try historyRow("good", text: "still readable").write(to: good)
+        let checkpoints = ClaudeTestCheckpoints(), crypto = try BackgroundCryptography.ephemeralForTesting(), audit = try historyAudit()
+        func adapter() throws -> ClaudeAdapter {
+            try ClaudeAdapter(profileID: "test", agentVersion: "2.1.295", allowedTranscriptRoots: [directory],
+                checkpointLookup: { await checkpoints.get($0) }, historyBudget: .init(maximumSources: 1))
+        }
+        let original = try adapter()
+        let first = try await original.normalize(original.historyPacket(.init(kind: ClaudeHistoryRequest.kind, version: 1,
+            audit: audit, directories: [], pending: [missing.path, good.path], deferred: [], partial: false), interface: .t3),
+            capturedAt: audit.end, cryptography: crypto)
+        #expect(first.historicalProgress?.hasUnreadContent == true && first.continuation != nil)
+        try historyRow("restored", text: "available original").write(to: missing)
+        let restarted = try adapter()
+        var packet = try #require(first.continuation), ids: [String] = [], final: CollectionBatch?
+        for _ in 0..<4 {
+            let batch = try await restarted.normalize(packet, capturedAt: audit.end, cryptography: crypto)
+            await checkpoints.commit(batch)
+            ids += batch.sources.map(\.record.metadata.identity.itemID)
+            final = batch
+            guard let next = batch.continuation else { break }
+            packet = next
+        }
+        #expect(Set(ids) == ["prompt:good:block:0", "prompt:restored:block:0"])
+        #expect(final?.continuation == nil && final?.historicalProgress?.hasUnreadContent == false)
+        let failedReference = try #require(first.coverageGaps.first { $0.reason == .sourceUnavailable }?.recovery)
+        #expect(failedReference.sourceDocumentID != nil)
+        #expect(final?.recoveredReferences.contains { $0.identifiesSameLocation(as: failedReference) } == true)
+        #expect(first.coverageGaps.filter { $0.reason == .sourceUnavailable }.allSatisfy {
+            $0.scope?.interface == .t3 && $0.operation == .historicalRead && $0.diagnosticCode == .unavailableSource
+        })
+    }
+
+    @Test func availabilityProofCannotSettleOtherWholeSourceGapsOnTheSameFile() async throws {
+        let directory = try historyDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("flaky.jsonl")
+        let checkpoints = ClaudeTestCheckpoints(), crypto = try BackgroundCryptography.ephemeralForTesting(), audit = try historyAudit()
+        let adapter = try ClaudeAdapter(profileID: "test", agentVersion: "2.1.295", allowedTranscriptRoots: [directory],
+            limits: .init(maximumBytes: 1024, maximumRowBytes: 512, maximumRows: 64),
+            checkpointLookup: { await checkpoints.get($0) }, historyBudget: .init(maximumSources: 1))
+        let first = try await adapter.normalize(adapter.historyPacket(.init(kind: ClaudeHistoryRequest.kind, version: 1,
+            audit: audit, directories: [], pending: [file.path], deferred: [], partial: false), interface: .t3),
+            capturedAt: audit.end, cryptography: crypto)
+        let unavailable = try #require(first.coverageGaps.first { $0.reason == .sourceUnavailable }?.recovery)
+        try (historyRow("first", text: "first") + historyRow("oversized", text: String(repeating: "x", count: 6000))
+            + historyRow("last", text: "last")).write(to: file)
+        var packet = try #require(first.continuation), gaps: [CoverageGap] = [], proofs: [CoverageRecoveryReference] = []
+        for _ in 0..<20 {
+            let batch = try await adapter.normalize(packet, capturedAt: audit.end, cryptography: crypto)
+            await checkpoints.commit(batch)
+            gaps += batch.coverageGaps
+            proofs += batch.recoveredReferences.filter { $0.identifiesSameLocation(as: unavailable) }
+            guard let next = batch.continuation else { break }
+            packet = next
+        }
+        let oversized = try #require(gaps.first { $0.diagnosticCode == .oversizedRecord }?.recovery)
+        #expect(!proofs.isEmpty)
+        #expect(oversized.sourceDocumentID == unavailable.sourceDocumentID && !oversized.identifiesSameLocation(as: unavailable))
+    }
+
+    @Test func permanentlyMissingHistorySourceStopsAfterThreeAttemptsWithUnreadCoverage() async throws {
+        let directory = try historyDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let missing = directory.appendingPathComponent("permanently-missing.jsonl")
+        let crypto = try BackgroundCryptography.ephemeralForTesting(), audit = try historyAudit()
+        let adapter = try ClaudeAdapter(profileID: "test", agentVersion: "2.1.295", allowedTranscriptRoots: [directory])
+        var packet = try adapter.historyPacket(.init(kind: ClaudeHistoryRequest.kind, version: 1,
+            audit: audit, directories: [], pending: [missing.path], deferred: [], partial: false), interface: .standaloneCLI)
+        var attempts = 0, final: CollectionBatch?
+        for _ in 0..<5 {
+            let batch = try await adapter.normalize(packet, capturedAt: audit.end, cryptography: crypto)
+            attempts += 1; final = batch
+            #expect(batch.sources.isEmpty)
+            guard let next = batch.continuation else { break }
+            packet = next
+        }
+        #expect(attempts == 3)
+        #expect(final?.continuation == nil && final?.historicalProgress?.hasUnreadContent == true)
+        #expect(final?.coverageGaps.contains { $0.reason == .sourceUnavailable } == true)
+    }
+
+    @Test func discardedOversizedHistoryRowKeepsFinalAuditPartial() async throws {
+        let directory = try historyDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("oversized-audit.jsonl")
+        try (historyRow("first", text: "first") + historyRow("oversized", text: String(repeating: "x", count: 6000))
+            + historyRow("last", text: "last")).write(to: file)
+        let checkpoints = ClaudeTestCheckpoints(), crypto = try BackgroundCryptography.ephemeralForTesting()
+        let adapter = try ClaudeAdapter(profileID: "test", agentVersion: "2.1.295", allowedTranscriptRoots: [directory],
+            limits: .init(maximumBytes: 1024, maximumRowBytes: 512, maximumRows: 64),
+            checkpointLookup: { await checkpoints.get($0) })
+        var packet = try await adapter.initialHistoricalCapture(audit: historyAudit()), final: CollectionBatch?, sawOversized = false
+        var readableIDs = Set<String>()
+        for _ in 0..<20 {
+            let batch = try await adapter.normalize(packet, capturedAt: Date(), cryptography: crypto)
+            await checkpoints.commit(batch)
+            sawOversized = sawOversized || batch.coverageGaps.contains { $0.diagnosticCode == .oversizedRecord }
+            readableIDs.formUnion(batch.sources.map(\.record.metadata.identity.itemID))
+            final = batch
+            guard let next = batch.continuation else { break }
+            packet = next
+        }
+        #expect(sawOversized)
+        #expect(final?.continuation == nil)
+        #expect(final?.historicalProgress?.hasUnreadContent == true)
+        #expect(readableIDs == ["prompt:first:block:0", "prompt:last:block:0"])
+    }
+
     @Test func disposableHistoryAdmissionValidatesFrozenAuditAndLeavesOrdinaryHooksUnbound() async throws {
         let adapter = try ClaudeAdapter(profileID: "test", agentVersion: "2.1.295", allowedTranscriptRoots: [])
         let audit = try historyAudit(), packet = try await adapter.initialHistoricalCapture(audit: audit)
@@ -116,7 +224,7 @@ struct ClaudeHistoryTests {
         }
     }
 
-    @Test(arguments: ["missing", "claude-transcript-3"])
+    @Test(arguments: ["missing", "claude-transcript-3", "claude-transcript-6", "claude-transcript-7", "claude-transcript-8", "claude-transcript-9"])
     func parserContractUpdateRevisitsUnchangedSourceWithoutChangingNativeIdentity(oldContract: String) async throws {
         let directory = try historyDirectory(); defer { try? FileManager.default.removeItem(at:directory) }
         let file = directory.appendingPathComponent("upgrade.jsonl")
@@ -139,6 +247,93 @@ struct ClaudeHistoryTests {
         let current = try #require(recovered.batch.checkpoints.first)
         let caughtUp = try await adapter.readIncremental(path:file.path,interface:.standaloneCLI,checkpoint:current,cryptography:crypto)
         #expect(caughtUp.bytesRead == 0 && caughtUp.batch.sources.isEmpty)
+    }
+
+    @Test func parserUpdateRecoversConsumedNormalModeWarningWithoutSourceChanges() async throws {
+        let directory = try historyDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("mode-upgrade.jsonl")
+        let control = try JSONSerialization.data(withJSONObject: ["type": "mode", "sessionId": "session",
+            "mode": "normal"]) + Data([10])
+        try control.write(to: file)
+        let crypto = try BackgroundCryptography.ephemeralForTesting()
+        let adapter = try ClaudeAdapter(profileID: "test", agentVersion: "2.1.296", allowedTranscriptRoots: [directory])
+        let initial = try await adapter.readIncremental(path: file.path, expectedSessionID: "session", interface: .t3,
+            cryptography: crypto)
+        let checkpoint = try #require(initial.batch.checkpoints.first)
+        var cursor = try JSONDecoder().decode(ClaudeReadCursor.self, from: #require(checkpoint.adapterState))
+        #expect(cursor.forwardOffset == UInt64(control.count) && cursor.reverseEnd == 0)
+        cursor.parserContract = "claude-transcript-9"
+        let oldState = try JSONEncoder().encode(cursor)
+        let session = try SessionIdentity(provider: .claudeCode, profileID: "test", sessionID: "session")
+        let oldReference = CoverageRecoveryReference(session: session,
+            locator: .transcriptByteOffset(documentID: checkpoint.capabilityID, byteOffset: 0),
+            parserContract: "claude-transcript-9", sourceURL: file)
+        // Parser 9 consumed this exact row and left a row-specific warning in its checkpoint.
+        let oldGap = CoverageGap(reason: .unsupportedContent, capabilityID: checkpoint.capabilityID,
+            scope: .init(provider: .claudeCode, profileID: "test", interface: .t3, path: .versionedTranscript),
+            operation: .liveRead, recovery: oldReference, isRequiredFormatFailure: false,
+            sourceKind: .claudeUnknownRecord)
+        let old = SourceCheckpoint(capabilityID: checkpoint.capabilityID, sourceDocumentID: checkpoint.sourceDocumentID,
+            revision: try await crypto.revision(canonicalBytes: oldState), byteOffset: checkpoint.byteOffset,
+            lastContentTime: checkpoint.lastContentTime, gaps: [oldGap], adapterState: oldState)
+        let recovered = try await adapter.readIncremental(path: file.path, expectedSessionID: "session", interface: .t3,
+            checkpoint: old, cryptography: crypto)
+        #expect(recovered.bytesRead > 0 && recovered.batch.sources.isEmpty && recovered.batch.coverageGaps.isEmpty)
+        #expect(recovered.hasUnreadContent == false)
+        let recovery = try #require(recovered.batch.recoveredReferences.first {
+            $0.identifiesSameLocation(as: oldReference)
+        })
+        #expect(recovery.session == session && recovery.sourceURL == file && recovery.contentTime == nil)
+        #expect(recovery.parserContract == ClaudeAdapter.parserContractVersion && recovery.parserContract != "claude-transcript-9")
+        let current = try #require(recovered.batch.checkpoints.first)
+        #expect(current.sourceDocumentID == checkpoint.sourceDocumentID && current.byteOffset == UInt64(control.count))
+        #expect(current.gaps.isEmpty)
+        let currentCursor = try JSONDecoder().decode(ClaudeReadCursor.self, from: #require(current.adapterState))
+        #expect(currentCursor.parserContract == ClaudeAdapter.parserContractVersion)
+        let warm = try await adapter.readIncremental(path: file.path, expectedSessionID: "session", interface: .t3,
+            checkpoint: current, cryptography: crypto)
+        #expect(warm.bytesRead == 0 && warm.batch.sources.isEmpty && warm.batch.coverageGaps.isEmpty)
+        #expect(warm.batch.recoveredReferences.isEmpty && warm.hasUnreadContent == false)
+        #expect(try Data(contentsOf: file) == control)
+    }
+
+    @Test func normalModeControlWithWrongExpectedSessionRemainsAGap() async throws {
+        let directory = try historyDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("wrong-session-mode.jsonl")
+        try (JSONSerialization.data(withJSONObject: ["type": "mode", "sessionId": "other-session",
+            "mode": "normal"]) + Data([10])).write(to: file)
+        let crypto = try BackgroundCryptography.ephemeralForTesting()
+        let adapter = try ClaudeAdapter(profileID: "test", agentVersion: "2.1.296", allowedTranscriptRoots: [directory])
+        let rejected = try await adapter.readIncremental(path: file.path, expectedSessionID: "expected-session",
+            interface: .t3, cryptography: crypto)
+        #expect(rejected.batch.sources.isEmpty && rejected.batch.recoveredReferences.isEmpty)
+        #expect(rejected.batch.coverageGaps.map(\.reason) == [.unsupportedContent])
+    }
+
+    @Test func parserUpdateRecoversChildPreviouslyReadUnderParentIdentity() async throws {
+        let directory = try historyDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("agent-child.jsonl")
+        try historyRow("child-prompt", text: "FAKE_CHILD_PROMPT", session: "native-child").write(to: file)
+        let crypto = try BackgroundCryptography.ephemeralForTesting()
+        let adapter = try ClaudeAdapter(profileID: "test", agentVersion: "2.1.293", allowedTranscriptRoots: [directory])
+        let rejected = try await adapter.readIncremental(path: file.path, expectedSessionID: "parent", interface: .t3,
+            cryptography: crypto)
+        #expect(rejected.batch.sources.isEmpty)
+        let omission = try #require(rejected.batch.coverageGaps.first { $0.reason == .unresolvedCorrelation }?.recovery)
+        let checkpoint = try #require(rejected.batch.checkpoints.first)
+        var cursor = try JSONDecoder().decode(ClaudeReadCursor.self, from: #require(checkpoint.adapterState))
+        cursor.parserContract = "claude-transcript-7"
+        let old = SourceCheckpoint(capabilityID: checkpoint.capabilityID, sourceDocumentID: checkpoint.sourceDocumentID,
+            revision: checkpoint.revision, byteOffset: checkpoint.byteOffset, lastContentTime: checkpoint.lastContentTime,
+            gaps: checkpoint.gaps, adapterState: try JSONEncoder().encode(cursor))
+        let recovered = try await adapter.readIncremental(path: file.path, interface: .t3, checkpoint: old, cryptography: crypto)
+        #expect(recovered.batch.sources.map(\.record.metadata.identity.itemID) == ["prompt:child-prompt:block:0"])
+        #expect(recovered.batch.sources.first?.record.metadata.identity.session.sessionID == "native-child")
+        #expect(recovered.batch.coverageGaps.isEmpty)
+        #expect(recovered.batch.recoveredReferences.contains { $0.identifiesSameLocation(as: omission) })
+        let warm = try await adapter.readIncremental(path: file.path, interface: .t3,
+            checkpoint: recovered.batch.checkpoints.first, cryptography: crypto)
+        #expect(warm.bytesRead == 0 && warm.batch.sources.isEmpty)
     }
 
     @Test func benchmarkColdWarmAnd78ByteAppendOnDisposableLargeHistory() async throws {
@@ -241,6 +436,73 @@ struct ClaudeHistoryTests {
         let warm = try await adapter.readIncremental(path: file.path, interface: .t3,
             checkpoint: #require(changed.batch.checkpoints.first), cryptography: crypto)
         #expect(warm.bytesRead == 0)
+    }
+
+    @Test(arguments: [false, true])
+    func rowBudgetBeforePartialTailKeepsCompleteRowsReadable(historical: Bool) async throws {
+        let directory = try historyDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("row-budget-partial-tail.jsonl")
+        let firstRow = try historyRow("first", text: "SYNTHETIC_FIRST")
+        let secondRow = try historyRow("second", text: "SYNTHETIC_COMPLETE_AFTER_ROW_BUDGET")
+        let partialRow = try historyRow("partial", text: "SYNTHETIC_PARTIAL").dropLast(2)
+        try (firstRow + secondRow + partialRow).write(to: file)
+        let crypto = try BackgroundCryptography.ephemeralForTesting()
+        let adapter = try ClaudeAdapter(profileID: "test", agentVersion: "2.1.293", allowedTranscriptRoots: [directory],
+            limits: .init(maximumBytes: 4096, maximumRowBytes: 4096, maximumRows: 1))
+        let provenance: SourceProvenance = historical ? .historical(try historyAudit()) : .live
+        let first = try await adapter.readIncremental(path: file.path, interface: .standaloneCLI,
+            provenance: provenance, cryptography: crypto)
+        #expect(first.batch.sources.map(\.record.metadata.identity.itemID) == ["prompt:first:block:0"])
+        #expect(first.hasForwardContent && first.hasUnreadContent && first.canContinueHistory)
+        let saved = try JSONDecoder().decode(SourceCheckpoint.self,
+            from: JSONEncoder().encode(#require(first.batch.checkpoints.first)))
+
+        // No append occurs between reads. The complete second row must not wait for the partial tail.
+        let second = try await adapter.readIncremental(path: file.path, interface: .standaloneCLI,
+            checkpoint: saved, provenance: provenance, cryptography: crypto)
+        #expect(second.batch.sources.map(\.record.metadata.identity.itemID) == ["prompt:second:block:0"])
+        #expect(second.batch.checkpoints.first?.byteOffset == UInt64(firstRow.count + secondRow.count))
+        #expect(!second.hasForwardContent && !second.canContinueHistory)
+        let warm = try await adapter.readIncremental(path: file.path, interface: .standaloneCLI,
+            checkpoint: #require(second.batch.checkpoints.first), provenance: provenance, cryptography: crypto)
+        #expect(warm.bytesRead == 0 && warm.batch.sources.isEmpty)
+        #expect(!warm.hasForwardContent && !warm.canContinueHistory)
+    }
+
+    @Test(arguments: [false, true])
+    func parserUpdateRecoversCompleteRowBehindLegacyPartialTailCursor(historical: Bool) async throws {
+        let directory = try historyDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("legacy-row-budget-partial-tail.jsonl")
+        let firstRow = try historyRow("first", text: "SYNTHETIC_FIRST")
+        let secondRow = try historyRow("second", text: "SYNTHETIC_COMPLETE_AFTER_ROW_BUDGET")
+        let partialRow = try historyRow("partial", text: "SYNTHETIC_PARTIAL").dropLast(2)
+        try (firstRow + secondRow + partialRow).write(to: file)
+        let crypto = try BackgroundCryptography.ephemeralForTesting()
+        let adapter = try ClaudeAdapter(profileID: "test", agentVersion: "2.1.293", allowedTranscriptRoots: [directory],
+            limits: .init(maximumBytes: 4096, maximumRowBytes: 4096, maximumRows: 1))
+        let provenance: SourceProvenance = historical ? .historical(try historyAudit()) : .live
+        let initial = try await adapter.readIncremental(path: file.path, interface: .standaloneCLI,
+            provenance: provenance, cryptography: crypto)
+        let checkpoint = try #require(initial.batch.checkpoints.first)
+        var cursor = try JSONDecoder().decode(ClaudeReadCursor.self, from: #require(checkpoint.adapterState))
+        cursor.parserContract = "claude-transcript-8"
+        cursor.waitingForAppend = true
+        let legacy = SourceCheckpoint(capabilityID: checkpoint.capabilityID, sourceDocumentID: checkpoint.sourceDocumentID,
+            revision: checkpoint.revision, byteOffset: checkpoint.byteOffset, lastContentTime: checkpoint.lastContentTime,
+            gaps: checkpoint.gaps, adapterState: try JSONEncoder().encode(cursor))
+
+        let recovered = try await adapter.readIncremental(path: file.path, interface: .standaloneCLI,
+            checkpoint: legacy, provenance: provenance, cryptography: crypto)
+        #expect(recovered.bytesRead > 0 && recovered.hasForwardContent)
+        #expect(recovered.batch.sources.map(\.record.metadata.identity) == initial.batch.sources.map(\.record.metadata.identity))
+        #expect(recovered.batch.sources.map(\.record.revision) == initial.batch.sources.map(\.record.revision))
+        #expect(recovered.batch.checkpoints.first?.sourceDocumentID == checkpoint.sourceDocumentID)
+        let second = try await adapter.readIncremental(path: file.path, interface: .standaloneCLI,
+            checkpoint: #require(recovered.batch.checkpoints.first), provenance: provenance, cryptography: crypto)
+        #expect(second.batch.sources.map(\.record.metadata.identity.itemID) == ["prompt:second:block:0"])
+        let warm = try await adapter.readIncremental(path: file.path, interface: .standaloneCLI,
+            checkpoint: #require(second.batch.checkpoints.first), provenance: provenance, cryptography: crypto)
+        #expect(warm.bytesRead == 0 && warm.batch.sources.isEmpty && !warm.canContinueHistory)
     }
 
     @Test func partialTailHeldThenCompleteAndFailedCommitReplaySameIdentity() async throws {

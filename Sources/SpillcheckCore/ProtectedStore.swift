@@ -15,14 +15,72 @@ private struct ProgressSettlementRow: Equatable, Sendable {
     let encoded: Data
 }
 
+private struct RecoveryChainEvidence: Codable, Sendable {
+    let schemaVersion: Int
+    let targetWorkID: UUID
+    let auditID: UUID
+    let auditWindow: DateInterval
+    let successfulPages: Bool
+}
+
+private struct CoverageReportRows {
+    let events: (rows: [Row], count: Int)
+    let omissions: (rows: [Row], count: Int)
+    let history: (rows: [Row], count: Int)
+    let queue: StoreQueueStatistics
+    let oldestPendingAt: Double?
+    let work: (rows: [Row], count: Int)
+    let successes: (rows: [Row], count: Int)
+    let omissionCounts: [CoverageOmissionState: Int]
+    let capacity: StoreCapacitySnapshot
+}
+
+private struct PreparedCoverageOmission: Sendable {
+    let id: UUID
+    let locationID: UUID
+    let incidentKey: UUID?
+    let encoded: Data
+    let time: Date?
+    let state: CoverageOmissionState
+    // Capture losses have a separate identity and no source-gap merge. Source omissions
+    // require the exact ciphertext (or absence) whose age and semantics were inspected.
+    var checksPrevious = false
+    var previousEncoded: Data?
+    var upgradesOmissionMeaning = false
+    var reclassifiedLocalMedia: MetadataRecoveryRow?
+}
+
+private struct MetadataRecoveryRow: Equatable, Sendable {
+    let id: UUID
+    let locationID: UUID
+    let encoded: Data
+    let state: String
+    let createdAt: Double
+    let contentAt: Double?
+    let incidentKey: String?
+    let resolvedAt: Double?
+}
+
+private struct PreparedMetadataRecovery: Sendable {
+    let locationID: UUID
+    let rows: [MetadataRecoveryRow]
+    let recoveredIDs: Set<UUID>
+}
+
 private struct PreparedCoverageSettlement: Sendable {
     var gaps: [ProtectedPayload] = []
-    var omissions: [(id: UUID, locationID: UUID, incidentKey: UUID?, encoded: Data, time: Date?, state: CoverageOmissionState)] = []
+    var omissions: [PreparedCoverageOmission] = []
     var incidents: [(id: UUID, key: UUID, encoded: Data, requiresAssessment: Bool)] = []
     var recoveredLocations: Set<UUID> = []
+    var metadataRecoveries: [PreparedMetadataRecovery] = []
+    var captureLossLinks: [(capture: UUID, omission: UUID)] = []
+    var workWithGapEvidence: Set<UUID> = []
     mutating func append(_ other: Self) {
         gaps += other.gaps; omissions += other.omissions; incidents += other.incidents
         recoveredLocations.formUnion(other.recoveredLocations)
+        metadataRecoveries += other.metadataRecoveries
+        captureLossLinks += other.captureLossLinks
+        workWithGapEvidence.formUnion(other.workWithGapEvidence)
     }
 }
 
@@ -30,12 +88,16 @@ private struct RecoveryLocationKey: Codable {
     let session: SessionIdentity?
     let locator: SourceLocator
     let itemID: String?
+    let sourceDocumentID: UUID?
+    let sourceURL: URL?
     init(_ reference: CoverageRecoveryReference) {
         switch reference.locator {
         case .transcript, .transcriptByteOffset: session = nil
         case .upstreamItem, .unavailable: session = reference.session
         }
         locator = reference.locator; itemID = reference.itemID
+        sourceDocumentID = reference.sourceDocumentID
+        sourceURL = reference.locator == .unavailable && reference.sourceDocumentID == nil ? reference.sourceURL : nil
     }
 }
 
@@ -107,7 +169,8 @@ public actor ProtectedStore {
                 for table in ["protection_manifest", "store_state", "protected_payloads", "captures", "capture_receipts",
                               "source_checkpoints", "coverage_gaps", "notification_outbox",
                               "collection_authorities", "historical_progress", "protected_preferences", "historical_notification_outbox",
-                              "coverage_omissions", "collection_health_incidents"] {
+                              "coverage_omissions", "collection_health_incidents", "collection_work", "successful_collection_reads",
+                              "codex_hook_content_slots"] {
                     if try connection.tableExists(table),
                        try Int.fetchOne(connection, sql: "SELECT COUNT(*) FROM \(table)") ?? 0 > 0 {
                         hasProtectedRows = true
@@ -136,7 +199,8 @@ public actor ProtectedStore {
     ) async throws -> ProtectedStore {
         guard limits.maxEventBytes > 0, limits.maxQueueBytes > 0, limits.maxQueueAge > 0,
               limits.maxQueueAge.isFinite, limits.claimDuration > 0, limits.claimDuration.isFinite,
-              limits.maxProtectedStateBytes > 0 else { throw StorageError.invalidTime }
+              limits.maxProtectedStateBytes > 0, limits.maxHookContentSlots > 0,
+              limits.maxSourceAuthorities > 0 else { throw StorageError.invalidTime }
         let probe = try probe(at: directory)
         let manifest = await cryptography.manifest
         do { try manifest.validate() } catch { throw StorageError.manifestMismatch }
@@ -391,7 +455,8 @@ public actor ProtectedStore {
     public func enqueue(
         _ captureBody: Data, id: UUID = UUID(), capturedAt: Date,
         permit: StoreProcessingPermit, at now: Date = Date(), scope: LiveCaptureScope? = nil,
-        historicalAudit: HistoricalAuditContext? = nil
+        historicalAudit: HistoricalAuditContext? = nil, workContext: CollectionWorkContext? = nil,
+        recoveryOf: UUID? = nil
     ) async throws -> QueueInsertion {
         try check(permit)
         guard capturedAt.timeIntervalSince1970.isFinite, now.timeIntervalSince1970.isFinite else {
@@ -400,12 +465,33 @@ public actor ProtectedStore {
         guard !captureBody.isEmpty, captureBody.count <= limits.maxEventBytes else {
             throw StorageError.captureTooLarge
         }
+        let workBytes = try await prepareWorkContext(workContext, id: id, body: captureBody, audit: historicalAudit,
+            liveScope: scope, capturedAt: capturedAt)
+        var recoveryChainBytes: Data?
+        if let recoveryOf {
+            guard let context = workContext, let prior = try await collectionWork(id: recoveryOf),
+                  prior.context.retry != nil, context.retry.map({ prior.context.retry?.identifiesSameSource(as: $0) == true }) == true,
+                  prior.context.scope == context.scope,
+                  prior.context.operation == context.operation || (prior.context.operation == .liveRead && context.operation == .historicalRead),
+                  prior.state == .terminal else { throw StorageError.invalidPayload }
+            if context.operation == .historicalRead, let audit = historicalAudit {
+                recoveryChainBytes = try await sealWorkValue(RecoveryChainEvidence(schemaVersion: 1,
+                    targetWorkID: recoveryOf, auditID: audit.id, auditWindow: DateInterval(start: audit.start, end: audit.end),
+                    successfulPages: true), id: id)
+            }
+        }
         let expiresAt = capturedAt.addingTimeInterval(limits.maxQueueAge)
         guard expiresAt > now else {
             let loss = try await prepareCaptureLoss(id: id, body: captureBody, capturedAt: capturedAt,
-                                                  reason: .queueExpired, at: now)
+                                                  reason: .queueExpired, at: now, audit: historicalAudit, context: workContext)
             try check(permit)
             try Self.write(database) { db in
+                if let workBytes,
+                   try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM collection_work WHERE id = ?", arguments: [id.uuidString]) == 0 {
+                    try Self.insertWork(id: id, context: workBytes, recoveryOf: recoveryOf, recoveryChain: recoveryChainBytes,
+                        at: now, maximumBytes: limits.maxProtectedStateBytes, in: db)
+                    try Self.updateWork(id: id, state: .terminal, at: now, in: db)
+                }
                 try Self.writeCoverageSettlement(loss, at: now, maximumBytes: limits.maxProtectedStateBytes, in: db)
             }
             throw StorageError.expiredCapture
@@ -430,6 +516,13 @@ public actor ProtectedStore {
                 if try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM captures WHERE id = ?", arguments: [id.uuidString]) == 1 {
                     return .alreadyQueued(id)
                 }
+                if let recoveryOf {
+                    guard try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM collection_work WHERE recovery_of = ? AND state IN (?, ?, ?)",
+                        arguments: [recoveryOf.uuidString, CollectionWorkState.queued.rawValue,
+                            CollectionWorkState.processing.rawValue, CollectionWorkState.stalled.rawValue]) == 0 else {
+                        throw StorageError.stateChanged
+                    }
+                }
                 let bytes = try Int.fetchOne(db, sql: "SELECT COALESCE(SUM(byte_count), 0) FROM captures") ?? 0
                 guard encoded.count <= maxBytes, bytes <= maxBytes - encoded.count else { throw StorageError.queueSaturated }
                 try db.execute(sql: """
@@ -438,6 +531,11 @@ public actor ProtectedStore {
                     """, arguments: [id.uuidString, encoded, encoded.count,
                                       capturedAt.timeIntervalSince1970, expiresAt.timeIntervalSince1970, now.timeIntervalSince1970,
                                       historicalAudit == nil ? 0 : 1])
+                if let workBytes {
+                    try Self.insertWork(id: id, context: workBytes, recoveryOf: recoveryOf, recoveryChain: recoveryChainBytes,
+                        at: now, maximumBytes: limits.maxProtectedStateBytes, in: db)
+                }
+                try Self.pruneCompletedWork(in: db, retaining: limits.maxSuccessfulWorkRecords)
                 try injector?(.beforeEnqueueCommit)
                 return .inserted(id)
             }
@@ -453,15 +551,16 @@ public actor ProtectedStore {
 
     public func queueStatistics() throws -> StoreQueueStatistics {
         do {
-            return try Self.read(database) { db in
-                let count = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM captures") ?? 0
-                let bytes = try Int.fetchOne(db, sql: "SELECT COALESCE(SUM(byte_count), 0) FROM captures") ?? 0
-                let claimed = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM captures WHERE state = 1") ?? 0
-                let historical = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM captures WHERE work_class = 1") ?? 0
-                return StoreQueueStatistics(count: count, encryptedBytes: bytes, claimedCount: claimed,
-                                            historicalCount: historical)
-            }
+            return try Self.read(database) { try Self.queueStatistics(in: $0) }
         } catch { throw StorageError.databaseUnavailable }
+    }
+
+    private static func queueStatistics(in db: Database) throws -> StoreQueueStatistics {
+        let count = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM captures") ?? 0
+        let bytes = try Int.fetchOne(db, sql: "SELECT COALESCE(SUM(byte_count), 0) FROM captures") ?? 0
+        let claimed = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM captures WHERE state = 1") ?? 0
+        let historical = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM captures WHERE work_class = 1") ?? 0
+        return StoreQueueStatistics(count: count, encryptedBytes: bytes, claimedCount: claimed, historicalCount: historical)
     }
 
     /// Bounded opaque queue identities for private disposable restart acceptance. A consumed
@@ -478,6 +577,62 @@ public actor ProtectedStore {
                 }
             }
             return (try identities("captures"), try identities("capture_receipts"))
+        }
+    }
+
+    /// Read-only structural commitments for a disposable genuine old-writer migration.
+    /// Rows retain ciphertext, never opened upstream content; the app exports keyed digests only.
+    @_spi(Testing) public func legacyMigrationRowsForTesting() throws -> (migrations: [String], rows: [String: [Data]]) {
+        guard !closed else { throw StorageError.databaseUnavailable }
+        return try Self.read(database) { db in
+            let columns: [(String, [String])] = [
+                ("protection_manifest", ["id", "encoded"]), ("store_state", ["id", "revision", "encoded"]),
+                ("protected_payloads", ["reference_id", "kind", "encoded"]),
+                ("captures", ["id", "encoded", "byte_count", "captured_at", "expires_at", "retry_count", "available_at", "state", "work_class", "claim_id", "lease_until"]),
+                ("capture_receipts", ["id", "consumed_at"]), ("capture_value_links", ["capture_id", "value_id"]),
+                ("source_checkpoints", ["document_id", "encoded"]), ("coverage_gaps", ["id", "created_at", "encoded"]),
+                ("notification_outbox", ["id", "value_id", "delivery"]), ("collection_authorities", ["id", "encoded"]),
+                ("historical_progress", ["id", "updated_at", "encoded"]), ("protected_preferences", ["id", "encoded"]),
+                ("historical_notification_outbox", ["audit_id", "delivery"]),
+                ("coverage_omissions", ["id", "location_id", "incident_key", "created_at", "content_at", "state", "resolved_at", "encoded"]),
+                ("collection_health_incidents", ["id", "key_id", "created_at", "resolved_at", "delivery", "requires_assessment", "encoded"]),
+                ("collection_work", ["id", "state", "admitted_at", "updated_at", "attempted_at", "completed_at", "recovery_of", "omission_id", "retain_evidence", "encoded", "recovery_certificate", "recovery_chain"]),
+                ("successful_collection_reads", ["id", "succeeded_at", "encoded"]),
+                ("codex_hook_content_slots", ["id", "encoded"])
+            ]
+            let migrations = try String.fetchAll(db, sql: "SELECT identifier FROM grdb_migrations ORDER BY identifier LIMIT 17")
+            guard migrations.count <= 16 else { throw StorageError.stateTooLarge }
+            var result: [String: [Data]] = [:], total = 0
+            for (table, names) in columns {
+                let rows = try Row.fetchAll(db, sql: "SELECT \(names.joined(separator: ",")) FROM \(table) LIMIT 129")
+                guard rows.count <= 128 else { throw StorageError.stateTooLarge }
+                result[table] = try rows.map { row in
+                    var object: [String: Any] = [:]
+                    for name in names {
+                        let value: DatabaseValue = row[name]
+                        switch value.storage {
+                        case .null: object[name] = NSNull()
+                        case .int64(let number): object[name] = number
+                        case .double(let number):
+                            guard number.isFinite else { throw StorageError.corruptProtectedState }
+                            object[name] = number
+                        case .string(let string):
+                            guard string.utf8.count <= 4096 else { throw StorageError.stateTooLarge }
+                            object[name] = string
+                        case .blob(let data):
+                            guard data.count <= 1024 * 1024 else { throw StorageError.stateTooLarge }
+                            object[name] = data.base64EncodedString()
+                        }
+                    }
+                    let bytes = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+                    guard bytes.count <= 2 * 1024 * 1024, total <= 8 * 1024 * 1024 - bytes.count else {
+                        throw StorageError.stateTooLarge
+                    }
+                    total += bytes.count
+                    return bytes
+                }
+            }
+            return (migrations, result)
         }
     }
 
@@ -511,7 +666,7 @@ public actor ProtectedStore {
             let body = try? await cryptography.openBackground(Self.decode(row.encoded), binding: Self.captureBinding(row.id))
             let opened = body.flatMap { try? CapturedWorkCodec.decode($0) }
             losses[row.id] = try await prepareCaptureLoss(id: row.id, body: opened?.body,
-                capturedAt: row.capturedAt, reason: .queueExpired, at: now)
+                capturedAt: row.capturedAt, reason: .queueExpired, at: now, audit: opened?.historicalAudit, context: try await collectionWork(id: row.id)?.context)
         }
         guard !closed else { throw StorageError.databaseUnavailable }
         do {
@@ -522,6 +677,7 @@ public actor ProtectedStore {
                     let id = row.id
                     if try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM captures WHERE id = ? AND expires_at <= ?",
                                         arguments: [id.uuidString, now.timeIntervalSince1970]) == 1 {
+                        try Self.updateWork(id: id, state: .terminal, at: now, in: db)
                         try Self.consumeCapture(id, in: db)
                         if let loss = losses[id] { settled.append(loss) }
                         removed += 1
@@ -550,6 +706,8 @@ public actor ProtectedStore {
                 try db.execute(sql: "DELETE FROM capture_receipts WHERE consumed_at < ?", arguments: [receiptCutoff])
                 try db.execute(sql: "DELETE FROM coverage_gaps WHERE created_at < ?",
                                arguments: [now.timeIntervalSince1970 - Self.coverageGapRetention])
+                try db.execute(sql: "DELETE FROM collection_work WHERE updated_at < ? AND id NOT IN (SELECT id FROM captures)",
+                    arguments: [now.timeIntervalSince1970 - Self.coverageGapRetention])
                 try db.execute(sql: "DELETE FROM coverage_omissions WHERE created_at < ? AND COALESCE(content_at, created_at) < ?",
                                arguments: [now.timeIntervalSince1970 - Self.coverageGapRetention,
                                    now.addingTimeInterval(-HistoricalAuditContext.lookback).timeIntervalSince1970])
@@ -565,7 +723,7 @@ public actor ProtectedStore {
         guard !closed else { throw StorageError.databaseUnavailable }
         let cutoff = now.addingTimeInterval(-HistoricalAuditContext.receiptHorizon)
         guard ledger.needsProcessedSourceCompaction(before: cutoff) else { return false }
-        try await mutateLedger { ledger in ledger.pruneProcessedSources(before: cutoff, stampingUntimedAt: now) }
+        _ = try await mutateLedger { ledger in ledger.pruneProcessedSources(before: cutoff, stampingUntimedAt: now) }
         return true
     }
 
@@ -581,6 +739,8 @@ public actor ProtectedStore {
             let stored = try Self.write(database) { db -> StoredCapture? in
                 try db.execute(sql: "UPDATE captures SET state = 0, claim_id = NULL, lease_until = NULL WHERE state = 1 AND lease_until <= ?",
                                arguments: [now.timeIntervalSince1970])
+                try db.execute(sql: "UPDATE collection_work SET state = ? WHERE state = ? AND id IN (SELECT id FROM captures WHERE state = 0)",
+                    arguments: [CollectionWorkState.queued.rawValue, CollectionWorkState.processing.rawValue])
                 guard let row = try Row.fetchOne(db, sql: """
                     SELECT id, encoded, captured_at, expires_at, retry_count, work_class FROM captures
                     WHERE state = 0 AND available_at <= ? AND expires_at > ?
@@ -592,6 +752,7 @@ public actor ProtectedStore {
                 claimedHistory = row["work_class"] as Int == 1
                 try db.execute(sql: "UPDATE captures SET state = 1, claim_id = ?, lease_until = ? WHERE id = ?",
                                arguments: [claimID.uuidString, leaseEnd.timeIntervalSince1970, id.uuidString])
+                try Self.updateWork(id: id, state: .processing, at: now, in: db)
                 return StoredCapture(id: id, encoded: row["encoded"], capturedAt: Date(timeIntervalSince1970: row["captured_at"]),
                                      expiresAt: Date(timeIntervalSince1970: row["expires_at"]), retryCount: retryCount)
             }
@@ -641,18 +802,28 @@ public actor ProtectedStore {
         permit: StoreProcessingPermit
     ) async throws {
         try check(permit)
+        guard now.timeIntervalSince1970.isFinite else { throw StorageError.invalidTime }
         let count = capture.retryCount + 1
         let shouldDrop = count > limits.maxRetryCount || capture.expiresAt <= now
+        let opened = try? await openCapturedWork(capture)
+        let attempted = try await prepareFailedHistoricalAttempt(opened: opened, continuing: !shouldDrop, at: now)
         let loss: PreparedCoverageSettlement?
         if shouldDrop {
-            let opened = try? await openCapturedWork(capture)
             loss = try await prepareCaptureLoss(id: capture.id, body: opened?.body,
-                capturedAt: capture.capturedAt, reason: capture.expiresAt <= now ? .queueExpired : reason, at: now)
+                capturedAt: capture.capturedAt, reason: capture.expiresAt <= now ? .queueExpired : reason,
+                at: now, audit: opened?.historicalAudit, context: try await collectionWork(id: capture.id)?.context)
         } else { loss = nil }
         try check(permit)
         do {
             try Self.write(database) { db in
                 try Self.checkClaim(capture, in: db, at: now, allowExpired: true)
+                if let attempted {
+                    try db.execute(sql: """
+                        INSERT INTO historical_progress (id, updated_at, encoded) VALUES (?, ?, ?)
+                        ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at, encoded = excluded.encoded
+                        """, arguments: [attempted.id.uuidString, now.timeIntervalSince1970, attempted.bytes])
+                }
+                try Self.updateWork(id: capture.id, state: shouldDrop ? .terminal : .stalled, at: now, in: db)
                 if shouldDrop {
                     try Self.consumeCapture(capture.id, in: db)
                     if let loss { try Self.writeCoverageSettlement(loss, at: now, maximumBytes: limits.maxProtectedStateBytes, in: db) }
@@ -725,6 +896,17 @@ public actor ProtectedStore {
         catch { throw StorageError.databaseUnavailable }
     }
 
+    /// Aggregate deletion evidence for an explicitly opted-in disposable acceptance vault.
+    /// This exports no references, kinds or encrypted payload bytes.
+    @_spi(Testing) public func protectedPayloadCountForTesting() throws -> Int {
+        guard !closed else { throw StorageError.databaseUnavailable }
+        do {
+            return try Self.read(database) { db in
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM protected_payloads") ?? 0
+            }
+        } catch { throw StorageError.databaseUnavailable }
+    }
+
     public func payload(_ reference: ProtectedPayloadReference) throws -> ProtectedPayload? {
         do {
             guard let encoded = try Self.read(database, { db in
@@ -743,7 +925,7 @@ public actor ProtectedStore {
         _ capture: PendingCapture, checkpoints: [SourceCheckpoint] = [],
         continuation: CapturePacket? = nil, historicalProgress: HistoricalReadProgress? = nil,
         coverageGaps: [CoverageGap] = [], recoveredReferences: [CoverageRecoveryReference] = [],
-        permit: StoreProcessingPermit, at now: Date = Date()
+        successfulRead: Bool = false, observedReaderVersion: String? = nil, observedProducerVersions: Set<String> = [], permit: StoreProcessingPermit, at now: Date = Date()
     ) async throws {
         try check(permit)
         guard now.timeIntervalSince1970.isFinite else { throw StorageError.invalidTime }
@@ -758,8 +940,59 @@ public actor ProtectedStore {
             let protected = try await cryptography.sealBackground(bytes, binding: Self.checkpointBinding(checkpoint.sourceDocumentID))
             prepared.append((checkpoint.sourceDocumentID, try protected.encoded()))
         }
+        let currentWork = try await collectionWork(id: capture.id)
+        let priorRecoveryID = try Self.read(database) { db in
+            try String.fetchOne(db, sql: "SELECT recovery_of FROM collection_work WHERE id = ?", arguments: [capture.id.uuidString])
+        }.flatMap(UUID.init(uuidString:))
+        let recoveryTarget: StoredCollectionWork?
+        if let priorRecoveryID { recoveryTarget = try await collectionWork(id: priorRecoveryID) }
+        else { recoveryTarget = nil }
+        let finished = continuation == nil && historicalProgress?.hasUnreadContent != true
+        let chain: RecoveryChainEvidence?
+        if let currentWork { chain = try await recoveryChain(for: currentWork) }
+        else { chain = nil }
+        let chainSuccessful = chain?.successfulPages == true && successfulRead && !coverageGaps.contains {
+            $0.requiresAnalysis && ($0.reason != .budgetExhausted || continuation == nil)
+        }
+        var recoveryCertificateBytes: Data?
+        var certifiedRows: [(UUID, Data)] = []
+        var recoveryWindowCovered = false
+        if finished, chainSuccessful, !coverageGaps.contains(where: \.requiresAnalysis),
+           let target = recoveryTarget, target.state == .terminal,
+           let targetWindow = try? Self.recoveryWindow(for: target, at: now),
+           let currentWork, currentWork.context.operation == .historicalRead, currentWork.context.audit != nil,
+           currentWork.context.scope == target.context.scope,
+           currentWork.context.retry.map({ target.context.retry?.identifiesSameSource(as: $0) == true }) == true,
+           let window = currentWork.context.auditWindow,
+           window.duration == HistoricalAuditContext.lookback, window.end <= now {
+            let previous = try await certifiedRecoveryEvidence(for: target)
+            certifiedRows = previous.rows
+            let certificate = CollectionRecoveryCertificate(targetWorkID: target.id, auditWindow: window, completedAt: now)
+            recoveryCertificateBytes = try await sealWorkValue(certificate, id: capture.id)
+            recoveryWindowCovered = Self.uncoveredRecoveryIntervals(targetWindow, covered: previous.windows + [window]).isEmpty
+        }
+        var nextWorkBytes: Data?
+        var nextRecoveryChainBytes: Data?
+        var successfulReadPayload: (id: UUID, bytes: Data)?
+        if successfulRead, let context = currentWork?.context {
+            guard !coverageGaps.contains(where: { $0.requiresAnalysis && $0.reason != .budgetExhausted }) else {
+                throw StorageError.invalidPayload
+            }
+            guard observedReaderVersion.map({ !$0.isEmpty && $0.utf8.count <= 256 && !$0.utf8.contains(0) }) ?? true else {
+                throw StorageError.invalidPayload
+            }
+            // Admission predates execution and may survive a reader upgrade. Native Codex
+            // read evidence must come from the process that returned the content.
+            let readerVersion = context.scope.provider == .codex && context.scope.path == .publicHistory
+                ? observedReaderVersion : context.readerVersion
+            let key = try await successfulReadID(context: context)
+            let record = SuccessfulCollectionRead(scope: context.scope, operation: context.operation, succeededAt: now,
+                producerVersions: observedProducerVersions, readerVersion: readerVersion, hostVersion: context.hostVersion)
+            successfulReadPayload = (key, try await sealWorkValue(record, id: key))
+        }
         var nextCapture: (id: UUID, bytes: Data, workClass: Int)?
         var progressPayload: (id: UUID, bytes: Data)?
+        var gapAudit: CoverageAuditIdentity?
         if continuation != nil || historicalProgress != nil {
             let opened = try await openCapturedWork(capture)
             let original = try CapturePacket(body: opened.body)
@@ -771,6 +1004,12 @@ public actor ProtectedStore {
                     CapturedWorkCodec.encode(continuation.body, scope: opened.scope, historicalAudit: opened.historicalAudit),
                     binding: Self.captureBinding(id))
                 nextCapture = (id, try protected.encoded(), opened.historicalAudit == nil ? 0 : 1)
+                if let context = currentWork?.context { nextWorkBytes = try await sealWorkValue(context, id: id) }
+                if let chain {
+                    nextRecoveryChainBytes = try await sealWorkValue(RecoveryChainEvidence(schemaVersion: 1,
+                        targetWorkID: chain.targetWorkID, auditID: chain.auditID, auditWindow: chain.auditWindow,
+                        successfulPages: chainSuccessful), id: id)
+                }
             }
             if let progress = historicalProgress {
                 guard progress.bytesRead >= 0, progress.bytesRead <= 100 * 1024 * 1024,
@@ -787,9 +1026,7 @@ public actor ProtectedStore {
                 }
                 if let oldest = progress.oldestContentTime, let newest = progress.newestContentTime,
                    oldest > newest { throw StorageError.invalidPayload }
-                let keyBytes = try JSONEncoder().encode([progress.audit.id.uuidString,
-                    original.metadata.agent.rawValue, original.metadata.profileID])
-                let id = try await structuralID(Data("history-progress-v1".utf8) + keyBytes)
+                let id = try await historicalProgressID(audit: progress.audit, metadata: original.metadata)
                 let previous = try await storedProgress(id: id)
                 let total = (previous?.progress.bytesRead ?? 0).addingReportingOverflow(progress.bytesRead)
                 guard !total.overflow else { throw StorageError.invalidPayload }
@@ -798,14 +1035,21 @@ public actor ProtectedStore {
                 let accumulated = HistoricalReadProgress(audit: progress.audit, bytesRead: total.partialValue,
                     oldestContentTime: oldest, newestContentTime: newest, hasUnreadContent: progress.hasUnreadContent)
                 let record = StoredHistoricalProgress(provider: original.metadata.agent,
-                    profileID: original.metadata.profileID, progress: accumulated)
+                    profileID: original.metadata.profileID, progress: accumulated,
+                    lastAttemptedAt: now,
+                    completedAt: !progress.hasUnreadContent && continuation == nil ? now : nil,
+                    continuationQueued: continuation != nil)
+                gapAudit = CoverageAuditIdentity(auditID: progress.audit.id, provider: original.metadata.agent,
+                    profileID: original.metadata.profileID)
                 let protected = try await cryptography.sealBackground(JSONEncoder().encode(record),
                     binding: Self.checkpointBinding(id))
                 progressPayload = (id, try protected.encoded())
             }
         }
         let coverage = try await prepareCoverageSettlement(gaps: coverageGaps,
-            recoveredReferences: recoveredReferences, at: now)
+            recoveredReferences: recoveredReferences, at: now, audit: gapAudit,
+            continuationQueued: continuation != nil, workID: currentWork?.id,
+            recoveryContext: currentWork?.context)
         try check(permit)
         let injector = failureInjector
         try Self.write(database) { db in
@@ -827,6 +1071,43 @@ public actor ProtectedStore {
                     """, arguments: [next.id.uuidString, next.bytes, next.bytes.count, now.timeIntervalSince1970,
                         capture.expiresAt.timeIntervalSince1970, now.timeIntervalSince1970, next.workClass])
             }
+            if let next = nextCapture, let nextWorkBytes {
+                try Self.insertWork(id: next.id, context: nextWorkBytes, recoveryOf: priorRecoveryID, recoveryChain: nextRecoveryChainBytes,
+                    at: now, maximumBytes: limits.maxProtectedStateBytes, in: db)
+            }
+            if let read = successfulReadPayload {
+                try db.execute(sql: """
+                    INSERT INTO successful_collection_reads (id, succeeded_at, encoded) VALUES (?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET succeeded_at = excluded.succeeded_at, encoded = excluded.encoded
+                    WHERE excluded.succeeded_at >= successful_collection_reads.succeeded_at
+                    """, arguments: [read.id.uuidString, now.timeIntervalSince1970, read.bytes])
+                guard try Int.fetchOne(db, sql: "SELECT COALESCE(SUM(length(encoded)), 0) FROM successful_collection_reads") ?? 0
+                    <= limits.maxProtectedStateBytes else { throw StorageError.stateTooLarge }
+            }
+            let completed = continuation != nil || (finished && !coverageGaps.contains(where: \.requiresAnalysis))
+            try Self.updateWork(id: capture.id, state: completed ? .completed : .terminal, at: now, in: db)
+            if let bytes = recoveryCertificateBytes, let priorRecoveryID {
+                // Crypto preparation yields the actor. Keep the exact certified evidence
+                // and unresolved target present until this atomic settlement commits.
+                guard try String.fetchOne(db, sql: "SELECT state FROM collection_work WHERE id = ?",
+                    arguments: [priorRecoveryID.uuidString]) == CollectionWorkState.terminal.rawValue else { throw StorageError.stateChanged }
+                for (id, expected) in certifiedRows {
+                    guard try Data.fetchOne(db, sql: "SELECT recovery_certificate FROM collection_work WHERE id = ? AND state = ?",
+                        arguments: [id.uuidString, CollectionWorkState.completed.rawValue]) == expected else { throw StorageError.stateChanged }
+                }
+                try db.execute(sql: "UPDATE collection_work SET recovery_certificate = ? WHERE id = ?",
+                    arguments: [bytes, capture.id.uuidString])
+                guard try Int.fetchOne(db, sql: "SELECT COALESCE(SUM(length(encoded) + COALESCE(length(recovery_certificate), 0) + COALESCE(length(recovery_chain), 0)), 0) FROM collection_work") ?? 0
+                    <= limits.maxProtectedStateBytes else { throw StorageError.stateTooLarge }
+            }
+            if let priorRecoveryID, recoveryWindowCovered {
+                try Self.updateWork(id: priorRecoveryID, state: .recovered, at: now, in: db)
+                try db.execute(sql: """
+                    UPDATE coverage_omissions SET state = ?, resolved_at = ?
+                    WHERE id IN (SELECT omission_id FROM collection_work WHERE id = ?) AND state IN (?, ?)
+                    """, arguments: [CoverageOmissionState.recovered.rawValue, now.timeIntervalSince1970,
+                        priorRecoveryID.uuidString, CoverageOmissionState.retryable.rawValue, CoverageOmissionState.blocked.rawValue])
+            }
             if let progress = progressPayload {
                 try db.execute(sql: """
                     INSERT INTO historical_progress (id, updated_at, encoded) VALUES (?, ?, ?)
@@ -835,6 +1116,7 @@ public actor ProtectedStore {
             }
             try Self.writeCoverageSettlement(coverage, at: now, maximumBytes: limits.maxProtectedStateBytes, in: db)
             try Self.consumeCapture(capture.id, in: db)
+            try Self.pruneCompletedWork(in: db, retaining: limits.maxSuccessfulWorkRecords)
             try injector?(.beforeProcessingCommit)
         }
         try injector?(.afterProcessingCommit)
@@ -852,6 +1134,28 @@ public actor ProtectedStore {
         return choice
     }
 
+    /// Reads only row counts and encrypted envelope lengths in one database snapshot.
+    /// Existing bindings are lifetime state, so the result has no content-date filter.
+    public func capacitySnapshot() throws -> StoreCapacitySnapshot {
+        guard !closed else { throw StorageError.databaseUnavailable }
+        return try Self.read(database) { try Self.capacitySnapshot(in: $0, limits: limits) }
+    }
+
+    private static func capacitySnapshot(in db: Database, limits: StoreLimits) throws -> StoreCapacitySnapshot {
+        let authorities = try Row.fetchOne(db, sql: """
+            SELECT COUNT(*) AS count, COALESCE(SUM(length(encoded)), 0) AS bytes FROM collection_authorities
+            """)
+        let slots = try Row.fetchOne(db, sql: """
+            SELECT COUNT(*) AS count, COALESCE(SUM(length(encoded)), 0) AS bytes FROM codex_hook_content_slots
+            """)
+        guard let authorities, let slots else { throw StorageError.databaseUnavailable }
+        return .init(
+            sourceAuthorities: .init(count: authorities["count"], encryptedBytes: authorities["bytes"],
+                countLimit: limits.maxSourceAuthorities, encryptedBytesLimit: limits.maxProtectedStateBytes),
+            codexHookContentSlots: .init(count: slots["count"], encryptedBytes: slots["bytes"],
+                countLimit: limits.maxHookContentSlots, encryptedBytesLimit: limits.maxProtectedStateBytes))
+    }
+
     public func selectAuthority(_ choice: CollectionAuthorityChoice, permit: StoreProcessingPermit) async throws {
         try check(permit)
         let id = try await authorityID(for: choice.session)
@@ -864,7 +1168,17 @@ public actor ProtectedStore {
         try check(permit)
         // A concurrent selector can only win once; a losing incompatible choice fails visibly.
         let inserted = try Self.write(database) { db in
-            try db.execute(sql: "INSERT OR IGNORE INTO collection_authorities (id, encoded) VALUES (?, ?)",
+            // Check the key before quotas: existing choices remain readable and
+            // idempotent even if an older store already exceeds today's limits.
+            guard try Data.fetchOne(db, sql: "SELECT encoded FROM collection_authorities WHERE id = ?",
+                                    arguments: [id.uuidString]) == nil else { return false }
+            let count = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM collection_authorities") ?? 0
+            let retainedBytes = try Int.fetchOne(db, sql: "SELECT COALESCE(SUM(length(encoded)), 0) FROM collection_authorities") ?? 0
+            guard count < limits.maxSourceAuthorities, bytes.count <= limits.maxProtectedStateBytes,
+                  retainedBytes <= limits.maxProtectedStateBytes - bytes.count else {
+                throw StorageError.capacityExceeded(.sourceAuthorities)
+            }
+            try db.execute(sql: "INSERT INTO collection_authorities (id, encoded) VALUES (?, ?)",
                            arguments: [id.uuidString, bytes])
             return db.changesCount > 0
         }
@@ -875,19 +1189,473 @@ public actor ProtectedStore {
         }
     }
 
-    public func historicalProgress(limit: Int = 100) async throws -> [StoredHistoricalProgress] {
-        guard limit > 0, limit <= 1000 else { throw StorageError.invalidPayload }
-        let rows = try Self.read(database) { db in
-            try Row.fetchAll(db, sql: "SELECT id, encoded FROM historical_progress ORDER BY updated_at DESC LIMIT ?", arguments: [limit])
+    /// Persist the immutable hook revision before analysis. Admission requires an
+    /// already-selected hook authority; this operation never chooses one itself.
+    /// A crash after binding is safe: retry accepts the same revision and returns
+    /// the original observation time. Slots are bounded but never age-pruned.
+    public func bindCodexHookContent(
+        source: SourceIdentity, revision contentRevision: ContentRevision,
+        observedAt: Date, permit: StoreProcessingPermit
+    ) async throws -> CodexHookContentBinding {
+        try check(permit)
+        guard StoredCodexHookContent.validSource(source) else { throw StorageError.invalidPayload }
+        guard observedAt.timeIntervalSince1970.isFinite else { throw StorageError.invalidTime }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let id = try await structuralID(Data("codex-hook-content-slot-v1".utf8) + encoder.encode(source))
+        let authorityID = try await authorityID(for: source.session)
+
+        // The only normal slot transition is absent -> bound. Re-read if another
+        // actor/writer wins during encryption; never replace the winning bytes.
+        for attempt in 0..<3 {
+            try check(permit)
+            let previous = try Self.read(database) { db in
+                (try Data.fetchOne(db, sql: "SELECT encoded FROM collection_authorities WHERE id = ?",
+                                   arguments: [authorityID.uuidString]),
+                 try Data.fetchOne(db, sql: "SELECT encoded FROM codex_hook_content_slots WHERE id = ?",
+                                   arguments: [id.uuidString]))
+            }
+            guard let authorityBytes = previous.0 else { throw StorageError.invalidPayload }
+            let authorityPlaintext = try await cryptography.openBackground(
+                Self.decode(authorityBytes), binding: Self.checkpointBinding(authorityID))
+            let authority: CollectionAuthorityChoice
+            do { authority = try JSONDecoder().decode(CollectionAuthorityChoice.self, from: authorityPlaintext) }
+            catch { throw StorageError.corruptProtectedState }
+            guard authority.session == source.session else { throw StorageError.corruptProtectedState }
+            guard authority.authorityID == StoredCodexHookContent.authorityID else { throw StorageError.invalidPayload }
+
+            let result: CodexHookContentBinding
+            let encoded: Data
+            if let existing = previous.1 {
+                // Existing immutable bindings remain readable when admission quotas are
+                // lowered. The envelope's fixed decoding bound still protects the read.
+                let plaintext = try await cryptography.openBackground(
+                    Self.decode(existing), binding: Self.checkpointBinding(id))
+                let stored: StoredCodexHookContent
+                do { stored = try JSONDecoder().decode(StoredCodexHookContent.self, from: plaintext) }
+                catch { throw StorageError.corruptProtectedState }
+                guard stored.source == source, stored.firstObservedAt.timeIntervalSince1970.isFinite else {
+                    throw StorageError.corruptProtectedState
+                }
+                result = stored.revision == contentRevision ? .accepted(firstObservedAt: stored.firstObservedAt) : .conflict
+                encoded = existing
+            } else {
+                let stored = StoredCodexHookContent(source: source, revision: contentRevision, firstObservedAt: observedAt)
+                let plaintext = try encoder.encode(stored)
+                guard plaintext.count <= limits.maxProtectedStateBytes else {
+                    throw StorageError.capacityExceeded(.codexHookContentSlots)
+                }
+                encoded = try await cryptography.sealBackground(plaintext, binding: Self.checkpointBinding(id)).encoded()
+                guard encoded.count <= limits.maxProtectedStateBytes else {
+                    throw StorageError.capacityExceeded(.codexHookContentSlots)
+                }
+                result = .accepted(firstObservedAt: observedAt)
+            }
+            try check(permit)
+            let injector = failureInjector
+            do {
+                try Self.write(database) { db in
+                    guard try Data.fetchOne(db, sql: "SELECT encoded FROM collection_authorities WHERE id = ?",
+                                            arguments: [authorityID.uuidString]) == authorityBytes,
+                          try Data.fetchOne(db, sql: "SELECT encoded FROM codex_hook_content_slots WHERE id = ?",
+                                            arguments: [id.uuidString]) == previous.1 else {
+                        throw StorageError.stateChanged
+                    }
+                    guard previous.1 == nil else { return }
+                    let count = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM codex_hook_content_slots") ?? 0
+                    let bytes = try Int.fetchOne(db, sql: "SELECT COALESCE(SUM(length(encoded)), 0) FROM codex_hook_content_slots") ?? 0
+                    guard count < limits.maxHookContentSlots,
+                          bytes <= limits.maxProtectedStateBytes - encoded.count else {
+                        throw StorageError.capacityExceeded(.codexHookContentSlots)
+                    }
+                    try db.execute(sql: "INSERT INTO codex_hook_content_slots (id, encoded) VALUES (?, ?)",
+                                   arguments: [id.uuidString, encoded])
+                    try injector?(.beforeProcessingCommit)
+                }
+            } catch StorageError.stateChanged where attempt < 2 { continue }
+            if previous.1 == nil { try injector?(.afterProcessingCommit) }
+            return result
         }
+        throw StorageError.stateChanged
+    }
+
+    private func sealWorkValue<T: Encodable>(_ value: T, id: UUID) async throws -> Data {
+        let bytes = try JSONEncoder().encode(value)
+        guard bytes.count <= 32 * 1024 else { throw StorageError.stateTooLarge }
+        return try await cryptography.sealBackground(bytes, binding: Self.checkpointBinding(id)).encoded()
+    }
+
+    private func prepareWorkContext(_ context: CollectionWorkContext?, id: UUID, body: Data,
+                                    audit: HistoricalAuditContext?, liveScope: LiveCaptureScope?,
+                                    capturedAt: Date) async throws -> Data? {
+        guard let context else { return nil }
+        let packet = try CapturePacket(body: body)
+        guard context.scope.provider == packet.metadata.agent, context.scope.profileID == packet.metadata.profileID,
+              context.scope.interface == packet.metadata.interface,
+              context.readerVersion?.utf8.count ?? 0 <= 256, context.hostVersion?.utf8.count ?? 0 <= 256 else {
+            throw StorageError.invalidPayload
+        }
+        if let identity = context.audit {
+            guard identity.auditID == audit?.id, identity.provider == context.scope.provider,
+                  identity.profileID == context.scope.profileID else { throw StorageError.invalidPayload }
+        }
+        if let retry = context.retry {
+            // An exact transcript filename can select a child before its native session is
+            // known. Retaining that selection grants no read access; the reader checks roots.
+            // Other collection paths still need their existing session/document identity.
+            let exactTranscriptFile = context.scope.path == .versionedTranscript && retry.sourceURL.map {
+                $0.isFileURL && ($0.host?.isEmpty ?? true) && $0.path.hasPrefix("/") && $0.path != "/"
+                    && !$0.path.utf8.contains(0) && $0.path.utf8.count <= 4096
+                    && $0.query == nil && $0.fragment == nil
+            } == true
+            guard retry.scope == context.scope, retry.session != nil || retry.sourceDocumentID != nil || exactTranscriptFile,
+                  retry.sourceURL == nil || (retry.sourceURL!.isFileURL && retry.sourceURL!.query == nil
+                    && retry.sourceURL!.fragment == nil && retry.sourceURL!.path.utf8.count <= 4096) else {
+                throw StorageError.invalidPayload
+            }
+            if let session = retry.session {
+                guard session.provider == context.scope.provider, session.profileID == context.scope.profileID,
+                      !session.sessionID.isEmpty, session.sessionID.utf8.count <= 4096 else { throw StorageError.invalidPayload }
+            }
+        }
+        if let window = context.auditWindow {
+            guard window.start.timeIntervalSince1970.isFinite, window.end.timeIntervalSince1970.isFinite,
+                  window.duration <= (context.operation == .liveRead ? HistoricalAuditContext.analysisHorizon : HistoricalAuditContext.lookback),
+                  audit == nil || window == audit.map({ DateInterval(start: $0.start, end: $0.end) }) else { throw StorageError.invalidTime }
+        }
+        let identity = context.audit ?? audit.map {
+            CoverageAuditIdentity(auditID: $0.id, provider: packet.metadata.agent, profileID: packet.metadata.profileID)
+        }
+        var frozenWindow = audit.map { DateInterval(start: $0.start, end: $0.end) } ?? context.auditWindow
+        if audit == nil, context.operation == .liveRead, let retry = context.retry,
+           retry.identifiesSameSource(as: retry),
+           let liveScope, liveScope.startedAt <= capturedAt {
+            // Live nudges also discover the original monitoring period's history. A moving
+            // seven-day window would drop its early slice. Preserve that responsibility,
+            // bounded by the pipeline's absolute analysis horizon, without changing filtering.
+            let start = max(liveScope.startedAt.addingTimeInterval(-HistoricalAuditContext.lookback),
+                capturedAt.addingTimeInterval(-HistoricalAuditContext.analysisHorizon))
+            frozenWindow = DateInterval(start: start, end: capturedAt)
+        }
+        let persisted = CollectionWorkContext(scope: context.scope, operation: context.operation, audit: identity,
+            retry: context.retry, readerVersion: context.readerVersion, hostVersion: context.hostVersion,
+            trigger: context.trigger, auditWindow: frozenWindow)
+        return try await sealWorkValue(persisted, id: id)
+    }
+
+    /// Expedites an existing failed attempt without creating duplicate source reads.
+    @discardableResult
+    public func retryQueuedWork(id: UUID, permit: StoreProcessingPermit, at now: Date = Date()) throws -> Bool {
+        try check(permit)
+        guard now.timeIntervalSince1970.isFinite else { throw StorageError.invalidTime }
+        return try Self.write(database) { db in
+            try db.execute(sql: """
+                UPDATE captures SET available_at = ? WHERE id = ? AND state = 0 AND expires_at > ?
+                AND id IN (SELECT id FROM collection_work WHERE state = ?)
+                """, arguments: [now.timeIntervalSince1970, id.uuidString, now.timeIntervalSince1970,
+                    CollectionWorkState.stalled.rawValue])
+            let changed = db.changesCount == 1
+            if changed {
+                try db.execute(sql: "UPDATE collection_work SET state = ?, updated_at = ? WHERE id = ?",
+                    arguments: [CollectionWorkState.queued.rawValue, now.timeIntervalSince1970, id.uuidString])
+            }
+            return changed
+        }
+    }
+
+    private func successfulReadID(context: CollectionWorkContext) async throws -> UUID {
+        struct Key: Encodable { let scope: CollectionScope; let operation: CollectionOperation }
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        return try await structuralID(Data("successful-read-v1".utf8)
+            + encoder.encode(Key(scope: context.scope, operation: context.operation)))
+    }
+
+    private func captureLossID(_ captureID: UUID) async throws -> UUID {
+        try await structuralID(Data("capture-loss-v1:\(captureID.uuidString)".utf8))
+    }
+
+    private static func insertWork(id: UUID, context: Data, recoveryOf: UUID?, recoveryChain: Data? = nil, at now: Date,
+                                   maximumBytes: Int, in db: Database) throws {
+        try db.execute(sql: """
+            INSERT INTO collection_work (id, state, admitted_at, updated_at, recovery_of, encoded, recovery_chain)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, arguments: [id.uuidString, CollectionWorkState.queued.rawValue, now.timeIntervalSince1970,
+                now.timeIntervalSince1970, recoveryOf?.uuidString, context, recoveryChain])
+        guard try Int.fetchOne(db, sql: "SELECT COALESCE(SUM(length(encoded) + COALESCE(length(recovery_certificate), 0) + COALESCE(length(recovery_chain), 0)), 0) FROM collection_work") ?? 0 <= maximumBytes else {
+            throw StorageError.stateTooLarge
+        }
+    }
+
+    /// Completed polls have no unresolved work to retry. Keep a bounded recent receipt set,
+    /// while retaining exact work referenced by gap evidence and the separate latest-read rows.
+    private static func pruneCompletedWork(in db: Database, retaining count: Int) throws {
+        try db.execute(sql: """
+            DELETE FROM collection_work WHERE id IN (
+                SELECT id FROM collection_work WHERE state IN (?, ?) AND retain_evidence = 0
+                AND NOT (recovery_certificate IS NOT NULL AND recovery_of IN
+                    (SELECT id FROM collection_work WHERE state = 'terminal'))
+                ORDER BY updated_at DESC, id LIMIT -1 OFFSET ?)
+            """, arguments: [CollectionWorkState.completed.rawValue, CollectionWorkState.recovered.rawValue, count])
+    }
+
+    private static func updateWork(id: UUID, state: CollectionWorkState, at now: Date, in db: Database) throws {
+        try db.execute(sql: """
+            UPDATE collection_work SET state = ?, updated_at = ?, attempted_at = ?, completed_at = ? WHERE id = ?
+            """, arguments: [state.rawValue, now.timeIntervalSince1970, now.timeIntervalSince1970,
+                state == .recovered || state == .completed ? now.timeIntervalSince1970 : nil, id.uuidString])
+    }
+
+    public func collectionWork(id: UUID) async throws -> StoredCollectionWork? {
+        guard !closed else { throw StorageError.databaseUnavailable }
+        let rows = try Self.read(database) { db in
+            try Row.fetchAll(db, sql: "SELECT * FROM collection_work WHERE id = ?", arguments: [id.uuidString])
+        }
+        return try await decodeWorkRows(rows, totalCount: rows.count).items.first
+    }
+
+    /// UI report pagination is unrelated to source retry eligibility. Search only unfinished
+    /// work, authenticate each bounded page, and fail explicitly instead of silently truncating.
+    public func retryableCollectionWork(for source: CoverageSourceRetryDescriptor) async throws -> [StoredCollectionWork] {
+        guard !closed else { throw StorageError.databaseUnavailable }
+        guard source.identifiesSameSource(as: source) else { throw StorageError.invalidPayload }
+        var result: [StoredCollectionWork] = []
+        var cursor: (time: Double, id: String)?
+        for _ in 0..<64 {
+            let rows = try Self.read(database) { db in
+                if let cursor {
+                    return try Row.fetchAll(db, sql: """
+                        SELECT * FROM collection_work WHERE state IN ('queued', 'processing', 'stalled', 'terminal')
+                        AND (admitted_at < ? OR (admitted_at = ? AND id > ?))
+                        ORDER BY admitted_at DESC, id LIMIT 128
+                        """, arguments: [cursor.time, cursor.time, cursor.id])
+                }
+                return try Row.fetchAll(db, sql: """
+                    SELECT * FROM collection_work WHERE state IN ('queued', 'processing', 'stalled', 'terminal')
+                    ORDER BY admitted_at DESC, id LIMIT 128
+                    """)
+            }
+            let decoded = try await decodeWorkRows(rows, totalCount: rows.count).items
+            result += decoded.filter { $0.context.retry?.identifiesSameSource(as: source) == true }
+            guard result.count <= 128 else { throw StorageError.stateTooLarge }
+            if rows.count < 128 { return result }
+            if let last = rows.last { cursor = (last["admitted_at"], last["id"]) }
+        }
+        throw StorageError.stateTooLarge
+    }
+
+    /// Exact recovery chains have their own bound, independent of unrelated completed work.
+    public func recoveryCollectionWork(for targetID: UUID) async throws -> [StoredCollectionWork] {
+        guard let target = try await collectionWork(id: targetID) else { throw StorageError.invalidPayload }
+        let rows = try Self.read(database) { db in
+            try Row.fetchAll(db, sql: "SELECT * FROM collection_work WHERE recovery_of = ? ORDER BY admitted_at, id LIMIT 129",
+                arguments: [targetID.uuidString])
+        }
+        guard rows.count <= 128 else { throw StorageError.stateTooLarge }
+        let work = try await decodeWorkRows(rows, totalCount: rows.count).items
+        guard work.allSatisfy({ $0.recoveryOf == targetID && $0.context.scope == target.context.scope
+            && $0.context.retry.map({ target.context.retry?.identifiesSameSource(as: $0) == true }) == true }) else {
+            throw StorageError.corruptProtectedState
+        }
+        return work
+    }
+
+    /// At most two ordinary seven-day exact-source audits cover an admitted live interval.
+    /// Unknown/legacy intervals are not guessed; a completed audit certifies only its own span.
+    public func remainingRecoveryAuditEnds(for id: UUID, at now: Date = Date()) async throws -> [Date] {
+        guard now.timeIntervalSince1970.isFinite else { throw StorageError.invalidTime }
+        guard let target = try await collectionWork(id: id) else { throw StorageError.invalidPayload }
+        if target.state == .recovered { return [] }
+        guard target.state == .terminal else { throw StorageError.stateChanged }
+        let window = try Self.recoveryWindow(for: target, at: now)
+        var covered = try await certifiedRecoveryEvidence(for: target).windows
+        var ends: [Date] = []
+        while let missing = Self.uncoveredRecoveryIntervals(window, covered: covered).first {
+            guard ends.count < 2 else { throw StorageError.invalidPayload }
+            let end = min(window.end, missing.start.addingTimeInterval(HistoricalAuditContext.lookback))
+            ends.append(end)
+            covered.append(DateInterval(start: end.addingTimeInterval(-HistoricalAuditContext.lookback), end: end))
+        }
+        return ends
+    }
+
+    private static func recoveryWindow(for target: StoredCollectionWork, at now: Date) throws -> DateInterval {
+        guard target.admittedAt <= now, target.admittedAt >= now.addingTimeInterval(-HistoricalAuditContext.lookback) else {
+            throw StorageError.invalidTime
+        }
+        guard let retry = target.context.retry, retry.identifiesSameSource(as: retry),
+              let window = target.context.auditWindow, window.start.timeIntervalSince1970.isFinite,
+              window.end.timeIntervalSince1970.isFinite, window.end <= now,
+              window.duration > 0, window.duration <= HistoricalAuditContext.analysisHorizon else {
+            throw StorageError.invalidPayload
+        }
+        return window
+    }
+
+    private static func uncoveredRecoveryIntervals(_ target: DateInterval, covered: [DateInterval]) -> [DateInterval] {
+        var cursor = target.start
+        var missing: [DateInterval] = []
+        for window in covered.sorted(by: { $0.start < $1.start }) {
+            guard window.end > cursor, window.start < target.end else { continue }
+            if window.start > cursor { missing.append(DateInterval(start: cursor, end: min(window.start, target.end))) }
+            cursor = max(cursor, min(window.end, target.end))
+            if cursor >= target.end { break }
+        }
+        if cursor < target.end { missing.append(DateInterval(start: cursor, end: target.end)) }
+        return missing
+    }
+
+    private func certifiedRecoveryEvidence(for target: StoredCollectionWork) async throws -> (windows: [DateInterval], rows: [(UUID, Data)]) {
+        let rows = try Self.read(database) { db in
+            try Row.fetchAll(db, sql: "SELECT * FROM collection_work WHERE recovery_of = ? AND recovery_certificate IS NOT NULL LIMIT 129",
+                arguments: [target.id.uuidString])
+        }
+        guard rows.count <= 128 else { throw StorageError.stateTooLarge }
+        let decoded = try await decodeWorkRows(rows, totalCount: rows.count).items
+        var windows: [DateInterval] = []
+        var retained: [(UUID, Data)] = []
+        for (row, work) in zip(rows, decoded) {
+            guard work.state == .completed, let certificate = work.recoveryCertificate,
+                  work.recoveryOf == target.id, certificate.targetWorkID == target.id,
+                  work.context.scope == target.context.scope,
+                  work.context.retry.map({ target.context.retry?.identifiesSameSource(as: $0) == true }) == true else {
+                throw StorageError.corruptProtectedState
+            }
+            windows.append(certificate.auditWindow)
+            retained.append((work.id, row["recovery_certificate"]))
+        }
+        return (windows, retained)
+    }
+
+    private func recoveryChain(for work: StoredCollectionWork) async throws -> RecoveryChainEvidence? {
+        let encoded = try Self.read(database) { db in
+            try Data.fetchOne(db, sql: "SELECT recovery_chain FROM collection_work WHERE id = ?", arguments: [work.id.uuidString])
+        }
+        guard let encoded else { return nil }
+        let bytes = try await cryptography.openBackground(Self.decode(encoded), binding: Self.checkpointBinding(work.id))
+        let chain = try JSONDecoder().decode(RecoveryChainEvidence.self, from: bytes)
+        guard chain.schemaVersion == 1, chain.targetWorkID == work.recoveryOf,
+              chain.auditID == work.context.audit?.auditID, chain.auditWindow == work.context.auditWindow,
+              chain.auditWindow.duration == HistoricalAuditContext.lookback,
+              work.context.operation == .historicalRead else { throw StorageError.corruptProtectedState }
+        return chain
+    }
+
+    private static func workRows(in db: Database, from: Double, through: Double,
+                                 limit: Int) throws -> (rows: [Row], count: Int) {
+        let count = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM collection_work WHERE updated_at >= ? AND updated_at <= ?",
+            arguments: [from, through]) ?? 0
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT * FROM collection_work WHERE updated_at >= ? AND updated_at <= ?
+            ORDER BY (state IN ('queued', 'processing', 'stalled')) DESC, updated_at DESC, id LIMIT ?
+            """, arguments: [from, through, limit])
+        return (rows, count)
+    }
+
+    private func decodeWorkRows(_ rows: [Row], totalCount: Int) async throws -> CoverageQueryPage<StoredCollectionWork> {
+        var result: [StoredCollectionWork] = []
+        for row in rows {
+            guard let id = UUID(uuidString: row["id"]), let state = CollectionWorkState(rawValue: row["state"]) else {
+                throw StorageError.corruptProtectedState
+            }
+            let bytes = try await cryptography.openBackground(Self.decode(row["encoded"]), binding: Self.checkpointBinding(id))
+            let context = try JSONDecoder().decode(CollectionWorkContext.self, from: bytes)
+            let attempted: Double? = row["attempted_at"], completed: Double? = row["completed_at"]
+            let omission: String? = row["omission_id"]
+            let recoveryString: String? = row["recovery_of"]
+            let recoveryID = recoveryString.flatMap(UUID.init(uuidString:))
+            guard recoveryString == nil || recoveryID != nil else { throw StorageError.corruptProtectedState }
+            var certificate: CollectionRecoveryCertificate?
+            if let encoded: Data = row["recovery_certificate"] {
+                let bytes = try await cryptography.openBackground(Self.decode(encoded), binding: Self.checkpointBinding(id))
+                let value = try JSONDecoder().decode(CollectionRecoveryCertificate.self, from: bytes)
+                guard value.schemaVersion == 1, value.targetWorkID == recoveryID,
+                      context.operation == .historicalRead, context.audit != nil,
+                      value.auditWindow == context.auditWindow,
+                      value.auditWindow.duration == HistoricalAuditContext.lookback,
+                      value.completedAt.timeIntervalSince1970.isFinite,
+                      value.auditWindow.end <= value.completedAt else { throw StorageError.corruptProtectedState }
+                certificate = value
+            }
+            result.append(.init(id: id, context: context, state: state,
+                admittedAt: Date(timeIntervalSince1970: row["admitted_at"]),
+                lastAttemptedAt: attempted.map(Date.init(timeIntervalSince1970:)),
+                completedAt: completed.map(Date.init(timeIntervalSince1970:)),
+                omissionID: omission.flatMap(UUID.init(uuidString:)), recoveryOf: recoveryID, recoveryCertificate: certificate))
+        }
+        return .init(items: result, totalCount: totalCount)
+    }
+
+    private static func successfulReadRows(in db: Database, limit: Int) throws -> (rows: [Row], count: Int) {
+        (try Row.fetchAll(db, sql: "SELECT * FROM successful_collection_reads ORDER BY succeeded_at DESC, id LIMIT ?", arguments: [limit]),
+         try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM successful_collection_reads") ?? 0)
+    }
+
+    private func decodeSuccessfulReadRows(_ rows: [Row], totalCount: Int) async throws -> CoverageQueryPage<SuccessfulCollectionRead> {
+        var result: [SuccessfulCollectionRead] = []
+        for row in rows {
+            guard let id = UUID(uuidString: row["id"]) else { throw StorageError.corruptProtectedState }
+            let bytes = try await cryptography.openBackground(Self.decode(row["encoded"]), binding: Self.checkpointBinding(id))
+            result.append(try JSONDecoder().decode(SuccessfulCollectionRead.self, from: bytes))
+        }
+        return .init(items: result, totalCount: totalCount)
+    }
+
+    private static func omissionCounts(in db: Database, from: Double, through: Double) throws -> [CoverageOmissionState: Int] {
+        var result: [CoverageOmissionState: Int] = [:]
+        for row in try Row.fetchAll(db, sql: """
+            SELECT state, COUNT(*) AS count FROM coverage_omissions
+            WHERE COALESCE(content_at, created_at) >= ? AND COALESCE(content_at, created_at) <= ? GROUP BY state
+            """, arguments: [from, through]) {
+            guard let state = CoverageOmissionState(rawValue: row["state"]) else { throw StorageError.corruptProtectedState }
+            result[state] = row["count"]
+        }
+        return result
+    }
+
+    public func historicalProgress(limit: Int = 100) async throws -> [StoredHistoricalProgress] {
+        try await historicalProgressPage(limit: limit).items
+    }
+
+    public func historicalProgressPage(limit: Int = 1000, since: Date? = nil,
+                                       until: Date? = nil) async throws -> CoverageQueryPage<StoredHistoricalProgress> {
+        guard !closed else { throw StorageError.databaseUnavailable }
+        guard limit > 0, limit <= 1000 else { throw StorageError.invalidPayload }
+        guard since?.timeIntervalSince1970.isFinite != false,
+              until?.timeIntervalSince1970.isFinite != false,
+              since == nil || until == nil || since! <= until! else { throw StorageError.invalidTime }
+        let from = since?.timeIntervalSince1970 ?? -Double.greatestFiniteMagnitude
+        let through = until?.timeIntervalSince1970 ?? Double.greatestFiniteMagnitude
+        let (rows, count) = try Self.read(database) {
+            try Self.historicalProgressRows(in: $0, from: from, through: through, limit: limit)
+        }
+        return try await decodeHistoricalProgress(rows: rows, count: count)
+    }
+
+    private static func historicalProgressRows(in db: Database, from: Double, through: Double,
+                                               limit: Int) throws -> (rows: [Row], count: Int) {
+        let count = try Int.fetchOne(db,
+            sql: "SELECT COUNT(*) FROM historical_progress WHERE updated_at >= ? AND updated_at <= ?",
+            arguments: [from, through]) ?? 0
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT id, encoded, updated_at FROM historical_progress WHERE updated_at >= ? AND updated_at <= ?
+            ORDER BY updated_at DESC, id LIMIT ?
+            """, arguments: [from, through, limit])
+        return (rows, count)
+    }
+
+    private func decodeHistoricalProgress(rows: [Row], count: Int) async throws -> CoverageQueryPage<StoredHistoricalProgress> {
         var result: [StoredHistoricalProgress] = []
         for row in rows {
             guard let id = UUID(uuidString: row["id"]) else { throw StorageError.corruptProtectedState }
             let payload = try Self.decode(row["encoded"])
             let plaintext = try await cryptography.openBackground(payload, binding: Self.checkpointBinding(id))
-            result.append(try JSONDecoder().decode(StoredHistoricalProgress.self, from: plaintext))
+            let stored = try JSONDecoder().decode(StoredHistoricalProgress.self, from: plaintext)
+            let updated: Double = row["updated_at"]
+            result.append(StoredHistoricalProgress(provider: stored.provider, profileID: stored.profileID,
+                progress: stored.progress, lastAttemptedAt: stored.lastAttemptedAt ?? Date(timeIntervalSince1970: updated),
+                completedAt: stored.completedAt, continuationQueued: stored.continuationQueued))
         }
-        return result
+        return CoverageQueryPage(items: result, totalCount: count)
     }
 
     private func storedProgress(id: UUID) async throws -> StoredHistoricalProgress? {
@@ -896,6 +1664,26 @@ public actor ProtectedStore {
         }) else { return nil }
         let plaintext = try await cryptography.openBackground(Self.decode(bytes), binding: Self.checkpointBinding(id))
         return try JSONDecoder().decode(StoredHistoricalProgress.self, from: plaintext)
+    }
+
+    private func historicalProgressID(audit: HistoricalAuditContext, metadata: CaptureMetadata) async throws -> UUID {
+        let keyBytes = try JSONEncoder().encode([audit.id.uuidString, metadata.agent.rawValue, metadata.profileID])
+        return try await structuralID(Data("history-progress-v1".utf8) + keyBytes)
+    }
+
+    private func prepareFailedHistoricalAttempt(opened: OpenedCapture?, continuing: Bool,
+                                                 at now: Date) async throws -> (id: UUID, bytes: Data)? {
+        guard let opened, let audit = opened.historicalAudit,
+              let packet = try? CapturePacket(body: opened.body) else { return nil }
+        let id = try await historicalProgressID(audit: audit, metadata: packet.metadata)
+        let previous = try await storedProgress(id: id)
+        let progress = HistoricalReadProgress(audit: audit, bytesRead: previous?.progress.bytesRead ?? 0,
+            oldestContentTime: previous?.progress.oldestContentTime, newestContentTime: previous?.progress.newestContentTime,
+            hasUnreadContent: true)
+        let record = StoredHistoricalProgress(provider: packet.metadata.agent, profileID: packet.metadata.profileID,
+            progress: progress, lastAttemptedAt: now, completedAt: nil, continuationQueued: continuing)
+        let protected = try await cryptography.sealBackground(JSONEncoder().encode(record), binding: Self.checkpointBinding(id))
+        return (id, try protected.encoded())
     }
 
     private func authorityID(for session: SessionIdentity) async throws -> UUID {
@@ -929,25 +1717,58 @@ public actor ProtectedStore {
     }
 
     public func coverageGaps(limit: Int = 1000, since: Date? = nil) async throws -> [CoverageGap] {
-        guard limit > 0, limit <= 10_000 else { throw StorageError.corruptProtectedState }
-        let rows: [Data]
-        do {
-            rows = try Self.read(database) { db in
-                try Data.fetchAll(db, sql: "SELECT encoded FROM coverage_gaps WHERE created_at >= ? ORDER BY created_at DESC LIMIT ?",
-                                  arguments: [since?.timeIntervalSince1970 ?? -Double.greatestFiniteMagnitude, limit])
-            }
-        } catch { throw StorageError.databaseUnavailable }
-        var gaps: [CoverageGap] = []
-        for encoded in rows {
+        try await coverageGapEvents(limit: limit, since: since).items.map(\.gap)
+    }
+
+    public func coverageGapEvents(limit: Int = 1000, since: Date? = nil,
+                                  until: Date? = nil) async throws -> CoverageQueryPage<StoredCoverageGapEvent> {
+        guard !closed else { throw StorageError.databaseUnavailable }
+        guard limit > 0, limit <= 10_000 else { throw StorageError.invalidPayload }
+        guard since?.timeIntervalSince1970.isFinite != false,
+              until?.timeIntervalSince1970.isFinite != false,
+              since == nil || until == nil || since! <= until! else { throw StorageError.invalidTime }
+        let from = since?.timeIntervalSince1970 ?? -Double.greatestFiniteMagnitude
+        let through = until?.timeIntervalSince1970 ?? Double.greatestFiniteMagnitude
+        let (rows, count) = try Self.read(database) {
+            try Self.coverageEventRows(in: $0, from: from, through: through, limit: limit)
+        }
+        return try await decodeCoverageEvents(rows: rows, count: count)
+    }
+
+    private static func coverageEventRows(in db: Database, from: Double, through: Double,
+                                          limit: Int) throws -> (rows: [Row], count: Int) {
+        let count = try Int.fetchOne(db,
+            sql: "SELECT COUNT(*) FROM coverage_gaps WHERE created_at >= ? AND created_at <= ?",
+            arguments: [from, through]) ?? 0
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT id, created_at, encoded FROM coverage_gaps WHERE created_at >= ? AND created_at <= ?
+            ORDER BY created_at DESC, id LIMIT ?
+            """, arguments: [from, through, limit])
+        return (rows, count)
+    }
+
+    private func decodeCoverageEvents(rows: [Row], count: Int) async throws -> CoverageQueryPage<StoredCoverageGapEvent> {
+        var events: [StoredCoverageGapEvent] = []
+        for row in rows {
             do {
-                let payload = try Self.decode(encoded)
-                guard payload.binding.kind == .sourceCheckpoint else { throw StorageError.invalidPayload }
-                let bytes = try await cryptography.openBackground(payload, binding: payload.binding)
-                gaps.append(try JSONDecoder().decode(CoverageGap.self, from: bytes))
+                guard let id = UUID(uuidString: row["id"]) else { throw StorageError.corruptProtectedState }
+                let payload = try Self.decode(row["encoded"])
+                let bytes = try await cryptography.openBackground(payload, binding: Self.checkpointBinding(id))
+                let observed = Date(timeIntervalSince1970: row["created_at"])
+                if let event = try? JSONDecoder().decode(StoredCoverageGapEvent.self, from: bytes) {
+                    guard event.id == id, abs(event.observedAt.timeIntervalSince(observed)) < 0.001 else {
+                        throw StorageError.corruptProtectedState
+                    }
+                    events.append(event)
+                } else {
+                    // Schema 1–3 stored the gap without its encrypted event envelope.
+                    let gap = try JSONDecoder().decode(CoverageGap.self, from: bytes)
+                    events.append(StoredCoverageGapEvent(id: id, gap: gap, observedAt: observed))
+                }
             } catch let error as StorageError { throw error }
             catch { throw StorageError.protectionUnavailable }
         }
-        return gaps
+        return CoverageQueryPage(items: events, totalCount: count)
     }
 
     /// Records controlled loss metadata, including rejected capture while paused. No event bytes
@@ -977,18 +1798,40 @@ public actor ProtectedStore {
     /// displayed-period cutoff filters by original content time, or observation when unknown.
     public func coverageOmissions(limit: Int = 1000, since: Date? = nil,
                                   includeRecovered: Bool = false) async throws -> [CoverageOmission] {
+        try await coverageOmissionPage(limit: limit, since: since, includeRecovered: includeRecovered).items
+    }
+
+    public func coverageOmissionPage(limit: Int = 1000, since: Date? = nil, until: Date? = nil,
+                                     includeRecovered: Bool = false) async throws -> CoverageQueryPage<CoverageOmission> {
         guard !closed else { throw StorageError.databaseUnavailable }
-        guard limit > 0, limit <= 10_000, since?.timeIntervalSince1970.isFinite != false else {
-            throw StorageError.invalidPayload
+        guard limit > 0, limit <= 10_000 else { throw StorageError.invalidPayload }
+        guard since?.timeIntervalSince1970.isFinite != false, until?.timeIntervalSince1970.isFinite != false,
+              since == nil || until == nil || since! <= until! else { throw StorageError.invalidTime }
+        let from = since?.timeIntervalSince1970 ?? -Double.greatestFiniteMagnitude
+        let through = until?.timeIntervalSince1970 ?? Double.greatestFiniteMagnitude
+        let (rows, count) = try Self.read(database) {
+            try Self.coverageOmissionRows(in: $0, from: from, through: through, limit: limit, includeRecovered: includeRecovered)
         }
-        let rows = try Self.read(database) { db in
-            try Row.fetchAll(db, sql: """
-                SELECT id, encoded, state, resolved_at FROM coverage_omissions
-                WHERE COALESCE(content_at, created_at) >= ? AND (? OR state != ?)
-                ORDER BY created_at DESC, id LIMIT ?
-                """, arguments: [since?.timeIntervalSince1970 ?? -Double.greatestFiniteMagnitude,
-                    includeRecovered, CoverageOmissionState.recovered.rawValue, limit])
-        }
+        return try await decodeCoverageOmissions(rows: rows, count: count)
+    }
+
+    private static func coverageOmissionRows(in db: Database, from: Double, through: Double, limit: Int,
+                                             includeRecovered: Bool) throws -> (rows: [Row], count: Int) {
+        let count = try Int.fetchOne(db, sql: """
+            SELECT COUNT(*) FROM coverage_omissions WHERE COALESCE(content_at, created_at) >= ?
+            AND COALESCE(content_at, created_at) <= ? AND (? OR state != ?)
+            """, arguments: [from, through, includeRecovered, CoverageOmissionState.recovered.rawValue]) ?? 0
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT id, encoded, state, resolved_at FROM coverage_omissions
+            WHERE COALESCE(content_at, created_at) >= ? AND COALESCE(content_at, created_at) <= ?
+                AND (? OR state != ?)
+            ORDER BY (state = ?) ASC, created_at DESC, id LIMIT ?
+            """, arguments: [from, through, includeRecovered, CoverageOmissionState.recovered.rawValue,
+                CoverageOmissionState.recovered.rawValue, limit])
+        return (rows, count)
+    }
+
+    private func decodeCoverageOmissions(rows: [Row], count: Int) async throws -> CoverageQueryPage<CoverageOmission> {
         var result: [CoverageOmission] = []
         for row in rows {
             guard let id = UUID(uuidString: row["id"]),
@@ -1000,7 +1843,43 @@ public actor ProtectedStore {
             result.append(CoverageOmission(id: id, gap: stored.gap, firstObservedAt: stored.firstObservedAt,
                 state: state, resolvedAt: resolved.map(Date.init(timeIntervalSince1970:))))
         }
-        return result
+        return CoverageQueryPage(items: result, totalCount: count)
+    }
+
+    /// The UI and every bounded diagnostic query share the same seven calendar days.
+    public func coverageReport(endingAt requestedEnd: Date? = nil, limit: Int = 1000,
+                               calendar: Calendar = .current) async throws -> CoverageReport {
+        guard !closed else { throw StorageError.databaseUnavailable }
+        guard limit > 0, limit <= 10_000 else { throw StorageError.invalidPayload }
+        let now = requestedEnd ?? Date()
+        guard now.timeIntervalSince1970.isFinite else { throw StorageError.invalidTime }
+        let window = AnalyzedActivity.recentWindow(endingAt: now, calendar: calendar)
+        let from = window.start.timeIntervalSince1970, through = window.end.timeIntervalSince1970
+        // All encrypted rows, counts and queue metadata come from one SQLite snapshot before
+        // decryption yields the actor. A concurrent commit cannot make an earlier event page
+        // appear to describe a later empty queue or a successfully completed audit.
+        let rows = try Self.read(database) { db in
+            try CoverageReportRows(
+                events: Self.coverageEventRows(in: db, from: from, through: through, limit: limit),
+                omissions: Self.coverageOmissionRows(in: db, from: from, through: through,
+                    limit: limit, includeRecovered: true),
+                history: Self.historicalProgressRows(in: db, from: from, through: through, limit: min(limit, 1000)),
+                queue: Self.queueStatistics(in: db),
+                oldestPendingAt: Double.fetchOne(db, sql: "SELECT MIN(captured_at) FROM captures"),
+                work: Self.workRows(in: db, from: from, through: through, limit: limit),
+                successes: Self.successfulReadRows(in: db, limit: limit),
+                omissionCounts: Self.omissionCounts(in: db, from: from, through: through),
+                capacity: Self.capacitySnapshot(in: db, limits: limits))
+        }
+        let events = try await decodeCoverageEvents(rows: rows.events.rows, count: rows.events.count)
+        let omissions = try await decodeCoverageOmissions(rows: rows.omissions.rows, count: rows.omissions.count)
+        let history = try await decodeHistoricalProgress(rows: rows.history.rows, count: rows.history.count)
+        return CoverageReport(window: window, gapEvents: events, omissions: omissions, history: history,
+            queue: rows.queue, oldestPendingCaptureAt: rows.oldestPendingAt.map(Date.init(timeIntervalSince1970:)),
+            work: try await decodeWorkRows(rows.work.rows, totalCount: rows.work.count),
+            omissionStateCounts: rows.omissionCounts,
+            successfulReads: try await decodeSuccessfulReadRows(rows.successes.rows, totalCount: rows.successes.count),
+            capacity: rows.capacity)
     }
 
     /// A blocked omission becomes retryable under another parser contract. This returns metadata
@@ -1014,9 +1893,13 @@ public actor ProtectedStore {
             if let scope, omission.gap.scope != scope { return false }
             if let session, reference.session != session { return false }
             if let documentID {
-                switch reference.locator {
-                case .transcript(let id, _), .transcriptByteOffset(let id, _): if id != documentID { return false }
-                default: return false
+                if let sourceDocumentID = reference.sourceDocumentID {
+                    if sourceDocumentID != documentID { return false }
+                } else {
+                    switch reference.locator {
+                    case .transcript(let id, _), .transcriptByteOffset(let id, _): if id != documentID { return false }
+                    default: return false
+                    }
                 }
             }
             return parserContract == nil || omission.state == .retryable || reference.parserContract != parserContract
@@ -1159,8 +2042,16 @@ public actor ProtectedStore {
                     let ids = try String.fetchAll(db, sql: "SELECT capture_id FROM capture_value_links WHERE value_id = ?",
                                                   arguments: [plan.removedValueID.uuidString])
                     for id in ids {
-                        guard let id = UUID(uuidString: id) else { throw StorageError.corruptProtectedState }
-                        try Self.consumeCapture(id, in: db)
+                        let related = try String.fetchAll(db, sql: """
+                            WITH RECURSIVE related(id) AS (
+                                SELECT ? UNION SELECT work.id FROM collection_work work JOIN related ON work.recovery_of = related.id
+                            ) SELECT id FROM related
+                            """, arguments: [id])
+                        for relatedID in related {
+                            guard let captureID = UUID(uuidString: relatedID) else { throw StorageError.corruptProtectedState }
+                            try Self.consumeCapture(captureID, in: db)
+                            try db.execute(sql: "DELETE FROM collection_work WHERE id = ?", arguments: [relatedID])
+                        }
                     }
                     if !ids.isEmpty, let removalGap {
                         // A mixed-content capture may contain other values too. Its known loss is
@@ -1212,33 +2103,69 @@ public actor ProtectedStore {
     }
 
     private func prepareCaptureLoss(id captureID: UUID, body: Data?, capturedAt: Date,
-                                    reason: CoverageGapReason, at now: Date) async throws -> PreparedCoverageSettlement {
+                                    reason: CoverageGapReason, at now: Date,
+                                    audit: HistoricalAuditContext? = nil, context: CollectionWorkContext? = nil) async throws -> PreparedCoverageSettlement {
         let metadata = body.flatMap { try? CapturePacket(body: $0).metadata }
-        let scope = metadata.map {
-            CollectionScope(provider: $0.agent, profileID: $0.profileID, interface: $0.interface, path: .hook)
-        }
-        let gap = CoverageGap(reason: reason, interval: DateInterval(start: capturedAt, end: max(capturedAt, now)), scope: scope)
-        let id = try await structuralID(Data("capture-loss-v1:\(captureID.uuidString)".utf8))
-        let omission = CoverageOmission(id: id, gap: gap, firstObservedAt: now, state: .unrecoverable, resolvedAt: nil)
+        // Without persisted route authority we cannot infer the path from the provider.
+        let scope = context?.scope
+        let gap = CoverageGap(reason: reason, interval: context?.auditWindow ?? audit.map { DateInterval(start: $0.start, end: $0.end) }, scope: scope, operation: context?.operation,
+            diagnosticCode: reason.defaultDiagnosticCode, observedAt: now)
+        let id = try await captureLossID(captureID)
+        // The queue copy ending says nothing about retention of the original source.
+        let state: CoverageOmissionState = context?.retry == nil ? .blocked : .retryable
+        let omission = CoverageOmission(id: id, gap: gap, firstObservedAt: now, state: state, resolvedAt: nil)
         let sealed = try await cryptography.sealBackground(JSONEncoder().encode(omission), binding: Self.checkpointBinding(id))
         var result = PreparedCoverageSettlement()
-        result.gaps = [try await sealedGap(gap, at: now)]
-        // Capture loss is not a native source locator. Available original history can still be
-        // collected independently; we never fabricate a native mapping for this lost work.
-        result.omissions = [(id, id, nil, try sealed.encoded(), nil, .unrecoverable)]
+        let identity = context?.audit ?? audit.flatMap { audit in metadata.map {
+            CoverageAuditIdentity(auditID: audit.id, provider: $0.agent, profileID: $0.profileID)
+        } }
+        result.gaps = [try await sealedGap(gap, at: now, audit: identity, workID: captureID)]
+        result.captureLossLinks = [(captureID, id)]
+        result.workWithGapEvidence = [captureID]
+        result.omissions = [.init(id: id, locationID: id, incidentKey: nil,
+            encoded: try sealed.encoded(), time: nil, state: state)]
         return result
     }
 
     private func prepareCoverageSettlement(gaps: [CoverageGap], recoveredReferences: [CoverageRecoveryReference],
-                                          at now: Date) async throws -> PreparedCoverageSettlement {
+                                          at now: Date, audit: CoverageAuditIdentity? = nil,
+                                          continuationQueued: Bool = false, workID: UUID? = nil,
+                                          recoveryContext: CollectionWorkContext? = nil) async throws -> PreparedCoverageSettlement {
         guard now.timeIntervalSince1970.isFinite else { throw StorageError.invalidTime }
         guard gaps.count <= 4096, recoveredReferences.count <= 4096 else { throw StorageError.stateTooLarge }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         var prepared = PreparedCoverageSettlement()
+        if !gaps.isEmpty, let workID { prepared.workWithGapEvidence.insert(workID) }
         var incidentKeys: Set<UUID> = []
         var omittedLocations: Set<UUID> = []
-        for gap in gaps {
+        var omissionIDs: Set<UUID> = []
+        var requiredLocations: Set<UUID> = []
+        if gaps.contains(where: { $0.recovery?.constraint == .recognizedLocalMedia }) {
+            for gap in gaps where gap.requiresAnalysis {
+                if let reference = gap.recovery {
+                    try Self.validateRecoveryReference(reference,
+                        allowClaudeAvailabilityURLOnly: Self.isClaudeAvailabilityWarning(gap))
+                    requiredLocations.insert(try await structuralID(Data("coverage-recovery-location-v1".utf8)
+                        + encoder.encode(RecoveryLocationKey(reference))))
+                }
+            }
+        }
+        // Mixed media and required text can share one canonical source position. Keep
+        // every event, but the durable omission must describe its required unread part.
+        for gap in gaps.sorted(by: {
+            if Self.isUnclassifiedMetadataWarning($0) != Self.isUnclassifiedMetadataWarning($1) {
+                return !Self.isUnclassifiedMetadataWarning($0)
+            }
+            if $0.requiresAnalysis != $1.requiresAnalysis { return $0.requiresAnalysis }
+            if $0.isRequiredFormatFailure == true, $1.isRequiredFormatFailure == true,
+               Self.isLegacyLocalMediaWarning($0) != Self.isLegacyLocalMediaWarning($1) {
+                return !Self.isLegacyLocalMediaWarning($0)
+            }
+            return $0.isRequiredFormatFailure == true && $1.isRequiredFormatFailure != true
+        }) {
+            guard gap.recovery?.constraint != .claudeSourceAvailability else { throw StorageError.invalidPayload }
+            guard gap.observedAt?.timeIntervalSince1970.isFinite != false else { throw StorageError.invalidTime }
             if let interval = gap.interval {
                 guard interval.start.timeIntervalSince1970.isFinite,
                       interval.end.timeIntervalSince1970.isFinite, interval.duration.isFinite else { throw StorageError.invalidTime }
@@ -1246,7 +2173,11 @@ public actor ProtectedStore {
             if let scope = gap.scope {
                 guard !scope.profileID.isEmpty, scope.profileID.utf8.count <= 4096 else { throw StorageError.invalidPayload }
             }
-            prepared.gaps.append(try await sealedGap(gap, at: now))
+            if gap.recovery?.constraint == .recognizedLocalMedia,
+               !Self.isRecognizedLocalMediaGap(gap) { throw StorageError.invalidPayload }
+            prepared.gaps.append(try await sealedGap(gap, at: now, audit: audit,
+                isIntermediateBacklog: continuationQueued && audit != nil
+                    && gap.reason == .budgetExhausted && gap.recovery == nil, workID: workID))
             var incidentKey: UUID?
             let formatFailureReasons: Set<CoverageGapReason> = [.unsupportedContent, .malformedSource, .missingTimestamp, .unresolvedCorrelation]
             if gap.isRequiredFormatFailure == true, formatFailureReasons.contains(gap.reason),
@@ -1267,7 +2198,8 @@ public actor ProtectedStore {
                 }
             }
             if let reference = gap.recovery, let scope = gap.scope {
-                try Self.validateRecoveryReference(reference)
+                try Self.validateRecoveryReference(reference,
+                    allowClaudeAvailabilityURLOnly: Self.isClaudeAvailabilityWarning(gap))
                 if let session = reference.session,
                    session.provider != scope.provider || session.profileID != scope.profileID { throw StorageError.invalidPayload }
                 let location = RecoveryLocationKey(reference)
@@ -1275,57 +2207,297 @@ public actor ProtectedStore {
                 let id = try await structuralID(Data("coverage-omission-v1".utf8)
                     + encoder.encode(OmissionIdentityKey(scope: scope, location: location,
                         contentType: gap.contentType, reason: gap.reason, operation: gap.operation)))
-                let state: CoverageOmissionState = [.unsupportedContent, .unsupportedVersion, .malformedSource,
+                omittedLocations.insert(locationID)
+                guard omissionIDs.insert(id).inserted else { continue }
+                var state: CoverageOmissionState = [.unsupportedContent, .unsupportedVersion, .malformedSource,
                     .missingTimestamp, .unresolvedCorrelation].contains(gap.reason) ? .blocked : .retryable
                 var omissionGap = gap
                 var firstObservedAt = now
                 var contentTime = reference.contentTime
+                var previousEncoded: Data?
+                var upgradesOmissionMeaning = false
+                var reclassifiedLocalMedia: MetadataRecoveryRow?
                 if let previous = try Self.read(database, { db in
-                    try Row.fetchOne(db, sql: "SELECT created_at, content_at FROM coverage_omissions WHERE id = ?",
+                    try Row.fetchOne(db, sql: "SELECT id, location_id, created_at, content_at, encoded, state, incident_key, resolved_at FROM coverage_omissions WHERE id = ?",
                         arguments: [id.uuidString])
                 }) {
+                    let encoded: Data = previous["encoded"]
+                    previousEncoded = encoded
+                    let plaintext = try await cryptography.openBackground(Self.decode(encoded),
+                        binding: Self.checkpointBinding(id))
+                    let stored = try JSONDecoder().decode(CoverageOmission.self, from: plaintext)
+                    guard stored.id == id else { throw StorageError.corruptProtectedState }
+                    if reference.constraint == .recognizedLocalMedia {
+                        let row = try Self.metadataRecoveryRow(previous)
+                        // A local-media proof cannot use the generic upgrade/reopen paths.
+                        // Preserve every other meaning, inactive row and legacy time ambiguity.
+                        guard let context = recoveryContext, context.scope == scope,
+                              context.operation == gap.operation,
+                              Self.isRecognizedLocalMediaGap(gap),
+                              !requiredLocations.contains(locationID), row.locationID == locationID,
+                              row.state == CoverageOmissionState.blocked.rawValue
+                                || row.state == CoverageOmissionState.retryable.rawValue,
+                              row.resolvedAt == nil,
+                              row.createdAt == stored.firstObservedAt.timeIntervalSince1970,
+                              row.contentAt == reference.contentTime?.timeIntervalSince1970,
+                              Self.isLegacyLocalMediaWarning(stored.gap),
+                              stored.gap.scope == scope, stored.gap.operation == gap.operation,
+                              let old = stored.gap.recovery, old.sourceURL == nil,
+                              old.identifiesSameLocation(as: reference), old.contentTime == reference.contentTime,
+                              stored.isEligibleForRecovery(at: now) else { continue }
+                        try Self.validateRecoveryReference(old)
+                        let expectedIncident = try await structuralID(Data("collection-health-scope-v1".utf8)
+                            + encoder.encode(HealthIdentityKey(scope: scope, contentType: stored.gap.contentType,
+                                reason: stored.gap.reason, operation: stored.gap.operation)))
+                        guard row.incidentKey == nil || row.incidentKey == expectedIncident.uuidString else {
+                            throw StorageError.corruptProtectedState
+                        }
+                        reclassifiedLocalMedia = row
+                        state = CoverageOmissionState(rawValue: row.state)!
+                    }
+                    // A fresh required observation must invalidate an in-flight local
+                    // media proof even when it repeats the legacy diagnostic exactly.
+                    let refreshesLegacyRequiredMeaning = Self.isLegacyLocalMediaWarning(stored.gap)
+                        && gap.isRequiredFormatFailure == true && gap.requiresAnalysis
+                    // A fresh absence must invalidate an in-flight availability proof. Keep
+                    // the original retention age, but never let a delayed older observation
+                    // move the latest known absence backwards.
+                    let refreshesClaudeAvailability = Self.isClaudeAvailabilityWarning(stored.gap)
+                        && Self.isClaudeAvailabilityWarning(gap)
+                    upgradesOmissionMeaning = (!stored.gap.requiresAnalysis && gap.requiresAnalysis
+                        && !Self.isUnclassifiedMetadataWarning(gap))
+                        || (Self.isUnclassifiedMetadataWarning(stored.gap) && !Self.isUnclassifiedMetadataWarning(gap))
+                        || refreshesLegacyRequiredMeaning || refreshesClaudeAvailability
                     let previousCreated: Double = previous["created_at"]
                     let previousContent: Double? = previous["content_at"]
+                    let previousState: String = previous["state"]
                     firstObservedAt = Date(timeIntervalSince1970: previousCreated)
                     // A new demonstrated failure can reopen the same canonical position, but it
                     // cannot renew that source's seven-day age. Newly known time can only tighten it.
+                    // Without content time, the age is only when the loss was observed: a recovered
+                    // position failing again after that age has passed is a new loss, not an expired one.
+                    if previousState == CoverageOmissionState.recovered.rawValue, previousContent == nil,
+                       firstObservedAt < now.addingTimeInterval(-HistoricalAuditContext.lookback) {
+                        firstObservedAt = now
+                    }
                     contentTime = previousContent.map(Date.init(timeIntervalSince1970:))
                         ?? reference.contentTime.map { min(firstObservedAt, $0) }
-                    omissionGap = CoverageGap(reason: gap.reason, capabilityID: gap.capabilityID,
-                        interval: gap.interval, scope: gap.scope, contentType: gap.contentType, operation: gap.operation,
+                    let preserved = reclassifiedLocalMedia == nil ? gap : stored.gap
+                    omissionGap = CoverageGap(reason: gap.reason, capabilityID: preserved.capabilityID,
+                        interval: preserved.interval, scope: gap.scope, contentType: gap.contentType, operation: gap.operation,
                         recovery: .init(session: reference.session, locator: reference.locator,
-                            itemID: reference.itemID, contentTime: contentTime, parserContract: reference.parserContract),
-                        isRequiredFormatFailure: gap.isRequiredFormatFailure)
+                            itemID: reference.itemID, contentTime: contentTime, parserContract: reference.parserContract,
+                            sourceDocumentID: reference.sourceDocumentID, sourceURL: reference.sourceURL,
+                            constraint: reference.constraint),
+                        isRequiredFormatFailure: gap.isRequiredFormatFailure,
+                        sourceKind: gap.sourceKind, diagnosticCode: gap.diagnosticCode,
+                        excludedContent: gap.excludedContent,
+                        observedAt: refreshesClaudeAvailability
+                            ? max(stored.gap.observedAt ?? now, gap.observedAt ?? now)
+                            : refreshesLegacyRequiredMeaning ? gap.observedAt ?? now : preserved.observedAt)
                 }
                 let omission = CoverageOmission(id: id, gap: omissionGap, firstObservedAt: firstObservedAt, state: state, resolvedAt: nil)
                 let sealed = try await cryptography.sealBackground(encoder.encode(omission), binding: Self.checkpointBinding(id))
-                prepared.omissions.append((id, locationID, incidentKey, try sealed.encoded(), contentTime, state))
-                omittedLocations.insert(locationID)
+                prepared.omissions.append(.init(id: id, locationID: locationID, incidentKey: incidentKey,
+                    encoded: try sealed.encoded(), time: contentTime, state: state, checksPrevious: true,
+                    previousEncoded: previousEncoded, upgradesOmissionMeaning: upgradesOmissionMeaning,
+                    reclassifiedLocalMedia: reclassifiedLocalMedia))
             }
         }
+        var metadataLocations: Set<UUID> = []
+        var metadataCandidateCount = 0
         for reference in recoveredReferences {
             try Self.validateRecoveryReference(reference)
+            guard reference.constraint != .recognizedLocalMedia else { throw StorageError.invalidPayload }
             let locationID = try await structuralID(Data("coverage-recovery-location-v1".utf8)
                 + encoder.encode(RecoveryLocationKey(reference)))
             // Even a caller incorrectly reporting a partially readable record as recovered cannot
             // settle its unread siblings in the same batch.
-            if !omittedLocations.contains(locationID) { prepared.recoveredLocations.insert(locationID) }
+            guard !omittedLocations.contains(locationID) else { continue }
+            if reference.constraint == .unclassifiedMetadata || reference.constraint == .claudeSourceAvailability {
+                // Recovery of a metadata warning needs the current authorized route as well
+                // as the old encrypted omission. Legacy captures without work context do
+                // not acquire this authority from a native ID alone.
+                guard let context = recoveryContext else { continue }
+                let scope = context.scope
+                let availability = reference.constraint == .claudeSourceAvailability
+                if availability {
+                    guard scope.provider == .claudeCode, scope.path == .versionedTranscript,
+                          context.operation == .liveRead,
+                          reference.session == nil || reference.session?.profileID == scope.profileID,
+                          context.retry?.sourceURL == reference.sourceURL,
+                          context.retry?.session == reference.session,
+                          let observed = reference.availabilityObservedAt, observed <= now else { continue }
+                } else {
+                    guard scope.provider == .codex, scope.path == .publicHistory,
+                          context.operation == .liveRead || context.operation == .historicalRead,
+                          scope.profileID == reference.session?.profileID else { continue }
+                }
+                guard metadataLocations.insert(locationID).inserted else { continue }
+                let remainingCandidates = 256 - metadataCandidateCount
+                guard remainingCandidates > 0 else { continue }
+                let rows = try Self.read(database) { db in
+                    try Self.metadataRecoveryRows(locationID: locationID, at: now,
+                        limit: remainingCandidates, in: db)
+                }
+                // Optional warning bookkeeping must not block unrelated text progress.
+                // An overflowing location remains entirely unresolved; a later exact
+                // selection can retry skipped locations with its own bounded budget.
+                guard rows.count <= remainingCandidates else {
+                    // The overflow sentinel consumed the remaining lookup allowance.
+                    // Do not query every later overflowing location in this capture.
+                    metadataCandidateCount = 256
+                    continue
+                }
+                metadataCandidateCount += rows.count
+                var recoveredIDs: Set<UUID> = []
+                for row in rows {
+                    let plaintext = try await cryptography.openBackground(Self.decode(row.encoded),
+                        binding: Self.checkpointBinding(row.id))
+                    let omission = try JSONDecoder().decode(CoverageOmission.self, from: plaintext)
+                    guard omission.id == row.id else { throw StorageError.corruptProtectedState }
+                    guard omission.gap.scope == scope, let old = omission.gap.recovery,
+                          old.identifiesSameLocation(as: reference) else { continue }
+                    if availability {
+                        guard Self.isClaudeAvailabilityWarning(omission.gap),
+                              old.session == reference.session, old.sourceURL == reference.sourceURL,
+                              let lastMissing = omission.gap.observedAt,
+                              let observed = reference.availabilityObservedAt, lastMissing <= observed else { continue }
+                    } else {
+                        guard row.incidentKey == nil, Self.isUnclassifiedMetadataWarning(omission.gap),
+                              old.sourceURL == nil, old.contentTime == reference.contentTime else { continue }
+                    }
+                    try Self.validateRecoveryReference(old,
+                        allowClaudeAvailabilityURLOnly: availability)
+                    recoveredIDs.insert(row.id)
+                }
+                // Keep even an empty snapshot: an omission inserted during later crypto
+                // preparation must not be silently cleared or treated as this observation.
+                prepared.metadataRecoveries.append(.init(locationID: locationID, rows: rows, recoveredIDs: recoveredIDs))
+            } else {
+                prepared.recoveredLocations.insert(locationID)
+            }
         }
         return prepared
     }
 
-    private static func validateRecoveryReference(_ reference: CoverageRecoveryReference) throws {
+    private static func isUnclassifiedMetadataWarning(_ gap: CoverageGap) -> Bool {
+        gap.scope?.provider == .codex && gap.scope?.path == .publicHistory
+            && (gap.operation == .liveRead || gap.operation == .historicalRead)
+            && gap.reason == .unsupportedContent && gap.sourceKind == .codexUnknownItem
+            && gap.diagnosticCode == .unknownRecordKind && gap.contentType == nil
+            && gap.isRequiredFormatFailure == false && gap.excludedContent == nil
+            && gap.recovery?.constraint == nil
+    }
+
+    private static func isClaudeAvailabilityWarning(_ gap: CoverageGap) -> Bool {
+        guard gap.scope?.provider == .claudeCode, gap.scope?.path == .versionedTranscript,
+              gap.operation == .liveRead, gap.reason == .sourceUnavailable,
+              gap.diagnosticCode == .unavailableSource, gap.contentType == nil,
+              gap.sourceKind == nil, gap.isRequiredFormatFailure == nil, gap.excludedContent == nil,
+              let reference = gap.recovery, reference.constraint == nil,
+              reference.availabilityObservedAt == nil, reference.locator == .unavailable,
+              reference.itemID == nil, reference.sourceDocumentID == nil,
+              reference.contentTime == nil, reference.sourceURL != nil else { return false }
+        return reference.session == nil || reference.session?.provider == .claudeCode
+    }
+
+    private static func isRecognizedLocalMediaGap(_ gap: CoverageGap) -> Bool {
+        gap.scope?.provider == .codex && gap.scope?.path == .publicHistory
+            && (gap.operation == .liveRead || gap.operation == .historicalRead)
+            && gap.reason == .unsupportedContent && gap.contentType == .userPrompt
+            && gap.sourceKind == .codexUserMessage && gap.diagnosticCode == .excludedBinaryContent
+            && gap.isRequiredFormatFailure == false && gap.excludedContent == true
+            && gap.recovery?.constraint == .recognizedLocalMedia
+    }
+
+    private static func isLegacyLocalMediaWarning(_ gap: CoverageGap) -> Bool {
+        gap.scope?.provider == .codex && gap.scope?.path == .publicHistory
+            && (gap.operation == .liveRead || gap.operation == .historicalRead)
+            && gap.reason == .unsupportedContent && gap.contentType == .userPrompt
+            && gap.sourceKind == .codexUserMessage && gap.diagnosticCode == .unknownBlockKind
+            && gap.isRequiredFormatFailure == true && gap.excludedContent == nil
+            && gap.recovery?.constraint == nil
+    }
+
+    private static func metadataRecoveryRows(locationID: UUID, at now: Date, limit: Int = 256,
+                                             in db: Database) throws -> [MetadataRecoveryRow] {
+        guard (1...256).contains(limit) else { throw StorageError.invalidPayload }
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT id, location_id, encoded, state, created_at, content_at, incident_key, resolved_at
+            FROM coverage_omissions WHERE location_id = ? AND state IN (?, ?)
+                AND COALESCE(content_at, created_at) >= ? AND COALESCE(content_at, created_at) <= ?
+            ORDER BY id LIMIT ?
+            """, arguments: [locationID.uuidString, CoverageOmissionState.blocked.rawValue,
+                CoverageOmissionState.retryable.rawValue,
+                now.addingTimeInterval(-HistoricalAuditContext.lookback).timeIntervalSince1970,
+                now.timeIntervalSince1970, limit + 1])
+        return try rows.map(metadataRecoveryRow)
+    }
+
+    private static func metadataRecoveryRow(_ row: Row) throws -> MetadataRecoveryRow {
+        guard let id = UUID(uuidString: row["id"]), let locationID = UUID(uuidString: row["location_id"]) else {
+            throw StorageError.corruptProtectedState
+        }
+        return MetadataRecoveryRow(id: id, locationID: locationID, encoded: row["encoded"], state: row["state"],
+            createdAt: row["created_at"], contentAt: row["content_at"],
+            incidentKey: row["incident_key"], resolvedAt: row["resolved_at"])
+    }
+
+    private static func validateRecoveryReference(_ reference: CoverageRecoveryReference,
+                                                 allowClaudeAvailabilityURLOnly: Bool = false) throws {
         guard !reference.parserContract.isEmpty, reference.parserContract.utf8.count <= 256,
               reference.contentTime?.timeIntervalSince1970.isFinite != false,
-              reference.itemID?.utf8.count ?? 0 <= 4096 else { throw StorageError.invalidPayload }
+              reference.itemID?.utf8.count ?? 0 <= 4096,
+              reference.availabilityObservedAt?.timeIntervalSince1970.isFinite != false else { throw StorageError.invalidPayload }
+        if reference.constraint == .claudeSourceAvailability {
+            guard reference.session == nil || reference.session?.provider == .claudeCode,
+                  reference.locator == .unavailable, reference.itemID == nil,
+                  reference.contentTime == nil, reference.sourceDocumentID == nil,
+                  reference.sourceURL != nil, reference.availabilityObservedAt != nil,
+                  !reference.parserContract.utf8.contains(0) else { throw StorageError.invalidPayload }
+        } else if reference.constraint != nil {
+            func boundedNativeID(_ value: String?) -> Bool {
+                guard let value, !value.isEmpty, value.utf8.count <= 256 else { return false }
+                return !value.unicodeScalars.contains { $0.value < 32 || $0.value == 127 }
+            }
+            guard reference.session?.provider == .codex, reference.locator == .upstreamItem,
+                  boundedNativeID(reference.session?.sessionID), boundedNativeID(reference.itemID),
+                  reference.contentTime != nil, reference.sourceDocumentID == nil, reference.sourceURL == nil,
+                  !reference.parserContract.utf8.contains(0) else { throw StorageError.invalidPayload }
+        }
+        if reference.constraint != .claudeSourceAvailability, reference.availabilityObservedAt != nil {
+            throw StorageError.invalidPayload
+        }
         if let session = reference.session {
             guard !session.profileID.isEmpty, !session.sessionID.isEmpty,
                   session.profileID.utf8.count <= 4096, session.sessionID.utf8.count <= 4096 else { throw StorageError.invalidPayload }
         }
+        if let url = reference.sourceURL {
+            guard url.isFileURL, url.path.utf8.count <= 4096, url.query == nil, url.fragment == nil else {
+                throw StorageError.invalidPayload
+            }
+            if reference.constraint == .claudeSourceAvailability || allowClaudeAvailabilityURLOnly {
+                guard url.path.hasPrefix("/"), url.pathExtension == "jsonl",
+                      url.host == nil || url.host == "", !url.path.utf8.contains(0) else {
+                    throw StorageError.invalidPayload
+                }
+            }
+        }
+        if reference.sourceDocumentID != nil {
+            guard reference.locator == .unavailable,
+                  reference.itemID == nil || reference.itemID == ClaudeAdapter.sourceAvailabilityItemID else {
+                throw StorageError.invalidPayload
+            }
+        }
         switch reference.locator {
         case .transcript, .transcriptByteOffset: break
-        case .upstreamItem, .unavailable:
+        case .upstreamItem:
             guard reference.session != nil else { throw StorageError.invalidPayload }
+        case .unavailable:
+            guard reference.session != nil || reference.sourceDocumentID != nil
+                    || ((allowClaudeAvailabilityURLOnly || reference.constraint == .claudeSourceAvailability)
+                        && reference.sourceURL != nil) else { throw StorageError.invalidPayload }
         }
     }
 
@@ -1333,28 +2505,75 @@ public actor ProtectedStore {
     /// Structural indexes contain only keyed/random UUIDs, controlled states and timestamps.
     private static func writeCoverageSettlement(_ prepared: PreparedCoverageSettlement, at now: Date,
                                                maximumBytes: Int, in db: Database) throws {
+        // Crypto preparation yields the actor. A concurrent insert or semantic upgrade
+        // invalidates the old age/meaning we encrypted. Roll back all source progress so
+        // the caller can prepare again, including when an absent row appeared meanwhile.
+        for omission in prepared.omissions where omission.checksPrevious {
+            let current = try Data.fetchOne(db, sql: "SELECT encoded FROM coverage_omissions WHERE id = ?",
+                arguments: [omission.id.uuidString])
+            guard current == omission.previousEncoded else { throw StorageError.stateChanged }
+            if let previous = omission.reclassifiedLocalMedia {
+                let row = try Row.fetchOne(db, sql: "SELECT id, location_id, encoded, state, created_at, content_at, incident_key, resolved_at FROM coverage_omissions WHERE id = ?",
+                    arguments: [omission.id.uuidString])
+                guard let row, try metadataRecoveryRow(row) == previous else { throw StorageError.stateChanged }
+            }
+        }
+        for recovery in prepared.metadataRecoveries {
+            guard try metadataRecoveryRows(locationID: recovery.locationID, at: now, in: db) == recovery.rows else {
+                throw StorageError.stateChanged
+            }
+        }
         for gap in prepared.gaps { try insertGap(gap, at: now, in: db) }
+        for id in prepared.workWithGapEvidence {
+            try db.execute(sql: "UPDATE collection_work SET retain_evidence = 1 WHERE id = ?", arguments: [id.uuidString])
+        }
+        for link in prepared.captureLossLinks {
+            try db.execute(sql: "UPDATE collection_work SET omission_id = ? WHERE id = ?",
+                arguments: [link.omission.uuidString, link.capture.uuidString])
+        }
         for omission in prepared.omissions {
+            if omission.reclassifiedLocalMedia != nil {
+                // Reclassification preserves the original lifecycle and age. It removes
+                // only this obsolete format warning's incident membership, not the row.
+                try db.execute(sql: "UPDATE coverage_omissions SET encoded = ?, incident_key = NULL WHERE id = ?",
+                    arguments: [omission.encoded, omission.id.uuidString])
+                continue
+            }
             try db.execute(sql: """
                 INSERT INTO coverage_omissions
                     (id, location_id, incident_key, created_at, content_at, state, encoded)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET incident_key = excluded.incident_key,
+                    created_at = CASE WHEN coverage_omissions.content_at IS NULL AND coverage_omissions.created_at < ?
+                        THEN excluded.created_at ELSE coverage_omissions.created_at END,
                     content_at = COALESCE(coverage_omissions.content_at, excluded.content_at),
                     state = excluded.state, resolved_at = NULL, encoded = excluded.encoded
                 WHERE coverage_omissions.state = ?
                 """, arguments: [omission.id.uuidString, omission.locationID.uuidString,
                     omission.incidentKey?.uuidString, now.timeIntervalSince1970,
                     omission.time?.timeIntervalSince1970, omission.state.rawValue, omission.encoded,
+                    now.addingTimeInterval(-HistoricalAuditContext.lookback).timeIntervalSince1970,
                     CoverageOmissionState.recovered.rawValue])
-            // An open position first recorded without a required failure must still join the
-            // incident that a later required failure at the same position opens.
+            if omission.upgradesOmissionMeaning {
+                // Required text dominates a previously excluded sibling without renewing
+                // its age or resetting its lifecycle. An authenticated optional unknown
+                // warning likewise cannot hide a later known or required failure. Recovered
+                // rows follow the existing recurrence policy in the INSERT above.
+                try db.execute(sql: """
+                    UPDATE coverage_omissions SET encoded = ?,
+                        content_at = COALESCE(content_at, ?)
+                    WHERE id = ? AND state != ?
+                    """, arguments: [omission.encoded, omission.time?.timeIntervalSince1970,
+                        omission.id.uuidString, CoverageOmissionState.recovered.rawValue])
+            }
+            // A position first recorded without a required failure must still join the
+            // later incident. Include expired losses so expiry can settle their incident.
             if let key = omission.incidentKey {
                 try db.execute(sql: """
                     UPDATE coverage_omissions SET incident_key = ?
-                    WHERE id = ? AND incident_key IS NULL AND state IN (?, ?)
+                    WHERE id = ? AND incident_key IS NULL AND state != ?
                     """, arguments: [key.uuidString, omission.id.uuidString,
-                        CoverageOmissionState.retryable.rawValue, CoverageOmissionState.blocked.rawValue])
+                        CoverageOmissionState.recovered.rawValue])
             }
         }
         if !prepared.omissions.isEmpty {
@@ -1373,7 +2592,26 @@ public actor ProtectedStore {
                                arguments: [incident.key.uuidString])
             }
         }
+        for key in Set(prepared.omissions.compactMap { $0.reclassifiedLocalMedia?.incidentKey }) {
+            _ = try resolveHealthIncidents(where: "requires_assessment = 0 AND key_id = ?",
+                arguments: [key], at: now, in: db)
+        }
         let cutoff = now.addingTimeInterval(-HistoricalAuditContext.lookback).timeIntervalSince1970
+        for recovery in prepared.metadataRecoveries {
+            for id in recovery.recoveredIDs {
+                try db.execute(sql: """
+                    UPDATE coverage_omissions SET state = ?, resolved_at = ?
+                    WHERE id = ? AND state IN (?, ?) AND COALESCE(content_at, created_at) >= ?
+                        AND COALESCE(content_at, created_at) <= ?
+                    """, arguments: [CoverageOmissionState.recovered.rawValue, now.timeIntervalSince1970,
+                        id.uuidString, CoverageOmissionState.blocked.rawValue, CoverageOmissionState.retryable.rawValue,
+                        cutoff, now.timeIntervalSince1970])
+            }
+            for key in Set(recovery.rows.filter { recovery.recoveredIDs.contains($0.id) }.compactMap(\.incidentKey)) {
+                _ = try resolveHealthIncidents(where: "requires_assessment = 0 AND key_id = ?",
+                    arguments: [key], at: now, in: db)
+            }
+        }
         for locationID in prepared.recoveredLocations {
             try db.execute(sql: """
                 UPDATE coverage_omissions SET state = ?, resolved_at = ?
@@ -1407,11 +2645,13 @@ public actor ProtectedStore {
         return db.changesCount
     }
 
-    private func sealedGap(_ gap: CoverageGap, at _: Date) async throws -> ProtectedPayload {
+    private func sealedGap(_ gap: CoverageGap, at time: Date, audit: CoverageAuditIdentity? = nil,
+                           isIntermediateBacklog: Bool = false, workID: UUID? = nil) async throws -> ProtectedPayload {
         let id = UUID()
         do {
             return try await cryptography.sealBackground(
-                JSONEncoder().encode(gap),
+                JSONEncoder().encode(StoredCoverageGapEvent(id: id, gap: gap, observedAt: time,
+                    audit: audit, isIntermediateBacklog: isIntermediateBacklog, workID: workID)),
                 binding: PayloadBinding(reference: ProtectedPayloadReference(id: id), ownerID: id, kind: .sourceCheckpoint)
             )
         } catch { throw StorageError.protectionUnavailable }
@@ -1603,6 +2843,25 @@ public actor ProtectedStore {
                     resolved_at REAL, delivery TEXT NOT NULL, requires_assessment INTEGER NOT NULL, encoded BLOB NOT NULL);
                 CREATE UNIQUE INDEX collection_health_active ON collection_health_incidents (key_id) WHERE resolved_at IS NULL;
                 """)
+        }
+        migrator.registerMigration("v6-collection-work-evidence") { db in
+            try db.execute(sql: """
+                CREATE TABLE collection_work (
+                    id TEXT PRIMARY KEY NOT NULL, state TEXT NOT NULL, admitted_at REAL NOT NULL,
+                    updated_at REAL NOT NULL, attempted_at REAL, completed_at REAL,
+                    recovery_of TEXT, omission_id TEXT, retain_evidence INTEGER NOT NULL DEFAULT 0, encoded BLOB NOT NULL);
+                CREATE INDEX collection_work_updated ON collection_work (updated_at);
+                CREATE TABLE successful_collection_reads (
+                    id TEXT PRIMARY KEY NOT NULL, succeeded_at REAL NOT NULL, encoded BLOB NOT NULL);
+                """)
+        }
+        migrator.registerMigration("v7-codex-hook-content-slots") { db in
+            try db.execute(sql: "CREATE TABLE codex_hook_content_slots (id TEXT PRIMARY KEY NOT NULL, encoded BLOB NOT NULL)")
+        }
+        migrator.registerMigration("v8-certified-source-recovery") { db in
+            try db.execute(sql: "ALTER TABLE collection_work ADD COLUMN recovery_certificate BLOB")
+            try db.execute(sql: "ALTER TABLE collection_work ADD COLUMN recovery_chain BLOB")
+            try db.execute(sql: "CREATE INDEX collection_work_recovery ON collection_work (recovery_of)")
         }
         try migrator.migrate(database)
     }

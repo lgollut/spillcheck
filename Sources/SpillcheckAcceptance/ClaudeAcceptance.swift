@@ -16,8 +16,47 @@ private struct ClaudeCommitObservation: Sendable {
     let completedAt: Date
     let historical: Bool
 }
-private actor ClaudeLiveEvidence {
-    var observed: [String:Set<SourceIdentity>] = [:]
+actor ClaudeLiveEvidence {
+    private struct MarkerObservation: Hashable {
+        let source: ClaudeTimingSource
+        let contentType: ContentType
+        let contentTime: Date
+        let producerVersion: String
+        let role: String
+        let parentPath: String
+        let path: String
+    }
+    private var observed: [String: Set<MarkerObservation>] = [:]
+    private var parentPaths: Set<String> = []
+    private var childPaths: [String: String] = [:]
+    private var sourcePathsByIdentity: [SourceIdentity: String] = [:]
+    private var conflictingSources: Set<SourceIdentity> = []
+    private var bounded = true
+    private let sourceRoot: URL
+    private let selectedParent: URL?
+    init(sourceRoot: URL, selectedParent: URL? = nil) {
+        self.sourceRoot = sourceRoot.standardizedFileURL
+        self.selectedParent = selectedParent?.standardizedFileURL
+    }
+    private func role(_ source: CollectedSource) -> (role: String, parent: String, path: String)? {
+        guard source.record.metadata.identity.session.provider == .claudeCode,
+              source.record.metadata.identity.session.profileID == "claude-live",
+              let raw = source.context?.transcriptPath else { return nil }
+        let path = URL(fileURLWithPath: raw).standardizedFileURL
+        guard path.path == raw, path.path.hasPrefix(sourceRoot.path + "/"), path.pathExtension == "jsonl" else { return nil }
+        let parent: URL
+        let role: String
+        if path.deletingLastPathComponent().lastPathComponent == "subagents",
+           path.lastPathComponent.hasPrefix("agent-"), path.lastPathComponent.count > "agent-.jsonl".count {
+            parent = path.deletingLastPathComponent().deletingLastPathComponent().appendingPathExtension("jsonl")
+            role = "child"
+        } else {
+            guard path.deletingPathExtension().lastPathComponent == source.record.metadata.identity.session.sessionID else { return nil }
+            parent = path; role = "parent"
+        }
+        guard selectedParent == nil || selectedParent == parent else { return nil }
+        return (role, parent.path, path.path)
+    }
     var deliveries = 0
     var paths: [String:String] = [:]
     var firstObservedAt: [String: Date] = [:]
@@ -60,6 +99,7 @@ private actor ClaudeLiveEvidence {
             case .expiredCapture: "expiredCapture"
             case .invalidTime: "invalidTime"
             case .stateTooLarge: "stateTooLarge"
+            case .capacityExceeded(let resource): "capacityExceeded/" + resource.rawValue
             case .injectedFailure: "injectedFailure"
             }
             return "storage/" + name
@@ -97,8 +137,11 @@ private actor ClaudeLiveEvidence {
             case .unavailable?: "native-session"
             case nil: "none"
             }
-            let required = gap.isRequiredFormatFailure.map { $0 ? "confirmed-required" : "unconfirmed" } ?? "unspecified"
-            let label = [gap.reason.rawValue, required, gap.contentType?.rawValue ?? "none", locator].joined(separator: "/")
+            let required = gap.excludedContent == true ? "excluded-media"
+                : gap.isRequiredFormatFailure.map { $0 ? "confirmed-required" : "unconfirmed" } ?? "unspecified"
+            let label = [gap.reason.rawValue, required, gap.contentType?.rawValue ?? "none",
+                gap.recovery?.sourceDocumentID == nil ? locator : "source-document",
+                gap.sourceKind?.rawValue ?? "none", gap.diagnosticCode?.rawValue ?? "none"].joined(separator: "/")
             descriptors[label, default: 0] += 1
         }
         return try JSONSerialization.data(withJSONObject: ["normalizedEventCounts": normalizedEvents, "normalizerErrorCounts": normalizerErrors,
@@ -113,35 +156,101 @@ private actor ClaudeLiveEvidence {
         uniqueGaps.formUnion(batch.coverageGaps)
         let expected: [(String,ContentType)] = [("PROMPT",.userPrompt),("INTERMEDIATE",.intermediateResponse),
             ("FINAL",.finalResponse),("SHELL_OK",.toolOutput),("SHELL_ERROR",.toolError),
-            ("MCP_OK",.toolOutput),("MCP_ERROR",.toolError),("CHILD_PROMPT",.userPrompt),("CHILD_FINAL",.finalResponse)]
+            ("MCP_OK",.toolOutput),("MCP_ERROR",.toolError),("CHILD_PROMPT",.userPrompt),
+            ("CHILD_INTERMEDIATE",.intermediateResponse),("CHILD_FINAL",.finalResponse),
+            ("CHILD_TOOL_OUTPUT",.toolOutput),("CHILD_TOOL_ERROR",.toolError)]
         for source in batch.sources {
-            producerVersions.insert(source.record.metadata.origin.agentVersion)
-            if let path = source.context?.transcriptPath { paths[path] = source.record.metadata.identity.session.sessionID }
+            let metadata = source.record.metadata
+            producerVersions.insert(metadata.origin.agentVersion)
+            if let path = source.context?.transcriptPath { paths[path] = metadata.identity.session.sessionID }
+            guard let location = role(source) else { continue }
+            if let previous = sourcePathsByIdentity[metadata.identity], previous != location.path {
+                conflictingSources.insert(metadata.identity)
+            }
+            sourcePathsByIdentity[metadata.identity] = location.path
+            if location.role == "parent" { parentPaths.insert(location.path) }
+            else { childPaths[location.path] = location.parent }
             let text = source.record.segments.map { String(decoding:$0.utf8,as:UTF8.self) }.joined(separator:"\n")
             guard text.contains(claudeLiveSecret) else { continue }
-            let key = ClaudeTimingSource(identity: source.record.metadata.identity, revision: source.record.revision)
+            let key = ClaudeTimingSource(identity: metadata.identity, revision: source.record.revision)
             if measuring, sourceObservations[key] == nil {
-                sourceObservations[key] = ClaudeSourceObservation(metadata: source.record.metadata, capturedAt: capturedAt)
+                sourceObservations[key] = ClaudeSourceObservation(metadata: metadata, capturedAt: capturedAt)
             }
-            for (suffix,kind) in expected where source.record.metadata.contentType == kind {
-                if suffix == "CHILD_PROMPT" || suffix == "CHILD_FINAL" {
-                    guard source.context?.transcriptPath?.contains("/subagents/agent-") == true else { continue }
+            for (suffix,kind) in expected where metadata.contentType == kind && suffix.hasPrefix("CHILD_") == (location.role == "child") {
+                guard source.record.segments.contains(where: { segment in
+                    let text = String(decoding: segment.utf8, as: UTF8.self)
+                    return ["LEAKRET_M3_", "LEAKRET_M3_T3_"].contains { text.contains("\($0)\(suffix) \(claudeLiveSecret)") }
+                }) else { continue }
+                let observation = MarkerObservation(source: key, contentType: kind, contentTime: metadata.contentTime,
+                    producerVersion: metadata.origin.agentVersion, role: location.role, parentPath: location.parent, path: location.path)
+                guard observed[suffix, default: []].count < 128 || observed[suffix, default: []].contains(observation) else {
+                    bounded = false; continue
                 }
-                if suffix == "CHILD_PROMPT" {
-                    let trimmed = text.trimmingCharacters(in:.whitespacesAndNewlines)
-                    guard trimmed.hasPrefix("LEAKRET_M3_CHILD_PROMPT") || trimmed.hasPrefix("LEAKRET_M3_T3_CHILD_PROMPT") else { continue }
-                }
-                if text.contains("LEAKRET_M3_\(suffix)") || text.contains("LEAKRET_M3_T3_\(suffix)") {
-                    observed[suffix,default:[]].insert(source.record.metadata.identity)
-                    if firstObservedAt[suffix] == nil { firstObservedAt[suffix] = source.record.metadata.observedAt }
-                }
+                observed[suffix, default: []].insert(observation)
+                if firstObservedAt[suffix] == nil { firstObservedAt[suffix] = metadata.observedAt }
             }
         }
     }
-    func summary() -> [String:Int] { observed.mapValues(\.count) }
-    func committedSummary(_ sourceIDs:Set<SourceIdentity>) ->[String:Int] {
-        observed.mapValues { $0.intersection(sourceIDs).count }.filter { $0.value > 0 }
+    private func eligible(_ observation: MarkerObservation) -> Bool {
+        parentPaths.contains(observation.parentPath) && !conflictingSources.contains(observation.source.identity)
     }
+    func summary() -> [String:Int] {
+        observed.mapValues { Set($0.filter(eligible).map { $0.source.identity }).count }.filter { $0.value > 0 }
+    }
+    private func committedObservations(in snapshot: InventorySnapshot, fingerprint: ValueFingerprint) -> [String: Set<MarkerObservation>] {
+        guard let valueID = snapshot.records[fingerprint]?.id else { return [:] }
+        return observed.mapValues { values in
+            values.filter { observation in
+                eligible(observation) && snapshot.analysisReceipts.contains(AnalysisReceipt(source: observation.source.identity,
+                    revision: observation.source.revision, detectorVersion: BetterleaksSecretDetector.version))
+                    && snapshot.occurrences.values.contains { $0.valueID == valueID && $0.source.identity == observation.source.identity
+                        && $0.source.contentType == observation.contentType && $0.source.contentTime == observation.contentTime }
+            }
+        }
+    }
+    func committedByRole(in snapshot: InventorySnapshot, fingerprint: ValueFingerprint) -> [String: [String: Int]] {
+        let committed = committedObservations(in: snapshot, fingerprint: fingerprint)
+        // Each complete result must come from one actual parent and one of its own child
+        // files. Distinct children cannot pool missing types into one passing child.
+        let pairs = childPaths.filter { parentPaths.contains($0.value) }.sorted { $0.key < $1.key }
+        var result: [String: [String: Int]] = [:]
+        var best = -1
+        for (child, parent) in pairs {
+            let candidate = Dictionary(uniqueKeysWithValues: [("parent", parent), ("child", child)].map { role, path in
+                (role, committed.mapValues { Set($0.filter { $0.role == role && $0.path == path }.map { $0.source.identity }).count }
+                    .filter { $0.value > 0 })
+            })
+            let score = candidate.values.reduce(0) { $0 + $1.count }
+            if score > best { best = score; result = candidate }
+        }
+        return result
+    }
+    func committedPairCountsByProducer(in snapshot: InventorySnapshot, fingerprint: ValueFingerprint) -> [String: Int] {
+        let committed = committedObservations(in: snapshot, fingerprint: fingerprint)
+        let versions = Set(committed.values.flatMap { $0.map(\.producerVersion) })
+        return Dictionary(uniqueKeysWithValues: versions.map { version in
+            let count = childPaths.filter { parentPaths.contains($0.value) }.filter { child, parent in
+                let parentMarkers = committed.filter { marker, observations in
+                    !marker.hasPrefix("CHILD_") && observations.contains { $0.path == parent && $0.producerVersion == version }
+                }
+                let childMarkers = committed.filter { marker, observations in
+                    marker.hasPrefix("CHILD_") && observations.contains { $0.path == child && $0.producerVersion == version }
+                }
+                return parentMarkers.count == 7 && childMarkers.count == 5
+            }.count
+            return (version, count)
+        })
+    }
+    func committed(in snapshot: InventorySnapshot, fingerprint: ValueFingerprint) -> [String: Int] {
+        committedObservations(in: snapshot, fingerprint: fingerprint)
+            .mapValues { Set($0.map { $0.source.identity }).count }.filter { $0.value > 0 }
+    }
+    func nativeSourceRoles() -> [String: Int] {
+        ["verifiedParentSourceCount": parentPaths.count,
+         "verifiedOwnChildSourceCount": childPaths.values.filter { parentPaths.contains($0) }.count,
+         "conflictingSourceIdentityCount": conflictingSources.count]
+    }
+    func evidenceWithinBudget() -> Bool { bounded }
     func deliveryCount() ->Int { deliveries }
     func sourcePaths() -> [String:String] { paths }
     func observationTimes() ->[String:String] {
@@ -265,8 +374,9 @@ enum ClaudeAcceptance {
         try FileManager.default.createDirectory(at:work,withIntermediateDirectories:true,attributes:[.posixPermissions:0o700])
         let crypto = try BackgroundCryptography.ephemeralForTesting()
         let store = try await ProtectedStore.open(at:storeDirectory,cryptography:crypto)
-        let evidence = ClaudeLiveEvidence()
         let sourceRoot = URL(fileURLWithPath:option("--source-root") ?? root.path).resolvingSymlinksInPath()
+        let evidence = ClaudeLiveEvidence(sourceRoot: sourceRoot,
+            selectedParent: option("--source").map { URL(fileURLWithPath: $0).standardizedFileURL })
         let adapter = try ClaudeAdapter(profileID:"claude-live",agentVersion:observedVersion,allowedTranscriptRoots:[sourceRoot],
             checkpointLookup: { id in try await store.checkpoint(documentID: id) })
         let detector = BetterleaksSecretDetector(configuration:.init(executableURL:URL(fileURLWithPath:scanner),
@@ -373,14 +483,19 @@ enum ClaudeAcceptance {
         let relevant = snapshot.occurrences.values.filter { $0.valueID == valueID }
         let kindCounts = Dictionary(grouping:relevant,by:{ $0.source.contentType.rawValue }).mapValues(\.count)
         let sessions = Set(relevant.map(\.source.identity.session)).count
-        let gaps = try await store.coverageGaps().map(\.reason.rawValue)
+        let coverage = try await store.coverageReport()
+        guard !coverage.isTruncated else { throw StorageError.stateTooLarge }
+        let activeGaps = coverage.activeGapEvents.map(\.gap) + coverage.unresolvedOmissions.map(\.gap)
+        let gaps = activeGaps.filter { $0.excludedContent != true }.map(\.reason.rawValue)
+        let excludedMediaCount = activeGaps.filter { $0.excludedContent == true }.count
         let historicalProgress = try await store.historicalProgress()
         let historicalAdmissions = await evidence.historicalAdmissions()
         let settledHistoricalAdmissions = historicalAdmissions.filter { admitted in
             historicalProgress.contains { $0.progress.audit == admitted && !$0.progress.hasUnreadContent }
         }.count
         let observed = await evidence.summary()
-        let committed = await evidence.committedSummary(Set(relevant.map(\.source.identity)))
+        let committed = await evidence.committed(in: snapshot, fingerprint: fingerprint)
+        let committedByRole = await evidence.committedByRole(in: snapshot, fingerprint: fingerprint)
         let syntheticAlerts = snapshot.alertDecisions.values.filter { $0.eligibility.fingerprint == fingerprint }.count
         let otherCandidates:[[String:Any]] = snapshot.records.filter { $0.key != fingerprint }.map { _,record in
             let occurrences=snapshot.occurrences.values.filter { $0.valueID == record.id }
@@ -402,7 +517,9 @@ enum ClaudeAcceptance {
         let gapDiagnostics = try JSONSerialization.jsonObject(with: gapDiagnosticBytes)
         emit(["finished":true,"setupState":setupState?.rawValue ?? "selected-source","durableDeliveries":await evidence.deliveryCount(),
               "observedExecutableVersion":observedVersion,"producerVersions":await evidence.observedProducerVersions(),
-              "typedObserved":observed,"typedCommitted":committed,"valueCount":snapshot.records.count,"syntheticValuePresent":valueID != nil,
+              "typedObserved":observed,"typedCommitted":committed,"typedCommittedByRole":committedByRole,
+              "nativeSourceRoles":await evidence.nativeSourceRoles(),"roleEvidenceWithinBudget":await evidence.evidenceWithinBudget(),
+              "committedNativeParentChildPairCountByProducer":await evidence.committedPairCountsByProducer(in: snapshot, fingerprint: fingerprint),"valueCount":snapshot.records.count,"syntheticValuePresent":valueID != nil,
               "firstObservedAt":await evidence.observationTimes(),
               "sourceLatency":sourceLatency,
               "gapDiagnostics":gapDiagnostics,
@@ -414,7 +531,9 @@ enum ClaudeAcceptance {
               "occurrenceCount":relevant.count,"occurrencesByContentType":kindCounts,"sessionCount":sessions,
               "alertCount":snapshot.alertDecisions.count,"syntheticAlertCount":syntheticAlerts,"queueCount":queued,"lastPending":lastPending,
               "finalCatchUpNewOccurrences":before.occurrences.count-beforeCatchUp.occurrences.count,
-              "gapReasons":Array(Set(gaps)).sorted(),"replayStable":replayStable,"ciphertextMarkerInspectionPassed":ciphertextClean])
+              "gapReasons":Array(Set(gaps)).sorted(), "excludedMediaCount": excludedMediaCount,
+              "coverageReportTruncated": coverage.isTruncated,
+              "replayStable":replayStable,"ciphertextMarkerInspectionPassed":ciphertextClean])
     }
     private static func filesAreClean(_ directory:URL,marker:Data) throws ->Bool {
         let files = FileManager.default.enumerator(at:directory,includingPropertiesForKeys:[.isRegularFileKey])?.allObjects as? [URL] ?? []

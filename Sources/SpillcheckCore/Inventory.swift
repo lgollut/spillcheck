@@ -642,7 +642,8 @@ public struct InventoryLedger: Sendable {
             if marker != nil, record.protectedValue == nil {
                 let appearance = ObsoleteAppearance(
                     id: UUID(), valueID: record.id, source: analysis.source.identity,
-                    occurredAt: analysis.source.contentTime, locator: analysis.source.locator,
+                    occurredAt: analysis.source.contentTime, timeBasis: analysis.source.timeBasis,
+                    locator: analysis.source.locator,
                     provenance: analysis.source.origin.provenance
                 )
                 records[detection.fingerprint] = record

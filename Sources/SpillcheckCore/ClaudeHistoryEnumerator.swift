@@ -18,10 +18,20 @@ struct ClaudeHistoryRequest: Codable, Sendable {
     var pending: [String]
     var deferred: [String]
     var partial: Bool
+    /// Optional for cursors queued by earlier app builds. Paths stay inside the encrypted queue.
+    var sourceReadFailures: [String: Int]? = nil
+    /// An explicit retry rereads this file once, then resumes its new bounded checkpoint.
+    var restartSources: [String]? = nil
+    var selectedSessionID: String? = nil
 
     func validate() throws {
         guard kind == Self.kind, version == 1, directories.count <= 4096,
               pending.count <= 4096, deferred.count <= 4096,
+              (sourceReadFailures?.count ?? 0) <= 4096,
+              (restartSources?.count ?? 0) <= 1,
+              restartSources == nil || (directories.isEmpty && pending.count + deferred.count <= 1),
+              selectedSessionID == nil || (!selectedSessionID!.isEmpty && selectedSessionID!.utf8.count <= 4096),
+              sourceReadFailures?.allSatisfy({ !$0.key.isEmpty && (1...2).contains($0.value) }) != false,
               audit.end.timeIntervalSince1970.isFinite,
               audit.start == audit.end.addingTimeInterval(-HistoricalAuditContext.lookback) else {
             throw ClaudeCollectionError.invalidConfiguration
@@ -31,7 +41,7 @@ struct ClaudeHistoryRequest: Codable, Sendable {
 
 private struct ClaudeHistoryEnvelope: Decodable { let kind: String? }
 
-extension ClaudeAdapter: HistoricalCaptureProducer {
+extension ClaudeAdapter: SourceHistoricalCaptureProducer {
     /// Only disposable acceptance receivers admit externally delivered historical cursors.
     /// Ordinary hooks have no audit. The production queue still requires the same frozen audit
     /// on admission and completion, including every continuation.
@@ -52,15 +62,34 @@ extension ClaudeAdapter: HistoricalCaptureProducer {
             pending: [], deferred: [], partial: false), interface: .standaloneCLI)
     }
 
+    public func initialHistoricalCapture(audit: HistoricalAuditContext,
+                                         source: CoverageSourceRetryDescriptor) async throws -> CapturePacket {
+        guard source.scope.provider == .claudeCode, source.scope.profileID == profileID,
+              source.scope.path == .versionedTranscript,
+              source.session == nil || (source.session?.provider == .claudeCode && source.session?.profileID == profileID),
+              let url = source.sourceURL, url.isFileURL else { throw ClaudeCollectionError.invalidConfiguration }
+        let path = url.path
+        _ = try transcriptURL(path: path)
+        return try historyPacket(.init(kind: ClaudeHistoryRequest.kind, version: 1, audit: audit,
+            directories: [], pending: [path], deferred: [], partial: false,
+            restartSources: [path], selectedSessionID: source.session?.sessionID), interface: source.scope.interface)
+    }
+
     func historyPacket(_ request: ClaudeHistoryRequest, interface: AgentInterface) throws -> CapturePacket {
         try CapturePacket(metadata: .init(agent: .claudeCode, interface: interface, profileID: profileID),
             eventJSON: JSONEncoder().encode(request))
     }
 
     func normalizeHistory(_ original: ClaudeHistoryRequest, interface: AgentInterface,
-                          cryptography: BackgroundCryptography) async throws -> CollectionBatch {
+                          observedAt: Date, cryptography: BackgroundCryptography) async throws -> CollectionBatch {
+        let scope = CollectionScope(provider: .claudeCode, profileID: profileID, interface: interface, path: .versionedTranscript)
+        func gap(_ reason: CoverageGapReason, capabilityID: UUID? = nil,
+                 recovery: CoverageRecoveryReference? = nil) -> CoverageGap {
+            .init(reason: reason, capabilityID: capabilityID, scope: scope, operation: .historicalRead,
+                recovery: recovery, diagnosticCode: reason.defaultDiagnosticCode, observedAt: observedAt)
+        }
         do { try original.validate() } catch {
-            return .init(sources: [], coverageGaps: [.init(reason: .malformedSource)])
+            return .init(sources: [], coverageGaps: [gap(.malformedSource)])
         }
         var request = original
         let clock = ContinuousClock(), started = ContinuousClock.now
@@ -88,47 +117,68 @@ extension ClaudeAdapter: HistoricalCaptureProducer {
                     inspected += page.inspected
                     request.pending += page.files
                     request.directories += page.directories
-                    gaps += page.gaps
+                    gaps += page.gaps.map { $0.contextualized(scope: scope, operation: .historicalRead, observedAt: observedAt) }
                     if !page.gaps.isEmpty { request.partial = true }
                     if let cookie = page.cookie { directory.cookie = cookie; directory.signature = page.signature; request.directories.append(directory) }
                 } catch {
-                    gaps.append(.init(reason: .sourceUnavailable)); request.partial = true
+                    gaps.append(gap(.sourceUnavailable)); request.partial = true
                 }
                 continue
             }
             let path = request.pending.removeFirst()
             guard seen.insert(path).inserted else { continue }
             processed += 1
+            let documentID = try await documentIdentity(path, cryptography: cryptography)
+            let availability = CoverageRecoveryReference(itemID: Self.sourceAvailabilityItemID,
+                parserContract: Self.parserContractVersion, sourceDocumentID: documentID, sourceURL: URL(fileURLWithPath: path))
+            func unavailable() -> CoverageGap {
+                gap(.sourceUnavailable, capabilityID: documentID, recovery: availability)
+            }
             do {
                 let key = try await checkpointIdentity(path: path, provenance: .historical(request.audit), cryptography: cryptography)
-                let checkpoint = try await checkpointLookup(key)
+                let restarting = request.restartSources?.contains(path) == true
+                let checkpoint = restarting ? nil : try await checkpointLookup(key)
                 // A 2 MiB quantum admits the supported 1 MiB physical row while giving another
                 // file an opportunity before exhausting the 100 MiB pass budget.
                 let quantum = min(2 * 1024 * 1024, historyBudget.maximumBytes - bytes)
                 let context = RetainedSourceContext(sessionIdentifier: "", transcriptPath: path, openingCapability: .unverified)
-                let read = try await readIncremental(path: path, interface: interface, checkpoint: checkpoint,
-                    observedAt: Date(), provenance: .historical(request.audit), context: context,
+                let read = try await readIncremental(path: path, expectedSessionID: request.selectedSessionID, interface: interface, checkpoint: checkpoint,
+                    observedAt: observedAt, provenance: .historical(request.audit), context: context,
                     maximumBytes: quantum, cryptography: cryptography)
+                request.restartSources?.removeAll { $0 == path }
                 bytes += read.bytesRead; sources += read.batch.sources; checkpoints += read.batch.checkpoints
                 gaps += read.batch.coverageGaps
                 recoveredReferences += read.batch.recoveredReferences
+                if request.sourceReadFailures?[path] != nil { recoveredReferences.append(availability) }
                 if let time = read.oldestContentTime { oldest = oldest.map { min($0, time) } ?? time }
                 if let time = read.newestContentTime { newest = newest.map { max($0, time) } ?? time }
                 if read.canContinueHistory { next.append(path) }
+                else { request.sourceReadFailures?.removeValue(forKey: path) }
                 if read.hasUnreadContent && !read.canContinueHistory { request.partial = true }
                 if read.batch.coverageGaps.contains(where: {
-                    ![CoverageGapReason.budgetExhausted, .unresolvedCorrelation, .incompleteMessage].contains($0.reason)
+                    $0.requiresAnalysis && ($0.diagnosticCode == .oversizedRecord
+                        || ![CoverageGapReason.budgetExhausted, .unresolvedCorrelation, .incompleteMessage].contains($0.reason))
                 }) { request.partial = true }
             } catch ClaudeCollectionError.unsafeTranscriptPath {
-                gaps.append(.init(reason: .sourceUnavailable)); request.partial = true
+                gaps.append(unavailable()); request.partial = true
+                request.sourceReadFailures?.removeValue(forKey: path)
             } catch ClaudeCollectionError.awaitingTranscript {
-                gaps.append(.init(reason: .sourceUnavailable)); request.partial = true
+                gaps.append(unavailable())
+                let failures = (request.sourceReadFailures?[path] ?? 0) + 1
+                if failures < 3 {
+                    if request.sourceReadFailures == nil { request.sourceReadFailures = [:] }
+                    request.sourceReadFailures?[path] = failures
+                    next.append(path)
+                } else {
+                    request.partial = true
+                    request.sourceReadFailures?.removeValue(forKey: path)
+                }
             }
         }
         request.deferred += next
         let continuing = !request.directories.isEmpty || !request.pending.isEmpty || !request.deferred.isEmpty
-        if continuing { gaps.append(.init(reason: .budgetExhausted, interval: .init(start: request.audit.start, end: request.audit.end))) }
-        let unread = request.partial || continuing || !gaps.isEmpty
+        if continuing { gaps.append(gap(.budgetExhausted)) }
+        let unread = request.partial || continuing || gaps.contains { $0.requiresAnalysis }
         return .init(sources: sources, coverageGaps: Array(Set(gaps)), checkpoints: checkpoints,
             continuation: continuing ? try historyPacket(request, interface: interface) : nil,
             historicalProgress: .init(audit: request.audit, bytesRead: bytes, oldestContentTime: oldest,

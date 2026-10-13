@@ -145,6 +145,26 @@ struct CodexHistoryClientTests {
         await client.close()
         #expect(try exited(directory))
     }
+    @Test func replacementDuringVersionProbeCannotLabelNewReaderWithOldVersion() async throws {
+        let (client, directory) = try fixture("replace-during-version")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let executable = directory.appendingPathComponent("passive-fixture")
+        let replacement = directory.appendingPathComponent("replacement")
+        try FileManager.default.copyItem(at: executable, to: replacement)
+        // The controlled --version invocation performs the atomic replacement itself,
+        // making this boundary deterministic without timing, sleeps or an updater task.
+        await #expect(throws: CodexHistoryError.unavailable) { try await client.readThread("synthetic") }
+        #expect(!FileManager.default.fileExists(atPath: replacement.path))
+        #expect(try String(contentsOf: directory.appendingPathComponent("work/mode"), encoding: .utf8) == "new-version")
+        #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("work/server.pid").path))
+        #expect(await client.observedReaderVersion == nil)
+        let recovered = try await client.readThread("synthetic")
+        #expect(recovered.readerVersion == "4.0.0")
+        #expect(recovered.thread["cliVersion"].string == "0.161.0")
+        #expect(await client.observedReaderVersion == "4.0.0")
+        await client.close()
+        #expect(try exited(directory))
+    }
     @Test func retargetedSelectedSymlinkRecreatesReaderWithoutFreezingOldExecutable() async throws {
         let (unused, directory) = try fixture("normal")
         await unused.close()

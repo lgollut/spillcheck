@@ -4,6 +4,77 @@ import Foundation
 public enum CaptureTransportError: Error, Sendable {
     case invalidFrame, invalidMetadata, oversizedFrame, unsafeDirectory, endpointInUse
     case unavailable, deadlineExceeded, unauthorizedPeer
+    /// Admission may throw this only after its detailed rejection gap is durably recorded.
+    /// The server still sends a negative acknowledgement, without adding a generic duplicate.
+    case rejectionRecorded
+}
+
+/// Fixed transport phases and error categories only. No upstream bytes, identifiers,
+/// filesystem paths, framework userInfo or error descriptions enter this diagnostic.
+public enum CaptureRejectionStage: String, CaseIterable, Codable, Sendable, Hashable {
+    case peer, frameHeader, frameBody, packetDecode, admission
+}
+
+public enum CaptureRejectionReason: String, CaseIterable, Codable, Sendable, Hashable {
+    case invalidFrame, invalidMetadata, oversizedFrame, unsafeDirectory, endpointInUse
+    case unavailable, deadlineExceeded, unauthorizedPeer, rejectionRecorded
+    case unsafeStorageLocation, databaseUnavailable, manifestMissing, manifestMismatch
+    case corruptProtectedState, protectionUnavailable, payloadMissing, invalidPayload
+    case monitoringPaused, staleProcessingPermit, stateChanged, staleClaim
+    case captureTooLarge, queueSaturated, expiredCapture, invalidTime, stateTooLarge
+    case capacityExceeded, injectedFailure, decodingFailed, unknown
+}
+
+public struct CaptureRejectionDiagnostic: Codable, Sendable, Hashable {
+    public let stage: CaptureRejectionStage
+    public let reason: CaptureRejectionReason
+
+    public init(stage: CaptureRejectionStage, reason: CaptureRejectionReason) {
+        self.stage = stage; self.reason = reason
+    }
+
+    fileprivate init(stage: CaptureRejectionStage, error: any Error) {
+        let reason: CaptureRejectionReason
+        switch error {
+        case let error as CaptureTransportError:
+            reason = switch error {
+            case .invalidFrame: .invalidFrame
+            case .invalidMetadata: .invalidMetadata
+            case .oversizedFrame: .oversizedFrame
+            case .unsafeDirectory: .unsafeDirectory
+            case .endpointInUse: .endpointInUse
+            case .unavailable: .unavailable
+            case .deadlineExceeded: .deadlineExceeded
+            case .unauthorizedPeer: .unauthorizedPeer
+            case .rejectionRecorded: .rejectionRecorded
+            }
+        case let error as StorageError:
+            reason = switch error {
+            case .unsafeStorageLocation: .unsafeStorageLocation
+            case .databaseUnavailable: .databaseUnavailable
+            case .manifestMissing: .manifestMissing
+            case .manifestMismatch: .manifestMismatch
+            case .corruptProtectedState: .corruptProtectedState
+            case .protectionUnavailable: .protectionUnavailable
+            case .payloadMissing: .payloadMissing
+            case .invalidPayload: .invalidPayload
+            case .monitoringPaused: .monitoringPaused
+            case .staleProcessingPermit: .staleProcessingPermit
+            case .stateChanged: .stateChanged
+            case .staleClaim: .staleClaim
+            case .captureTooLarge: .captureTooLarge
+            case .queueSaturated: .queueSaturated
+            case .expiredCapture: .expiredCapture
+            case .invalidTime: .invalidTime
+            case .stateTooLarge: .stateTooLarge
+            case .capacityExceeded: .capacityExceeded
+            case .injectedFailure: .injectedFailure
+            }
+        case is DecodingError: reason = .decodingFailed
+        default: reason = .unknown
+        }
+        self.init(stage: stage, reason: reason)
+    }
 }
 
 /// Trusted transport metadata has separate framing from opaque upstream JSON.
@@ -84,6 +155,7 @@ public actor LocalCaptureServer {
     public typealias CaptureHandler = @Sendable (CapturePacket) async throws -> Void
     public typealias AcceptanceGate = @Sendable () async -> Bool
     public typealias GapHandler = @Sendable (CoverageGapReason) async -> Void
+    public typealias RejectionHandler = @Sendable (CaptureRejectionDiagnostic) async -> Void
     private var listenerTask: Task<Void, Never>?
     private var children: [UUID: Task<Void, Never>] = [:]
     private var socketPath: String?
@@ -93,7 +165,8 @@ public actor LocalCaptureServer {
     public init(maximumClients: Int = 4) { self.maximumClients = max(1, min(maximumClients, 16)) }
 
     public func start(at url: URL, accepting: @escaping AcceptanceGate,
-                      onCapture: @escaping CaptureHandler, onGap: @escaping GapHandler) throws {
+                      onCapture: @escaping CaptureHandler, onGap: @escaping GapHandler,
+                      onRejection: RejectionHandler? = nil) throws {
         guard !running else { throw CaptureTransportError.endpointInUse }
         let path = url.path
         guard path.utf8.count < MemoryLayout.size(ofValue: sockaddr_un().sun_path), !path.utf8.contains(0) else {
@@ -132,7 +205,8 @@ public actor LocalCaptureServer {
                 let client = accept(descriptor, nil, nil)
                 if client < 0 { continue }
                 guard let self else { close(client); break }
-                await self.acceptClient(client, accepting: accepting, onCapture: onCapture, onGap: onGap)
+                await self.acceptClient(client, accepting: accepting, onCapture: onCapture,
+                    onGap: onGap, onRejection: onRejection)
             }
         }
     }
@@ -155,7 +229,8 @@ public actor LocalCaptureServer {
     }
 
     private func acceptClient(_ descriptor: Int32, accepting: @escaping AcceptanceGate,
-                              onCapture: @escaping CaptureHandler, onGap: @escaping GapHandler) {
+                              onCapture: @escaping CaptureHandler, onGap: @escaping GapHandler,
+                              onRejection: RejectionHandler?) {
         guard running else { close(descriptor); return }
         guard children.count < maximumClients else {
             close(descriptor)
@@ -165,6 +240,7 @@ public actor LocalCaptureServer {
         let id = UUID()
         children[id] = Task.detached(priority: .utility) { [weak self] in
             defer { close(descriptor) }
+            var stage = CaptureRejectionStage.peer
             do {
                 try Self.configure(descriptor)
                 var user: uid_t = 0
@@ -174,19 +250,33 @@ public actor LocalCaptureServer {
                 }
                 if await accepting() {
                     let deadline = DispatchTime.now().uptimeNanoseconds + 200_000_000
+                    stage = .frameHeader
                     let length = CapturePacket.length(try Self.readExactly(4, from: descriptor, deadline: deadline))
                     guard length > 4, length <= CapturePacket.maximumBodyBytes else {
                         throw CaptureTransportError.oversizedFrame
                     }
-                    let packet = try CapturePacket(body: Self.readExactly(length, from: descriptor, deadline: deadline))
+                    stage = .frameBody
+                    let body = try Self.readExactly(length, from: descriptor, deadline: deadline)
+                    stage = .packetDecode
+                    let packet = try CapturePacket(body: body)
                     try Task.checkCancellation()
+                    stage = .admission
                     try await onCapture(packet) // Return only after durable encrypted queue insertion.
-                    try Task.checkCancellation()
-                    if !Self.acknowledge(1, to: descriptor) { await onGap(.deliveryUncertain) }
+                    // Admission already committed the exact packet, so a server stop from here
+                    // on must not turn it into a negative receipt. A helper that expired
+                    // or disconnected cannot receive this receipt, but that does not lose
+                    // receiver-owned content. Later queue/analysis failures report their
+                    // own gaps; failed admission still follows the rejection paths below.
+                    _ = Self.acknowledge(1, to: descriptor)
                 } else { _ = Self.acknowledge(0, to: descriptor) }
+            } catch CaptureTransportError.rejectionRecorded {
+                _ = Self.acknowledge(0, to: descriptor)
             } catch {
                 _ = Self.acknowledge(0, to: descriptor)
-                if !Task.isCancelled { await onGap(.captureRejected) }
+                if !Task.isCancelled {
+                    await onGap(.captureRejected)
+                    await onRejection?(CaptureRejectionDiagnostic(stage: stage, error: error))
+                }
             }
             await self?.finished(id)
         }

@@ -36,6 +36,7 @@ struct CodexSetupTests {
         #expect(removed == root as NSDictionary)
         let parsed = try JSONSerialization.jsonObject(with: installed) as! [String: Any]
         let hooks = parsed["hooks"] as! [String: [[String: Any]]]
+        #expect(hooks["PostToolUse"] != nil && hooks["Interrupt"] != nil)
         for event in CodexHookConfiguration.events {
             let owned = hooks[event]!.flatMap { $0["hooks"] as! [[String: Any]] }.filter { $0["statusMessage"] as? String == config.ownershipMarker }
             #expect(owned.count == 1 && owned[0]["command"] as? String == config.command)

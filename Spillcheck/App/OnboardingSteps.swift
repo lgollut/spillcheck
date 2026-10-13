@@ -309,7 +309,7 @@ struct ChooseAgentsStep: View {
                     }
                     .transition(.opacity)
                 } else if model.storageFailed {
-                    EmptyView()
+                    if model.canExportStartupDiagnostics { StartupDiagnosticsButton(model: model) }
                 } else if state.found.isEmpty {
                     NothingFoundCard(configure: configure) { flow.scanRequest += 1 }
                         .rise(0)
@@ -487,7 +487,7 @@ private struct AgentChoiceRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             Button(attention.action, action: attention.perform)
                 .buttonStyle(.onboarding(.secondary, size: .mini))
-                .disabled(!model.storageReady)
+                .disabled(model.storageUnavailable)
                 .accessibilityIdentifier("setup.\(route.provider.rawValue).fix")
         }
         .padding(.horizontal, 14)
@@ -807,11 +807,11 @@ private struct ConnectRow: View {
             if phase == .failed, let profile = route.profile {
                 Button("Try again") { model.onInstallAgent?(route.provider, profile) }
                     .buttonStyle(.onboarding(.secondary, size: .mini))
-                    .disabled(!model.storageReady)
+                    .disabled(model.storageUnavailable)
             } else if phase == .needsRepair {
                 Button("Repair") { model.onRepairAgent?(route.provider) }
                     .buttonStyle(.onboarding(.secondary, size: .mini))
-                    .disabled(!model.storageReady)
+                    .disabled(model.storageUnavailable)
             }
             indicator
                 .frame(width: 22, height: 22)
@@ -865,7 +865,7 @@ private struct PausedNotice: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             Button("Resume monitoring") { model.toggleMonitoring() }
                 .buttonStyle(.onboarding(.secondary, size: .mini))
-                .disabled(!model.storageReady || model.monitoringTransition || model.stopped)
+                .disabled(model.storageUnavailable || model.monitoringTransition || model.stopped)
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
         .background(Palette.amberSoft, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -1022,7 +1022,7 @@ struct PreferencesStep: View {
                     }))
                     .toggleStyle(DesignSwitchStyle(onColor: Brand.green))
                     .labelsHidden()
-                    .disabled((!model.storageReady || model.loginBusy || !model.loginAvailable) && !model.isDemo)
+                    .disabled((model.storageUnavailable || model.loginBusy || !model.loginAvailable) && !model.isDemo)
                     .accessibilityIdentifier("setup.launch-at-login")
                 }
                 PreferenceRow(symbol: "lock.fill", title: "Hidden values",
@@ -1227,11 +1227,11 @@ struct ReadyStep: View {
             return "Connect Codex or Claude Code from Settings › Agents whenever you’re ready. Until then, \(AppIdentity.name) doesn’t check anything."
         }
         if outcome.complete {
-            return "\(AppIdentity.name) now checks new agent activity and is reading the last 7 days. Closing this window doesn’t stop it."
+            return "Agent registration is verified. Coverage shows confirmed reads and any remaining gaps. Closing this window doesn’t stop monitoring."
         }
         var sentences: [String] = []
         if !outcome.verified.isEmpty {
-            sentences.append("Monitoring works for \(plural(outcome.verified.count, "agent")).")
+            sentences.append("Registration is verified for \(plural(outcome.verified.count, "agent")).")
         } else if outcome.notConnected.isEmpty {
             sentences.append("Hooks are added, but monitoring isn’t proven yet.")
         }
@@ -1267,17 +1267,22 @@ struct ReadyStep: View {
     /// Catch-up has ended once its queued work is gone, but only coverage says whether it read
     /// everything: an exhausted budget or a failed read leaves gaps.
     @ViewBuilder private func history(verified: Bool) -> some View {
-        if !verified {
+        if model.storageUnavailable {
+            SummaryRow(label: "Last 7 days", dot: Brand.control,
+                       value: model.storageStatusTitle ?? "Coverage unavailable", divider: true)
+        } else if !verified {
             SummaryRow(label: "Last 7 days", dot: Brand.control, value: "Starts once an agent is verified", divider: true)
+        } else if !model.monitoringEnabled {
+            SummaryRow(label: "Last 7 days", dot: Brand.control, value: model.monitoringStatusText, divider: true)
         } else if model.catchingUp {
             SummaryRow(label: "Last 7 days", dot: Brand.green, value: "Reading…", divider: true) { ReadingBar(done: false) }
         } else if case .partial = model.monitoring.coverage {
-            SummaryRow(label: "Last 7 days", dot: Palette.amber, value: "Read, with gaps · details in Coverage",
+            SummaryRow(label: "Last 7 days", dot: Palette.amber, value: "Coverage needs attention · details in Coverage",
                        divider: true) { ReadingBar(done: true, tint: Palette.amber) }
         } else {
             let conversations = model.activity?.conversationCount ?? 0
             SummaryRow(label: "Last 7 days", dot: Brand.green,
-                       value: conversations == 0 ? "Done · nothing to read yet" : "Done · \(plural(conversations, "conversation")) read",
+                       value: conversations == 0 ? "Waiting for content" : "\(plural(conversations, "conversation")) analyzed",
                        divider: true) { ReadingBar(done: true) }
         }
     }

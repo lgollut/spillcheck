@@ -25,7 +25,10 @@ struct InventoryView: View {
         }
         .overlay(alignment: .top) {
             if let message = model.storageMessage {
-                Label(message, systemImage: "exclamationmark.shield")
+                HStack(spacing: 12) {
+                    Label(message, systemImage: "exclamationmark.shield")
+                    if model.canExportStartupDiagnostics { StartupDiagnosticsButton(model: model) }
+                }
                     .font(.system(size: 12.5))
                     .foregroundStyle(Palette.ink)
                     .padding(.horizontal, 12).padding(.vertical, 8)
@@ -114,8 +117,8 @@ private struct SidebarView: View {
             Text(AppIdentity.name).font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.ink)
             Spacer()
             HStack(spacing: 6) {
-                StatusDot(color: model.monitoringEnabled ? Palette.green : Color(hex: 0xa1a1a6))
-                Text(model.monitoringEnabled ? "Monitoring" : (model.stopped ? "Stopped" : "Paused"))
+                StatusDot(color: model.monitoringIndicatorColor)
+                Text(model.storageStatusTitle ?? (model.monitoringEnabled ? "Monitoring" : (model.stopped ? "Stopped" : "Paused")))
             }
             .font(.system(size: 11.5))
             .foregroundStyle(Palette.secondary)
@@ -544,7 +547,7 @@ extension View {
 // MARK: - Empty states
 
 struct EmptyInventoryState {
-    enum Kind: Hashable { case setup, nothingFound, noMatch }
+    enum Kind: Hashable { case storageUnavailable, setup, nothingFound, noMatch }
     let kind: Kind
     let title: String
     let body: String
@@ -552,6 +555,12 @@ struct EmptyInventoryState {
     /// Distinguishes unfinished setup, no detections, and filters matching nothing. With no detections
     /// the coverage screen is shown, which also reports a catch-up in progress.
     @MainActor init?(model: AppModel) {
+        if model.storageUnavailable {
+            kind = .storageUnavailable
+            title = model.inventoryStatusTitle ?? "Inventory unavailable"
+            body = model.storageSummaryText ?? "The vault must open before inventory can be read."
+            return
+        }
         if model.hasEntries {
             guard model.groups.isEmpty, model.filtersActive else { return nil }
             kind = .noMatch
@@ -601,6 +610,7 @@ private struct EmptyStateView: View {
 
     private var glyph: some View {
         let (symbol, background, foreground): (String, Color, Color) = switch state.kind {
+        case .storageUnavailable: ("lock.shield", Palette.amberSoft, Palette.amberText)
         case .setup: ("exclamationmark", Color(oklch: 0.94, 0.05, 80, dark: 0.33), Palette.amberText)
         case .nothingFound: ("circle", Palette.chip, Palette.ink2)
         case .noMatch: ("line.3.horizontal.decrease", Palette.chip, Palette.ink2)
@@ -615,9 +625,23 @@ private struct EmptyStateView: View {
 
     private var action: (label: String, perform: () -> Void)? {
         switch state.kind {
+        case .storageUnavailable: nil
         case .setup: ("Continue setup", { model.openSetup() })
         case .nothingFound: ("Agents & coverage", { model.route = .coverage })
         case .noMatch: ("Clear search and filters", { model.clearFilters() })
         }
+    }
+}
+
+/// Available from onboarding and the main window when encrypted storage cannot be opened.
+struct StartupDiagnosticsButton: View {
+    let model: AppModel
+
+    var body: some View {
+        Button("Export diagnostics…") { model.performCoverageAction(.exportDiagnostics) }
+            .buttonStyle(QuietButtonStyle(foreground: Palette.link, height: 26))
+            .disabled(!model.canPerformCoverageAction(.exportDiagnostics))
+            .help(DiagnosticsExport.help)
+            .accessibilityIdentifier("storage.export-diagnostics")
     }
 }

@@ -180,6 +180,25 @@ public struct SourceCommandPlan: Equatable, Sendable {
     }
 }
 
+/// The configured native store that owns a Codex session. A native thread ID alone
+/// cannot select the right store when more than one Codex home exists.
+public struct CodexResumeProfile: Equatable, Sendable {
+    public let profileID: String
+    public let homeURL: URL
+    public let executableURL: URL
+
+    public init(profileID: String, homeURL: URL, executableURL: URL) throws {
+        guard !profileID.isEmpty, profileID.utf8.count <= 256, !profileID.utf8.contains(0),
+              [homeURL, executableURL].allSatisfy({
+                  $0.isFileURL && $0.path.hasPrefix("/") && !$0.path.utf8.contains(0)
+                      && $0.query == nil && $0.fragment == nil
+              }) else { throw SourceOpeningFailure.invalidReference }
+        self.profileID = profileID
+        self.homeURL = codexConfiguredURL(homeURL)
+        self.executableURL = executableURL
+    }
+}
+
 public enum SourceOpeningPlan {
     public static func nativeIdentifier(_ session: SessionIdentity) throws -> UUID {
         guard let identifier = UUID(uuidString: session.sessionID) else { throw SourceOpeningFailure.invalidReference }
@@ -203,8 +222,22 @@ public enum SourceOpeningPlan {
     }
 
     public static func terminalResume(session: SessionIdentity, executableURL: URL) throws -> SourceCommandPlan {
+        // Codex must use the profile-bound overload; never inherit a terminal's
+        // ambient CODEX_HOME for a protected finding from another native store.
+        guard session.provider == .claudeCode else { throw SourceOpeningFailure.invalidReference }
         let identifier = try nativeIdentifier(session)
-        return SourceCommandPlan(executableURL: executableURL, arguments: session.provider == .codex
-            ? ["resume", identifier.uuidString.lowercased()] : ["--resume", identifier.uuidString.lowercased()])
+        return SourceCommandPlan(executableURL: executableURL, arguments: ["--resume", identifier.uuidString.lowercased()])
+    }
+
+    public static func terminalResume(session: SessionIdentity, codexProfile: CodexResumeProfile) throws -> SourceCommandPlan {
+        guard session.provider == .codex, session.profileID == codexProfile.profileID else {
+            throw SourceOpeningFailure.invalidReference
+        }
+        let identifier = try nativeIdentifier(session)
+        // Only this constant program is shell code. All protected/dynamic values
+        // stay positional arguments, including executable paths containing '='.
+        return SourceCommandPlan(executableURL: URL(fileURLWithPath: "/bin/sh"),
+            arguments: ["-c", "export CODEX_HOME=\"$1\"; shift; exec \"$@\"", "spillcheck-resume",
+                codexProfile.homeURL.path, codexProfile.executableURL.path, "resume", identifier.uuidString.lowercased()])
     }
 }

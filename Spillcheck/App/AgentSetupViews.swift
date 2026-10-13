@@ -10,12 +10,18 @@ struct DeliveryCheckSteps: View {
 
     private var command: SetupCheckCommand? { model.setupCommand(for: route.provider) }
     private var viaT3: Bool { route.profile?.interface == .t3 }
+    private var viaCodexDesktop: Bool { route.provider == .codex && route.profile?.interface == .desktopCode }
     private var agent: String { route.provider.displayName }
 
     var body: some View {
         if let command {
             VStack(alignment: .leading, spacing: 14) {
-                if viaT3 {
+                if viaCodexDesktop {
+                    step(1, "Send the test prompt from Codex desktop",
+                         "Start a fresh Local conversation in the official Codex app using this profile, then send this prompt. This checks shared delivery, not complete desktop coverage.") {
+                        promptBox(command.prompt)
+                    }
+                } else if viaT3 {
                     step(1, "Send the test prompt from T3",
                          "In T3, start a new \(agent) conversation and send this prompt.") {
                         promptBox(command.prompt)
@@ -69,7 +75,7 @@ struct DeliveryCheckSteps: View {
                 }
                 if slow {
                     Text(route.provider == .codex
-                         ? "Nothing yet? If you chose “Continue without trusting”, quit Codex and run the command again. The prompt must be sent from a new session that uses this profile."
+                         ? "Nothing yet? If you chose “Continue without trusting”, review and trust the hooks, then send the prompt from a fresh session using this profile."
                          : "Nothing yet? Make sure the prompt was sent from a new session that uses this profile, then run the command again.")
                         .font(.system(size: 12)).foregroundStyle(Palette.secondary).lineSpacing(2)
                         .fixedSize(horizontal: false, vertical: true)

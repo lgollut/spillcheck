@@ -557,8 +557,9 @@ private struct AgentChoiceBody: View {
             .frame(height: 60)
             .background(on ? (hovering ? Brand.selectedHover : Brand.selectedFill) : (hovering ? Brand.rowHover : Palette.surface),
                         in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            // One point at both states stays on whole pixels, so the ring never blurs or shifts.
             .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(on ? Brand.selectedRing : Brand.rowRing, lineWidth: on ? 1.5 : 1))
+                .strokeBorder(on ? Brand.selectedRing : Brand.rowRing, lineWidth: 1))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -622,20 +623,34 @@ private struct NothingFoundCard: View {
 struct ConnectStep: View {
     let model: AppModel
     let flow: OnboardingFlow
+    @State private var disclosure = SessionDisclosure.automatic
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// Which agent shows its test session. Opening or closing one holds until that agent is verified;
+    /// then the next agent still waiting opens on its own.
+    private enum SessionDisclosure: Equatable {
+        case automatic, opened(AgentProvider), closed(AgentProvider)
+    }
 
     private var state: OnboardingState { OnboardingState(model: model, flow: flow) }
 
-    /// The first agent still waiting for its test session; the session box walks through them in turn.
-    private var nextSession: (route: AgentRoute, command: SetupCheckCommand)? {
-        for route in state.connectRoutes where route.waitingForEvent && state.phase(route) == .waiting {
-            if let command = model.setupCommand(for: route.provider) { return (route, command) }
+    /// The test session for an agent still waiting for its prompt.
+    private func session(_ route: AgentRoute) -> SetupCheckCommand? {
+        guard route.waitingForEvent, state.phase(route) == .waiting else { return nil }
+        return model.setupCommand(for: route.provider)
+    }
+
+    private func openSession(among waiting: [AgentProvider]) -> AgentProvider? {
+        switch disclosure {
+        case .opened(let provider) where waiting.contains(provider): provider
+        case .closed(let provider) where waiting.contains(provider): nil
+        default: waiting.first
         }
-        return nil
     }
 
     var body: some View {
         let routes = state.connectRoutes
-        let session = nextSession
+        let expanded = openSession(among: routes.filter { session($0) != nil }.map(\.provider))
         VStack(alignment: .leading, spacing: 0) {
             Illustration { ConnectionArt(state: state) }
             StepHeader(title: "Connect and verify",
@@ -644,17 +659,15 @@ struct ConnectStep: View {
             VStack(spacing: 8) {
                 if !model.monitoringEnabled { PausedNotice(model: model) }
                 ForEach(Array(routes.enumerated()), id: \.element.id) { index, route in
-                    ConnectRow(model: model, route: route, phase: state.phase(route)).rise(index, distance: 6)
-                }
-                if let session {
-                    SessionBox(model: model, route: session.route, command: session.command)
-                        .id(session.route.provider)
-                        .padding(.top, 6)
-                        .transition(.opacity.combined(with: .offset(y: 6)))
+                    ConnectRow(model: model, route: route, phase: state.phase(route), session: session(route),
+                               expanded: expanded == route.provider) {
+                        disclosure = expanded == route.provider ? .closed(route.provider) : .opened(route.provider)
+                    }
+                    .rise(index, distance: 6)
                 }
             }
             .padding(.top, 18)
-            .animation(Brand.settle(0.4), value: session?.route.provider)
+            .animation(reduceMotion ? nil : Brand.settle(0.4), value: expanded)
         }
     }
 }
@@ -714,10 +727,15 @@ private struct ConnectionArt: View {
     }
 }
 
+/// One agent on Connect. While it waits for its test session, the row opens to show how to start it.
 private struct ConnectRow: View {
     let model: AppModel
     let route: AgentRoute
     let phase: ConnectPhase
+    let session: SetupCheckCommand?
+    let expanded: Bool
+    let toggle: () -> Void
+    @State private var hovering = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var status: (title: String, detail: String, color: Color) {
@@ -727,7 +745,8 @@ private struct ConnectRow: View {
         case .installing:
             return ("Installing hooks…", "Adding \(AppIdentity.name)’s hooks next to your existing ones", Brand.greenText)
         case .waiting:
-            let detail = route.waitingForEvent ? "Hooks installed. One test session confirms delivery."
+            let detail = session != nil ? (expanded ? "Hooks installed. One test session confirms delivery."
+                                                    : "Hooks installed. Show the test session to verify.")
                 : !model.monitoringEnabled ? "Resume monitoring to run the test session."
                 : model.agentSetupMessages[route.provider] ?? "Preparing the test session…"
             return ("Waiting for a test session", detail, Palette.amberText)
@@ -741,9 +760,38 @@ private struct ConnectRow: View {
     }
 
     var body: some View {
-        let status = status
         let verified = phase == .verified
-        HStack(spacing: 12) {
+        VStack(spacing: 0) {
+            if session != nil {
+                Button(action: toggle) { header.contentShape(Rectangle()) }
+                    .buttonStyle(.plain)
+                    .onHover { hovering = $0 }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityValue(expanded ? "Test session shown" : "Test session hidden")
+                    .accessibilityHint(expanded ? "Hides the test session" : "Shows how to start the test session")
+                    .accessibilityIdentifier("setup.\(route.provider.rawValue).connection")
+            } else {
+                header
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("setup.\(route.provider.rawValue).connection")
+            }
+            if expanded, let session {
+                SessionTray(model: model, route: route, command: session)
+                    .transition(.opacity.combined(with: .offset(y: -6)))
+            }
+        }
+        .background(verified ? Brand.verifiedFill : Palette.surface)
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .strokeBorder(verified ? Brand.verifiedRing : Brand.rowRing, lineWidth: 1))
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.3), value: phase)
+        .animation(.easeOut(duration: 0.15), value: hovering)
+        .accessibilityElement(children: .contain)
+    }
+
+    private var header: some View {
+        let status = status
+        return HStack(spacing: 12) {
             AgentTile(provider: route.provider)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -767,15 +815,19 @@ private struct ConnectRow: View {
             }
             indicator
                 .frame(width: 22, height: 22)
+            if session != nil {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(hovering ? Palette.secondary : Palette.tertiary)
+                    .rotationEffect(.degrees(expanded ? 180 : 0))
+                    .frame(width: 14)
+                    .accessibilityHidden(true)
+                    .transition(.opacity)
+            }
         }
         .padding(.horizontal, 14)
         .frame(height: 60)
-        .background(verified ? Brand.verifiedFill : Palette.surface, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
-            .strokeBorder(verified ? Brand.verifiedRing : Brand.rowRing, lineWidth: 1))
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.3), value: phase)
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("setup.\(route.provider.rawValue).connection")
+        .background(hovering && !expanded ? Brand.rowHover : .clear)
     }
 
     @ViewBuilder private var indicator: some View {
@@ -820,8 +872,9 @@ private struct PausedNotice: View {
     }
 }
 
-/// How to start the test session for one agent: a command to run, or a prompt to send from T3.
-private struct SessionBox: View {
+/// How to start the test session for one agent, under its row: a command to run, or a prompt to send
+/// from T3.
+private struct SessionTray: View {
     let model: AppModel
     let route: AgentRoute
     let command: SetupCheckCommand
@@ -841,7 +894,7 @@ private struct SessionBox: View {
         let text = viaT3 ? command.prompt : command.line
         VStack(alignment: .leading, spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(viaT3 ? "Send the test prompt from T3" : "Start a fresh \(agent) session to verify")
+                Text(viaT3 ? "Send the test prompt from T3" : "Start a fresh session to verify")
                     .font(.system(size: 12.5, weight: .semibold))
                 Text(instructions).font(.system(size: 12)).foregroundStyle(Palette.secondary).lineSpacing(1.5)
                     .fixedSize(horizontal: false, vertical: true)
@@ -879,9 +932,10 @@ private struct SessionBox: View {
                     .transition(.opacity)
             }
         }
-        .padding(.horizontal, 14).padding(.vertical, 12)
+        .padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Palette.sidebar, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .background(Palette.sidebar)
+        .overlay(alignment: .top) { Rectangle().fill(Palette.hairline).frame(height: 1) }
         .animation(.easeOut(duration: 0.25), value: slow)
         .task(id: command.prompt) {
             slow = false

@@ -19,6 +19,8 @@ final class LoginItemController {
     private(set) var state: LoginItemState = .disabled
     private(set) var isChanging = false
     private(set) var errorMessage: String?
+    /// Registration was attempted and the service still couldn't be found.
+    private var registrationFailed = false
 
     init() { refresh() }
 
@@ -28,7 +30,9 @@ final class LoginItemController {
         case .notRegistered: state = .disabled
         case .enabled: state = .enabled
         case .requiresApproval: state = .requiresApproval
-        case .notFound: state = .unavailable
+        // A main app that has never been registered also reports notFound, so only a failed
+        // registration shows that this installation can't launch at login.
+        case .notFound: state = registrationFailed ? .unavailable : .disabled
         @unknown default: state = .unavailable
         }
     }
@@ -42,6 +46,7 @@ final class LoginItemController {
             if enabled { try SMAppService.mainApp.register() }
             else { try await SMAppService.mainApp.unregister() }
         } catch {
+            if enabled, SMAppService.mainApp.status == .notFound { registrationFailed = true }
             errorMessage = "The launch-at-login preference could not be changed."
         }
     }

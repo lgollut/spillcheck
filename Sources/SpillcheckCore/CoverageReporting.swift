@@ -141,6 +141,10 @@ public struct CoverageReport: Sendable {
         lookup.latestReads[.init(scope: scope, operation: operation)]
     }
 
+    /// Agents with recent-history work still queued, in progress or waiting to retry: the
+    /// work `queue.historicalCount` counts. Work beyond this report's bound is not attributed.
+    public var providersReadingHistory: Set<AgentProvider> { lookup.providersReadingHistory }
+
     /// Whether queued or in-progress work already reads this source.
     public func hasPendingWork(for source: CoverageSourceRetryDescriptor) -> Bool {
         guard let key = Lookup.SourceKey(source) else { return false }
@@ -216,6 +220,7 @@ public struct CoverageReport: Sendable {
         var latestSettledHistory: [CoverageAuditIdentity: Date] = [:]
         var latestReads: [ReadKey: Date] = [:]
         var pendingWorkBySource: [SourceKey: [Int]] = [:]
+        var providersReadingHistory: Set<AgentProvider> = []
 
         init(omissions: [CoverageOmission], history: [StoredHistoricalProgress], work: [StoredCollectionWork],
              successfulReads: [SuccessfulCollectionRead]) {
@@ -230,6 +235,7 @@ public struct CoverageReport: Sendable {
                 guard let audit = item.context.audit else { continue }
                 workByAudit[audit, default: []].append(index)
                 if item.state != .recovered && item.state != .completed { auditsWithUnsettledWork.insert(audit) }
+                if [.queued, .processing, .stalled].contains(item.state) { providersReadingHistory.insert(audit.provider) }
             }
             for item in history where !item.progress.hasUnreadContent && item.continuationQueued == false {
                 guard let completedAt = item.completedAt else { continue }

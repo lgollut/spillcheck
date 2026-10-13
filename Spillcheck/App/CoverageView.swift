@@ -110,7 +110,7 @@ struct CoverageView: View {
     }
 
     /// With an empty inventory this is the main window's first screen, so the headline says what was
-    /// found as well as how much was read. Activity appears inline, so the layout never shifts.
+    /// found as well as how much was read. Each agent's row shows its own catch-up.
     private var hero: some View {
         let conversations = model.activity?.conversationCount ?? 0
         let nothingFound = (model.hasAnalyzedContent || model.monitoringProven) && !model.hasEntries
@@ -134,14 +134,7 @@ struct CoverageView: View {
             Text(model.coverageSummaryText)
                 .monospacedDigit()
                 .font(.system(size: 13)).foregroundStyle(Palette.secondary)
-            // Live analysis is reported in the header; only a catch-up changes what this summary means.
-            if reading {
-                ReadingHistoryBanner()
-                    .padding(.top, 10)
-                    .transition(.opacity.combined(with: .offset(y: -4)))
-            }
         }
-        .animation(.easeOut(duration: 0.25), value: reading)
     }
 
     private var totals: some View {
@@ -237,9 +230,15 @@ struct CoverageView: View {
         let cells: [DayCell.Kind] = days.map { analyzed.contains($0) ? .read : (everCollected ? .nothingSeen : .notSetUp) }
         let read = cells.filter { $0 == .read }.count
         let status = route.status
+        let reading = model.monitoringEnabled && model.catchingUpProviders.contains(route.provider)
         return HStack(spacing: 24) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(route.name).font(.system(size: 13, weight: .medium)).lineLimit(1)
+                // Beside the name, so a catch-up starting or ending never shifts the row.
+                HStack(spacing: 10) {
+                    Text(route.name).font(.system(size: 13, weight: .medium)).lineLimit(1)
+                    if reading { ReadingHistoryLabel().transition(.opacity) }
+                }
+                .animation(.easeOut(duration: 0.25), value: reading)
                 HStack(spacing: 6) {
                     StatusDot(color: status.dot, outlined: status.outlined, size: 6)
                     Text(status.text).lineLimit(1)
@@ -343,21 +342,19 @@ struct CoverageView: View {
     }
 }
 
-/// A catch-up in progress, with motion, so the numbers above read as still growing.
-private struct ReadingHistoryBanner: View {
+/// An agent's catch-up in progress, with motion, so its days and the totals read as still growing.
+/// It names the same state as the Processing total, short enough to stay on the name's line.
+private struct ReadingHistoryLabel: View {
     var body: some View {
-        HStack(spacing: 10) {
-            RingSpinner()
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Reading the last 7 days").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Brand.greenText)
-                Text("Counts and results update as earlier conversations are analyzed.")
-                    .font(.system(size: 12)).foregroundStyle(Palette.secondary)
-            }
+        HStack(spacing: 5) {
+            RingSpinner(size: 10)
+            Text("Catching up")
         }
-        .padding(.leading, 12).padding(.trailing, 16).padding(.vertical, 9)
-        .background(Brand.calloutFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Brand.calloutRing, lineWidth: 1))
-        .accessibilityElement(children: .combine)
+        .font(.system(size: 11.5, weight: .medium)).foregroundStyle(Brand.greenText)
+        .lineLimit(1).fixedSize()
+        .help("Reading the last 7 days. Counts and results update as earlier conversations are analyzed.")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Catching up: reading the last 7 days")
     }
 }
 

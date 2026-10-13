@@ -801,20 +801,26 @@ final class AppModel {
     private(set) var busy = false
     /// While recent-history work is queued. Live activity alone never counts as catching up.
     private(set) var catchingUp = false
+    /// The agents whose recent-history work is queued, so each row shows its own catch-up.
+    private(set) var catchingUpProviders: Set<AgentProvider> = []
     @ObservationIgnored private var burstStart: Date?
     @ObservationIgnored private var lastActiveAt: Date?
     @ObservationIgnored private var settleTask: Task<Void, Never>?
     static let busyDelay: TimeInterval = 1
     static let idleDelay: TimeInterval = 2
 
-    func beginCatchUp() {
+    func beginCatchUp(_ providers: Set<AgentProvider> = []) {
         if !catchingUp { catchingUp = true }
+        if !providers.isSubset(of: catchingUpProviders) { catchingUpProviders.formUnion(providers) }
         settleActivity(active: true)
     }
 
-    /// The store's count of queued recent-history work, which ends a catch-up when it reaches zero.
-    func updateHistoryWork(queued: Int) {
+    /// The store's count of queued recent-history work, which ends a catch-up when it reaches zero,
+    /// and the agents that work belongs to.
+    func updateHistoryWork(queued: Int, providers: Set<AgentProvider> = []) {
         if catchingUp != (queued > 0) { catchingUp = queued > 0 }
+        let reading = queued > 0 ? providers : []
+        if catchingUpProviders != reading { catchingUpProviders = reading }
     }
 
     private func settleActivity(active: Bool, now: Date = Date()) {

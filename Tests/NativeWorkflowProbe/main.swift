@@ -456,14 +456,15 @@ private struct NativeWorkflowProbe {
             // A catch-up lasts exactly as long as history work is queued; live work alone doesn't extend it.
             let catchUpModel = AppModel()
             catchUpModel.storageReady = true
-            catchUpModel.beginCatchUp()
+            catchUpModel.beginCatchUp([.codex])
             try require(catchUpModel.catchingUp && catchUpModel.processingText == "Reading recent history", "catch-up-not-shown")
+            try require(catchUpModel.catchingUpProviders == [.codex], "catch-up-not-shown-on-its-agent")
             catchUpModel.updatePipeline(PipelineActivity(processing: true, pendingCount: 4))
-            catchUpModel.updateHistoryWork(queued: 1)
+            catchUpModel.updateHistoryWork(queued: 1, providers: [.codex])
             try await Task.sleep(for: .milliseconds(Int(AppModel.idleDelay * 1000) + 400))
             try require(catchUpModel.catchingUp, "catch-up-ended-early")
             catchUpModel.updateHistoryWork(queued: 0)
-            try require(!catchUpModel.catchingUp, "catch-up-held-by-live-work")
+            try require(!catchUpModel.catchingUp && catchUpModel.catchingUpProviders.isEmpty, "catch-up-held-by-live-work")
             checks.append("catch-up-follows-queued-history")
 
             let output: [String: Any] = ["passed": true, "checks": checks, "checkCount": checks.count,

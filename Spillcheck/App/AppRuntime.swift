@@ -1091,7 +1091,7 @@ final class AppRuntime {
             if model.coverageReport?.hasSameRecords(as: report) != true { model.coverageReport = report }
             if model.historyProgress != report.history.items { model.historyProgress = report.history.items }
             model.updateQueue(count: report.queue.count)
-            model.updateHistoryWork(queued: report.queue.historicalCount)
+            model.updateHistoryWork(queued: report.queue.historicalCount, providers: report.providersReadingHistory)
             model.refreshCollectionLimitations()
             await refreshSetup()
             #if DEBUG
@@ -2452,7 +2452,7 @@ final class AppRuntime {
         #endif
         guard let store, let permit = await store.processingPermit(),
               let scope = await admission.currentScope(), !terminating else { return false }
-        var queued = false
+        var queued: Set<AgentProvider> = []
         do {
             let audit = try HistoricalAuditContext(id: reassessing ? UUID() : scope.catchupAuditID ?? UUID(),
                 reason: reassessing ? .resume : scope.catchupReason, endingAt: reassessing ? .now : scope.startedAt)
@@ -2464,7 +2464,7 @@ final class AppRuntime {
                     let insertion = try await store.enqueue(packet.body, capturedAt: .now, permit: permit,
                         scope: scope, historicalAudit: audit, workContext: context)
                     switch insertion {
-                    case .inserted, .alreadyQueued: queued = true
+                    case .inserted, .alreadyQueued: queued.insert(route.route.scope.provider)
                     case .alreadyProcessed: break
                     }
                 } catch {
@@ -2473,11 +2473,11 @@ final class AppRuntime {
                         diagnosticCode: .unavailableSource, observedAt: .now))
                 }
             }
-            if queued { model.beginCatchUp() }
+            if !queued.isEmpty { model.beginCatchUp(queued) }
         } catch {
             try? await store.recordCoverageGap(reason: .sourceUnavailable)
         }
-        return queued
+        return !queued.isEmpty
     }
 
     private func installViewingLifecycle() {

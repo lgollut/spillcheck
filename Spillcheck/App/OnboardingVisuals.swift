@@ -223,8 +223,10 @@ struct RadarSweep: View {
     }
 }
 
-/// A small ring spinner for hooks being added.
+/// A small ring spinner for hooks being added and history being read.
 struct RingSpinner: View {
+    var size: CGFloat = 14
+
     var body: some View {
         MotionClock { time in
             ZStack {
@@ -232,9 +234,9 @@ struct RingSpinner: View {
                 Circle().trim(from: 0, to: 0.25).stroke(Brand.greenDeep, lineWidth: 2)
                     .rotationEffect(.degrees(-135 + (time ?? 0) / 0.8 * 360))
             }
-            .frame(width: 14, height: 14)
+            .frame(width: size, height: size)
         }
-        .frame(width: 16, height: 16)
+        .frame(width: size + 2, height: size + 2)
         .accessibilityHidden(true)
     }
 }

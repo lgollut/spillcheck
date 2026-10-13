@@ -514,9 +514,9 @@ private struct CatchUpBanner: View {
                 if model.notificationState == .denied {
                     Text("Notifications off · none announced").chip(background: Color(hex: 0xeef1ef, dark: 0x292c2a), foreground: Palette.ink2)
                 }
-                if !model.coverageGaps.isEmpty {
+                if !model.coverageIssues.isEmpty {
                     Button { model.route = .coverage } label: {
-                        HStack(spacing: 4) { Text(plural(model.coverageGaps.count, "gap")); Text("›") }
+                        HStack(spacing: 4) { Text(plural(model.coverageIssues.count, "gap")); Text("›") }
                             .chip(background: Color(hex: 0xeef1ef, dark: 0x292c2a), foreground: Palette.link)
                     }
                     .buttonStyle(.plain)
@@ -530,7 +530,7 @@ private struct CatchUpBanner: View {
     }
 }
 
-private struct FlowChips<Content: View>: View {
+struct FlowChips<Content: View>: View {
     @ViewBuilder let content: Content
     var body: some View {
         ViewThatFits(in: .horizontal) {

@@ -433,6 +433,76 @@ func coveragePresentationAssertions() throws -> [String] {
     try require(cached.coverageGaps.isEmpty && cached.activeCollectionLimitations.isEmpty,
         "cache-kept-rows-after-monitored-coverage-changed")
 
+    // Issues group every source and catch-up attempt by cause. Rows keep each source and state.
+    let grouped = AppModel()
+    grouped.storageReady = true
+    grouped.agentProfiles[.claudeCode] = .init(provider: .claudeCode, profileID: profile, executablePath: privatePath,
+        homePath: privatePath, version: "2.1.0", installed: true)
+    grouped.agentSetupStates[.claudeCode] = .connected
+    let firstAttempt = CoverageAuditIdentity(auditID: UUID(), provider: .claudeCode, profileID: profile)
+    let secondAttempt = CoverageAuditIdentity(auditID: UUID(), provider: .claudeCode, profileID: profile)
+    func transcriptGap(_ reason: CoverageGapReason, file: String, offset: UInt64, operation: CollectionOperation = .historicalRead,
+                       code: CoverageDiagnosticCode? = nil) -> CoverageGap {
+        let document = UUID(uuidString: String(repeating: file == "a" ? "a" : file == "b" ? "b" : "c", count: 8)
+            + "-0000-0000-0000-000000000000")!
+        return CoverageGap(reason: reason, scope: claudeScope, operation: operation,
+            recovery: .init(session: parentSession, locator: .transcriptByteOffset(documentID: document, byteOffset: offset),
+                            contentTime: earliest.addingTimeInterval(Double(offset)), parserContract: parser,
+                            sourceURL: URL(fileURLWithPath: privatePath + "/\(file).jsonl")),
+            diagnosticCode: code)
+    }
+    let unreadAudit = try HistoricalAuditContext(reason: .restart, endingAt: now.addingTimeInterval(-20))
+    let unreadAuditID = CoverageAuditIdentity(auditID: unreadAudit.id, provider: .claudeCode, profileID: profile)
+    grouped.coverageReport = report(events: [
+        .init(gap: transcriptGap(.unsupportedContent, file: "a", offset: 10, code: .unknownRecordKind),
+              observedAt: now.addingTimeInterval(-60), audit: firstAttempt),
+        .init(gap: transcriptGap(.unsupportedContent, file: "a", offset: 20, code: .invalidFieldType),
+              observedAt: now, audit: secondAttempt),
+        .init(gap: transcriptGap(.unsupportedContent, file: "b", offset: 30), observedAt: now, audit: firstAttempt),
+        .init(gap: transcriptGap(.unsupportedContent, file: "c", offset: 40, operation: .liveRead), observedAt: now),
+        .init(gap: transcriptGap(.unresolvedCorrelation, file: "a", offset: 50), observedAt: now, audit: secondAttempt),
+        .init(gap: .init(reason: .unsupportedContent, scope: claudeScope, contentType: .toolOutput,
+                         diagnosticCode: .excludedBinaryContent, excludedContent: true), observedAt: now)
+    ], history: [.init(provider: .claudeCode, profileID: profile,
+                       progress: .init(audit: unreadAudit, bytesRead: 100, hasUnreadContent: true),
+                       lastAttemptedAt: now, continuationQueued: true)],
+       work: [.init(id: UUID(), context: .init(scope: claudeScope, operation: .historicalRead, audit: unreadAuditID),
+                    state: .queued, admittedAt: now)])
+    let attention = grouped.coverageIssues.filter { !$0.isInProgress }
+    let unsupported = attention.first { $0.id.cause == .reason(.unsupportedContent) }
+    try require(attention.count == 2 && grouped.coverageGaps.count > attention.count
+        && attention.contains { $0.id.cause == .reason(.unresolvedCorrelation) && $0.sourceCount == 1 },
+        "coverage-issues-split-a-cause-by-source-or-attempt")
+    try require(unsupported?.title == "Claude Code: \(AppModel.gapText(.unsupportedContent))"
+        && unsupported?.sourceCount == 3 && unsupported?.recordCount == 4 && unsupported?.rows.count == 3
+        && unsupported?.rows.first?.count == 2
+        && unsupported?.rows.first?.detail == "Affected period \(DisplayTime.full(earliest.addingTimeInterval(10))) to \(DisplayTime.full(earliest.addingTimeInterval(20)))"
+        && unsupported?.parts.map(\.id) == ["History catch-up", "Live collection"]
+        && unsupported?.parts.map(\.amount) == ["2 sources", "1 source"],
+        "coverage-issue-counted-a-repeated-source-twice-or-lost-its-parts")
+    guard case .retrySources(let targets)? = unsupported?.action, targets.count == 3 else {
+        throw CoverageAssertionFailure.failed("coverage-issue-missing-bulk-source-retry")
+    }
+    var bulkRetried: [CoverageSourceRetryDescriptor] = []
+    grouped.onRetrySource = { _ in }
+    grouped.onRetrySources = { bulkRetried = $0 }
+    try require(unsupported?.action?.label == "Retry 3 sources" && grouped.canPerformCoverageAction(.retrySources(targets)),
+        "coverage-bulk-retry-unavailable")
+    grouped.performCoverageAction(.retrySources(targets))
+    try require(bulkRetried.count == 3 && bulkRetried.allSatisfy { grouped.sourceRetryIsCurrent($0) },
+        "coverage-bulk-retry-dispatched-wrong-sources")
+    grouped.retryingHistory.insert(.claudeCode)
+    try require(!grouped.canPerformCoverageAction(.retrySources(targets))
+        && grouped.sourceRetryIsCurrent(targets[0]), "coverage-bulk-retry-ignored-active-retry")
+    grouped.retryingHistory.removeAll()
+    let reading = grouped.coverageIssues.filter(\.isInProgress)
+    try require(reading.count == 1 && reading.first?.id.cause == .reason(.budgetExhausted)
+        && reading.first?.stateText == "Waiting to read" && reading.first?.action == nil,
+        "coverage-read-in-progress-presented-as-action")
+    try require(grouped.excludedCoverageCounts == "1 record in tool output"
+        && !grouped.coverageIssues.contains { $0.rows.contains { $0.state == .excluded } },
+        "coverage-excluded-content-listed-as-issue")
+
     return ["coverage-distinguishes-restored-operation-from-unrecovered-content",
             "coverage-preserves-terminal-legacy-and-truncated-omissions-without-duplicates",
             "coverage-diagnostics-redact-native-identities-values-paths-and-arbitrary-versions",
@@ -444,5 +514,6 @@ func coveragePresentationAssertions() throws -> [String] {
             "coverage-keeps-unexposed-native-child-input-visible-without-guessing-encryption",
             "coverage-explains-hook-conflicts-interruption-content-and-capacity-without-history-retry",
             "coverage-restoration-survives-restart-without-inventing-live-readiness",
-            "coverage-cache-reflects-each-input-change"]
+            "coverage-cache-reflects-each-input-change",
+            "coverage-issues-group-sources-and-attempts-by-cause-with-bulk-retry"]
 }

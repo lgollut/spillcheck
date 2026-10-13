@@ -32,13 +32,49 @@ extension CoverageSourceRetryDescriptor {
 }
 
 enum CoverageAction {
-    case manageAgents, retryHistory(AgentProvider), retrySource(CoverageSourceRetryDescriptor), exportDiagnostics
+    case manageAgents, retryHistory(AgentProvider), retrySource(CoverageSourceRetryDescriptor)
+    case retrySources([CoverageSourceRetryDescriptor]), exportDiagnostics
     var label: String {
         switch self {
         case .manageAgents: "Manage agents"
         case .retryHistory: "Retry profile history"
         case .retrySource: "Retry this source"
+        case .retrySources(let sources): "Retry \(plural(sources.count, "source"))"
         case .exportDiagnostics: "Export diagnostics"
+        }
+    }
+}
+
+/// What was missed, independent of which source, audit or attempt recorded it.
+enum CoverageCause: Hashable {
+    case route(AgentProvider), diagnostic(CoverageDiagnosticCode), reason(CoverageGapReason)
+
+    /// Codes with their own explanation. Any other code shares its reason's explanation.
+    private static let explainedCodes: Set<CoverageDiagnosticCode> = [.encryptedContentUnavailable,
+        .nativeChildInputUnavailable, .hookIdentityConflict, .hookInterrupted, .hookContentUnavailable,
+        .hookStorageLimit, .authorityStorageLimit]
+
+    init(_ key: CoverageGroupKey) {
+        if let code = key.diagnosticCode, Self.explainedCodes.contains(code) { self = .diagnostic(code) }
+        else { self = .reason(key.reason) }
+    }
+
+    var text: String {
+        switch self {
+        case .route: "This collection route needs attention."
+        case .diagnostic(.encryptedContentUnavailable):
+            "This input is encrypted in the Codex source and cannot be analyzed through this route."
+        case .diagnostic(.nativeChildInputUnavailable):
+            "Codex did not expose the subagent's original incoming instructions through this route."
+        case .diagnostic(.hookIdentityConflict):
+            "Codex delivered different content for the same hook identity. The later content could not be analyzed."
+        case .diagnostic(.hookInterrupted): "This Codex turn was interrupted. A complete final reply could not be confirmed."
+        case .diagnostic(.hookContentUnavailable): "This Codex hook did not provide a supported, complete text record."
+        case .diagnostic(.hookStorageLimit): "Hook collection reached its storage limit. New hook content could not be analyzed."
+        case .diagnostic(.authorityStorageLimit):
+            "Conversation tracking reached its storage limit. This conversation could not be registered for collection."
+        case .diagnostic: "Some content couldn’t be analyzed."
+        case .reason(let reason): AppModel.gapText(reason)
         }
     }
 }
@@ -68,6 +104,7 @@ struct CoveragePresentationCache {
     }
     var observations: (inputs: ObservationInputs, value: [AppModel.CoverageObservation])?
     var rows: (inputs: RowInputs, value: [AppModel.CoverageGapRow])?
+    var issues: (inputs: RowInputs, value: [AppModel.CoverageIssue])?
 }
 
 struct CoverageGroupKey: Hashable {
@@ -134,6 +171,27 @@ extension AppModel {
         var count = 1
         var action: CoverageAction?
         var detail: String?
+        /// Operation and content type, which tell rows of one issue apart.
+        var sourceLabel = ""
+        var retry: CoverageSourceRetryDescriptor?
+        var affectedStart: Date?
+        var affectedEnd: Date?
+
+        static func affectedText(start: Date?, end: Date?) -> String? {
+            guard let start, let end else { return nil }
+            return start == end ? "Affected content \(DisplayTime.full(start))"
+                : "Affected period \(DisplayTime.full(start)) to \(DisplayTime.full(end))"
+        }
+
+        /// Another audit's or attempt's record of the same source and state.
+        mutating func absorb(_ other: CoverageGapRow) {
+            count += other.count
+            firstObservedAt = [firstObservedAt, other.firstObservedAt].compactMap { $0 }.min()
+            lastObservedAt = [lastObservedAt, other.lastObservedAt].compactMap { $0 }.max()
+            affectedStart = [affectedStart, other.affectedStart].compactMap { $0 }.min()
+            affectedEnd = [affectedEnd, other.affectedEnd].compactMap { $0 }.max()
+            detail = Self.affectedText(start: affectedStart, end: affectedEnd)
+        }
 
         var stateLabel: String {
             if case .issue(let key) = id,
@@ -153,6 +211,132 @@ extension AppModel {
                 return "Encrypted input unavailable"
             }
             return state.label
+        }
+    }
+
+    /// Everything with one cause for one profile, however many sources, audits and attempts recorded
+    /// it. Its rows keep each source and state apart, so every row's own retry remains available.
+    struct CoverageIssue: Identifiable {
+        struct ID: Hashable {
+            let profile: CoverageProfileKey?
+            let cause: CoverageCause
+            let recovered: Bool
+        }
+        /// An operation and content type within the issue.
+        struct Part: Identifiable {
+            let id: String
+            let amount: String
+        }
+
+        let id: ID
+        let title: String
+        /// Each source and state once, in report order.
+        let rows: [CoverageGapRow]
+        let sourceCount: Int
+        let recordCount: Int
+        let parts: [Part]
+        let firstObservedAt: Date?
+        let lastObservedAt: Date?
+        let detail: String?
+        let action: CoverageAction?
+
+        private static let stateOrder: [CoverageIssueState] = [.blocked, .stalled, .retryable, .recoveryUnconfirmed,
+            .historicalLoss, .operationRestored, .reading, .queued, .excluded, .recovered]
+
+        /// `recorded` must not be empty.
+        init(id: ID, rows recorded: [CoverageGapRow]) {
+            // Each catch-up attempt records a failing source again. List it once per state.
+            struct MergeKey: Hashable {
+                let retry: CoverageSourceRetryDescriptor
+                let state: CoverageIssueState
+                let label: String
+                let source: String
+            }
+            var rows: [CoverageGapRow] = []
+            var merged: [MergeKey: Int] = [:]
+            for row in recorded {
+                guard let retry = row.retry else { rows.append(row); continue }
+                let key = MergeKey(retry: retry, state: row.state, label: row.stateLabel, source: row.sourceLabel)
+                if let index = merged[key] { rows[index].absorb(row) }
+                else { merged[key] = rows.count; rows.append(row) }
+            }
+            self.id = id
+            self.rows = rows
+            if case .route = id.cause { title = rows[0].text }
+            else { title = "\(id.profile?.provider.displayName ?? "Collection"): \(id.cause.text)" }
+            sourceCount = Self.distinct(rows.compactMap(\.retry)).count
+            recordCount = rows.reduce(0) { $0 + $1.count }
+            var labels: [String] = []
+            var labelled: [String: [CoverageGapRow]] = [:]
+            for row in rows where !row.sourceLabel.isEmpty {
+                if labelled[row.sourceLabel] == nil { labels.append(row.sourceLabel) }
+                labelled[row.sourceLabel, default: []].append(row)
+            }
+            parts = labels.map { label in
+                let rows = labelled[label] ?? []
+                let sources = Self.distinct(rows.compactMap(\.retry)).count
+                return Part(id: label, amount: sources > 0 ? plural(sources, "source")
+                    : plural(rows.reduce(0) { $0 + $1.count }, "record"))
+            }
+            firstObservedAt = rows.compactMap(\.firstObservedAt).min()
+            lastObservedAt = rows.compactMap(\.lastObservedAt).max()
+            detail = CoverageGapRow.affectedText(start: rows.compactMap(\.affectedStart).min(),
+                                                 end: rows.compactMap(\.affectedEnd).max())
+            let targets = Self.distinct(rows.compactMap { row -> CoverageSourceRetryDescriptor? in
+                if case .retrySource(let source)? = row.action { return source }
+                return nil
+            })
+            func rank(_ action: CoverageAction) -> Int {
+                switch action {
+                case .retrySource, .retrySources: 0
+                case .retryHistory: 1
+                case .manageAgents: 2
+                case .exportDiagnostics: 3
+                }
+            }
+            action = targets.isEmpty ? rows.compactMap(\.action).min { rank($0) < rank($1) } : .retrySources(targets)
+        }
+
+        /// Reads in progress need no action, but their content is not analyzed yet.
+        var isInProgress: Bool { rows.allSatisfy { $0.state == .queued || $0.state == .reading } }
+
+        /// Each distinct state, most actionable first.
+        var stateText: String {
+            var labels: [String] = []
+            let ordered = rows.sorted {
+                (Self.stateOrder.firstIndex(of: $0.state) ?? 0) < (Self.stateOrder.firstIndex(of: $1.state) ?? 0)
+            }
+            for row in ordered where !labels.contains(row.stateLabel) { labels.append(row.stateLabel) }
+            return labels.joined(separator: " · ")
+        }
+
+        /// Sources when they are known, otherwise records. A single operation is named here.
+        var amountText: String {
+            if case .route = id.cause { return "" }
+            let amount = sourceCount > 0 ? "\(plural(sourceCount, "source")) · \(plural(recordCount, "record"))"
+                : plural(recordCount, "record")
+            return parts.count == 1 ? "\(parts[0].id) · \(amount)" : amount
+        }
+
+        /// Selections that read the same original source count once.
+        static func distinct(_ sources: [CoverageSourceRetryDescriptor]) -> [CoverageSourceRetryDescriptor] {
+            // A match requires the same scope and selection, so only those are compared.
+            struct Bucket: Hashable {
+                let scope: CollectionScope
+                let session: SessionIdentity?
+                let url: URL?
+            }
+            var buckets: [Bucket: [CoverageSourceRetryDescriptor]] = [:]
+            var unique: [CoverageSourceRetryDescriptor] = []
+            for source in sources {
+                let bucket = Bucket(scope: source.scope,
+                    session: source.scope.path == .publicHistory ? source.session : nil,
+                    url: source.scope.path == .versionedTranscript ? source.sourceURL : nil)
+                guard !(buckets[bucket] ?? []).contains(where: { $0.identifiesSameSource(as: source) }) else { continue }
+                buckets[bucket, default: []].append(source)
+                unique.append(source)
+            }
+            return unique
         }
     }
 
@@ -182,6 +366,24 @@ extension AppModel {
 
     var coverageGaps: [CoverageGapRow] { coverageRows.filter { $0.state != .recovered } }
     var recoveredCoverageGaps: [CoverageGapRow] { coverageRows.filter { $0.state == .recovered } }
+    /// Unrecovered issues, including reads in progress. Excluded content is a stated limit instead.
+    var coverageIssues: [CoverageIssue] { allCoverageIssues.filter { !$0.id.recovered } }
+    var recoveredCoverageIssues: [CoverageIssue] { allCoverageIssues.filter(\.id.recovered) }
+
+    /// Records outside text analysis by design, by content type. No retry can recover them.
+    var excludedCoverageCounts: String? {
+        var counts: [ContentType?: Int] = [:]
+        for row in coverageRows where row.state == .excluded {
+            guard case .issue(let key) = row.id else { continue }
+            counts[key.contentType, default: 0] += row.count
+        }
+        guard !counts.isEmpty else { return nil }
+        let places = counts.map { (place: $0.key?.pluralLabel.lowercased() ?? "other content", count: $0.value) }
+            .sorted { $0.count != $1.count ? $0.count > $1.count : $0.place < $1.place }
+        return places.enumerated().map { index, entry in
+            "\(index == 0 ? plural(entry.count, "record") : entry.count.formatted()) in \(entry.place)"
+        }.joined(separator: " · ")
+    }
     var coverageNeedsAttention: Bool {
         coverageGaps.contains { ![.queued, .reading, .excluded].contains($0.state) } || coverageReport?.isTruncated == true
     }
@@ -197,14 +399,8 @@ extension AppModel {
         case .exportDiagnostics:
             return !exportingDiagnostics && onExportDiagnostics != nil
                 && (canExportStartupDiagnostics || (!storageUnavailable && coverageReport != nil))
-        case .retrySource(let source):
-            return source.hasExactSelection && !storageUnavailable && monitoringEnabled && !monitoringTransition
-                && !agentSetupBusy.contains(source.scope.provider) && !catchingUp && retryingHistory.isEmpty
-                && agentProfiles[source.scope.provider]?.installed == true
-                && agentProfiles[source.scope.provider]?.profileID == source.scope.profileID
-                && agentProfiles[source.scope.provider]?.authorizedHosts.contains(source.scope.interface) == true
-                && agentSetupStates[source.scope.provider] == .connected && onRetrySource != nil
-                && coverageReport?.hasPendingWork(for: source) != true
+        case .retrySource(let source): return canRetry(source) && onRetrySource != nil
+        case .retrySources(let sources): return onRetrySources != nil && sources.contains(where: canRetry)
         case .retryHistory(let provider):
             return !storageUnavailable && monitoringEnabled && !monitoringTransition && !agentSetupBusy.contains(provider)
                 && !catchingUp && retryingHistory.isEmpty
@@ -221,8 +417,26 @@ extension AppModel {
         case .manageAgents: route = .settings(.agents)
         case .retryHistory(let provider): onRetryHistory?(provider)
         case .retrySource(let source): onRetrySource?(source)
+        case .retrySources(let sources): onRetrySources?(sources.filter(canRetry))
         case .exportDiagnostics: onExportDiagnostics?()
         }
+    }
+
+    private func canRetry(_ source: CoverageSourceRetryDescriptor) -> Bool {
+        sourceRetryIsCurrent(source) && !catchingUp && retryingHistory.isEmpty
+            && coverageReport?.hasPendingWork(for: source) != true
+    }
+
+    /// Whether the profile, host and connection that selected this source are still current.
+    /// A retry already under way rechecks each later source with this alone, since its own reads keep
+    /// the reader busy.
+    func sourceRetryIsCurrent(_ source: CoverageSourceRetryDescriptor) -> Bool {
+        source.hasExactSelection && !storageUnavailable && monitoringEnabled && !monitoringTransition
+            && !agentSetupBusy.contains(source.scope.provider)
+            && agentProfiles[source.scope.provider]?.installed == true
+            && agentProfiles[source.scope.provider]?.profileID == source.scope.profileID
+            && agentProfiles[source.scope.provider]?.authorizedHosts.contains(source.scope.interface) == true
+            && agentSetupStates[source.scope.provider] == .connected
     }
 
     /// Historical loss and excluded media do not mean the current read operation is failing.
@@ -388,14 +602,40 @@ extension AppModel {
         return persistedRead != nil
     }
 
+    private var coverageRowInputs: CoveragePresentationCache.RowInputs {
+        .init(observations: coverageObservationInputs, setupStates: agentSetupStates,
+              profileIDs: agentProfiles.mapValues(\.profileID), day: Calendar.current.startOfDay(for: .now))
+    }
+
     private var coverageRows: [CoverageGapRow] {
-        let inputs = CoveragePresentationCache.RowInputs(observations: coverageObservationInputs,
-            setupStates: agentSetupStates, profileIDs: agentProfiles.mapValues(\.profileID),
-            day: Calendar.current.startOfDay(for: .now))
+        let inputs = coverageRowInputs
         if let cached = coverageCache.rows, cached.inputs == inputs { return cached.value }
         let rows = buildCoverageRows()
         coverageCache.rows = (inputs, rows)
         return rows
+    }
+
+    private var allCoverageIssues: [CoverageIssue] {
+        let inputs = coverageRowInputs
+        if let cached = coverageCache.issues, cached.inputs == inputs { return cached.value }
+        let issues = buildCoverageIssues(from: coverageRows)
+        coverageCache.issues = (inputs, issues)
+        return issues
+    }
+
+    /// Issues keep the first-occurrence order of their rows.
+    private func buildCoverageIssues(from rows: [CoverageGapRow]) -> [CoverageIssue] {
+        var ids: [CoverageIssue.ID] = []
+        var groups: [CoverageIssue.ID: [CoverageGapRow]] = [:]
+        for row in rows where row.state != .excluded {
+            let id: CoverageIssue.ID = switch row.id {
+            case .route(let provider): .init(profile: nil, cause: .route(provider), recovered: false)
+            case .issue(let key): .init(profile: key.profile, cause: .init(key), recovered: row.state == .recovered)
+            }
+            if groups[id] == nil { ids.append(id) }
+            groups[id, default: []].append(row)
+        }
+        return ids.compactMap { id in groups[id].map { CoverageIssue(id: id, rows: $0) } }
     }
 
     private func buildCoverageRows() -> [CoverageGapRow] {
@@ -425,28 +665,14 @@ extension AppModel {
             let message = observation.state == .queued ? "This source is waiting to be read."
                 : observation.state == .reading ? "This source is being read."
                 : observation.state == .excluded ? "Images and other non-text content are excluded from analysis."
-                : gap.diagnosticCode == .encryptedContentUnavailable
-                    ? "This input is encrypted in the Codex source and cannot be analyzed through this route."
-                : gap.diagnosticCode == .nativeChildInputUnavailable
-                    ? "Codex did not expose the subagent's original incoming instructions through this route."
-                : gap.diagnosticCode == .hookIdentityConflict
-                    ? "Codex delivered different content for the same hook identity. The later content could not be analyzed."
-                : gap.diagnosticCode == .hookInterrupted
-                    ? "This Codex turn was interrupted. A complete final reply could not be confirmed."
-                : gap.diagnosticCode == .hookContentUnavailable
-                    ? "This Codex hook did not provide a supported, complete text record."
-                : gap.diagnosticCode == .hookStorageLimit
-                    ? "Hook collection reached its storage limit. New hook content could not be analyzed."
-                : gap.diagnosticCode == .authorityStorageLimit
-                    ? "Conversation tracking reached its storage limit. This conversation could not be registered for collection."
-                : Self.gapText(gap.reason)
+                : CoverageCause(key).text
             var row = CoverageGapRow(id: .issue(key), text: "\(scopeText)\(typeText)\(operationText): \(message)",
                 state: observation.state, firstObservedAt: group.compactMap(\.first).min(),
-                lastObservedAt: group.compactMap(\.last).max(), count: group.count)
-            if let start = group.compactMap(\.affectedStart).min(), let end = group.compactMap(\.affectedEnd).max() {
-                row.detail = start == end ? "Affected content \(DisplayTime.full(start))"
-                    : "Affected period \(DisplayTime.full(start)) to \(DisplayTime.full(end))"
-            }
+                lastObservedAt: group.compactMap(\.last).max(), count: group.count,
+                sourceLabel: [gap.operation?.label, gap.contentType?.pluralLabel].compactMap { $0 }.joined(separator: " · "),
+                retry: observation.retry, affectedStart: group.compactMap(\.affectedStart).min(),
+                affectedEnd: group.compactMap(\.affectedEnd).max())
+            row.detail = CoverageGapRow.affectedText(start: row.affectedStart, end: row.affectedEnd)
             switch observation.state {
             case .recovered, .excluded, .queued, .reading, .historicalLoss: break
             case .operationRestored: row.action = .exportDiagnostics

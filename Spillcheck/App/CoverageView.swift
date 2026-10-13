@@ -57,6 +57,8 @@ extension AppModel {
 
 struct CoverageView: View {
     let model: AppModel
+    @State private var expandedIssues: Set<AppModel.CoverageIssue.ID> = []
+    @State private var showsRecovered = false
 
     private var window: DateInterval { model.activity?.window ?? AnalyzedActivity.recentWindow(endingAt: .now) }
     private var rangeText: String { "\(DisplayTime.day(window.start)) – \(DisplayTime.day(window.end))" }
@@ -93,11 +95,6 @@ struct CoverageView: View {
                         totals
                         collectionStorage
                         dailyCoverage
-                        if shownRoutes.contains(where: { $0.provider == .codex }) {
-                            Text("Codex beta limits: automatic side chats, encrypted subagent instructions, and general hook-injected context are not covered. Readable replies and tool results are analyzed when available. These limits do not clear recorded gaps.")
-                                .font(.system(size: 12)).foregroundStyle(Palette.tertiary).lineSpacing(2)
-                                .accessibilityIdentifier("coverage.codex-beta-limits")
-                        }
                         gaps
                     }
                 }
@@ -145,7 +142,8 @@ struct CoverageView: View {
                 fact("Live reads ready", "\(collecting) of \(shownRoutes.count)")
                 fact("Processing", model.processingShort)
                 fact("Catch-up completed", model.lastCatchUp.map { DisplayTime.full($0) } ?? "Not yet")
-                fact(model.coverageReport?.isTruncated == true ? "Shown issues" : "Issues", model.coverageGaps.count.formatted())
+                fact(model.coverageReport?.isTruncated == true ? "Shown issues" : "Issues",
+                     model.coverageIssues.filter { !$0.isInProgress }.count.formatted())
             }
             if let attempt = model.lastCatchUpAttempt {
                 Text("Last catch-up attempt \(DisplayTime.full(attempt))")
@@ -277,74 +275,227 @@ struct CoverageView: View {
         .padding(.horizontal, 16).padding(.vertical, 12)
     }
 
+    /// One row per cause. Reads in progress, recovered issues and stated limits follow in groups of
+    /// their own, so a long catch-up cannot bury what needs action.
     private var gaps: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("Gaps").font(.system(size: 13, weight: .semibold)).accessibilityAddTraits(.isHeader)
-                Spacer()
-                Button("Export diagnostics…") { model.performCoverageAction(.exportDiagnostics) }
-                    .buttonStyle(QuietButtonStyle(foreground: Palette.link, height: 26))
-                    .disabled(!model.canPerformCoverageAction(.exportDiagnostics))
-                    .help(DiagnosticsExport.help)
-            }.padding(.horizontal, 2)
-            if model.coverageReport?.isTruncated == true {
-                Text("This view reached its record limit. The counts in diagnostics show the full query size; coverage remains incomplete.")
-                    .font(.system(size: 12)).foregroundStyle(Palette.amberText)
-            }
-            VStack(spacing: 0) {
-                if model.coverageGaps.isEmpty {
-                    Text(model.hasAnalyzedContent || model.monitoringProven
+        let issues = model.coverageIssues
+        let attention = issues.filter { !$0.isInProgress }
+        let reading = issues.filter(\.isInProgress)
+        let recovered = model.recoveredCoverageIssues
+        return VStack(alignment: .leading, spacing: 24) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text("Gaps").font(.system(size: 13, weight: .semibold)).accessibilityAddTraits(.isHeader)
+                    Spacer()
+                    Button("Export diagnostics…") { model.performCoverageAction(.exportDiagnostics) }
+                        .buttonStyle(QuietButtonStyle(foreground: Palette.link, height: 26))
+                        .disabled(!model.canPerformCoverageAction(.exportDiagnostics))
+                        .help(DiagnosticsExport.help)
+                }.padding(.horizontal, 2)
+                if model.coverageReport?.isTruncated == true {
+                    Text("This view reached its record limit. The counts in diagnostics show the full query size; coverage remains incomplete.")
+                        .font(.system(size: 12)).foregroundStyle(Palette.amberText)
+                }
+                if attention.isEmpty {
+                    Text(!reading.isEmpty ? "Nothing needs action. Some content is still being read."
+                        : model.hasAnalyzedContent || model.monitoringProven
                         ? "No gaps recorded in the last 7 days." : model.coverageSummaryText)
                         .font(.system(size: 12.5)).foregroundStyle(Palette.tertiary)
                         .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
                         .padding(.horizontal, 16)
-                }
-                ForEach(Array(model.coverageGaps.enumerated()), id: \.element.id) { index, gap in
-                    gapRow(gap)
-                        .overlay(alignment: .top) { if index > 0 { Rectangle().fill(Palette.hairline).frame(height: 1) } }
+                        .card()
+                } else {
+                    issueList(attention)
                 }
             }
-            .card()
-            if !model.recoveredCoverageGaps.isEmpty {
-                DisclosureGroup("Recovered · \(model.recoveredCoverageGaps.count)") {
-                    VStack(spacing: 0) {
-                        ForEach(model.recoveredCoverageGaps) { gapRow($0) }
-                    }.card()
+            if !reading.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    groupHeader("In progress") {
+                        Text("No action needed").font(.system(size: 11.5)).foregroundStyle(Palette.tertiary)
+                    }
+                    issueList(reading)
                 }
-                .font(.system(size: 12)).foregroundStyle(Palette.secondary)
             }
+            if !recovered.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    groupHeader("Recovered · \(recovered.count.formatted())") {
+                        Button(showsRecovered ? "Hide" : "Show") { showsRecovered.toggle() }
+                            .buttonStyle(QuietButtonStyle(foreground: Palette.link, height: 22, horizontalPadding: 4))
+                    }
+                    if showsRecovered { issueList(recovered) }
+                }
+            }
+            notAnalyzed
             Text("First and last observed times don’t prove everything in between was seen. A day with nothing seen may simply have had no agent activity. Inventory entries don’t expire.")
                 .font(.system(size: 12)).foregroundStyle(Palette.tertiary).lineSpacing(2)
                 .padding(.horizontal, 2)
         }
     }
 
-    private func gapRow(_ gap: AppModel.CoverageGapRow) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            RoundedRectangle(cornerRadius: 2)
-                .fill([.recovered, .excluded].contains(gap.state) ? Palette.quaternary : Palette.amber)
-                .frame(width: 8, height: 8).padding(.top, 5).accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(gap.text).font(.system(size: 12.5)).foregroundStyle(Palette.ink2).lineSpacing(2)
-                Text(gap.stateLabel + (gap.count > 1 ? " · \(gap.count) records" : ""))
-                    .font(.system(size: 11.5, weight: .medium)).foregroundStyle(Palette.secondary)
-                if let first = gap.firstObservedAt {
-                    Text("First recorded \(DisplayTime.full(first))"
-                         + (gap.lastObservedAt.flatMap { $0 > first ? " · Last recorded \(DisplayTime.full($0))" : nil } ?? ""))
-                        .font(.system(size: 11)).foregroundStyle(Palette.tertiary)
-                }
-                if let detail = gap.detail {
-                    Text(detail).font(.system(size: 11)).foregroundStyle(Palette.tertiary)
-                }
-            }.frame(maxWidth: .infinity, alignment: .leading)
-            if let action = gap.action {
-                Button(action.label) { model.performCoverageAction(action) }
-                    .buttonStyle(OutlineButtonStyle(height: 28))
-                    .disabled(!model.canPerformCoverageAction(action))
+    private func groupHeader(_ title: String, @ViewBuilder trailing: () -> some View) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(title).font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.secondary)
+                .accessibilityAddTraits(.isHeader)
+            Spacer()
+            trailing()
+        }
+        .padding(.horizontal, 2)
+    }
+
+    private func issueList(_ issues: [AppModel.CoverageIssue]) -> some View {
+        VStack(spacing: 0) {
+            ForEach(Array(issues.enumerated()), id: \.element.id) { index, issue in
+                issueRow(issue)
+                    .overlay(alignment: .top) { if index > 0 { Rectangle().fill(Palette.hairline).frame(height: 1) } }
             }
+        }
+        .card()
+    }
+
+    private enum Indicator { case attention, reading, settled }
+
+    /// Every group's rows share this column, so their text lines up from card to card.
+    private func indicator(_ kind: Indicator) -> some View {
+        ZStack {
+            switch kind {
+            case .reading: RingSpinner()
+            case .attention, .settled:
+                RoundedRectangle(cornerRadius: 2).fill(kind == .attention ? Palette.amber : Palette.quaternary)
+                    .frame(width: 8, height: 8)
+            }
+        }
+        .frame(width: 16, height: 16)
+        .accessibilityHidden(true)
+    }
+
+    private func issueRow(_ issue: AppModel.CoverageIssue) -> some View {
+        let expanded = expandedIssues.contains(issue.id)
+        let amount = [issue.amountText, issue.detail ?? ""].filter { !$0.isEmpty }.joined(separator: " · ")
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 12) {
+                indicator(issue.isInProgress ? .reading : issue.id.recovered ? .settled : .attention)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(issue.title).font(.system(size: 12.5, weight: .medium)).foregroundStyle(Palette.ink2).lineSpacing(2)
+                    Text(issue.stateText).font(.system(size: 11.5, weight: .medium)).foregroundStyle(Palette.secondary)
+                    if !amount.isEmpty {
+                        Text(amount).font(.system(size: 11)).foregroundStyle(Palette.tertiary).monospacedDigit()
+                    }
+                    if let recorded = recordedText(first: issue.firstObservedAt, last: issue.lastObservedAt) {
+                        Text(recorded).font(.system(size: 11)).foregroundStyle(Palette.tertiary)
+                    }
+                    if issue.parts.count > 1 {
+                        FlowChips {
+                            ForEach(issue.parts) { part in
+                                Text("\(part.id) · \(part.amount)").chip(background: Palette.chip, foreground: Palette.secondary)
+                            }
+                        }
+                        .padding(.top, 2)
+                    }
+                }.frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .trailing, spacing: 4) {
+                    if let action = issue.action {
+                        Button(action.label) { model.performCoverageAction(action) }
+                            .buttonStyle(OutlineButtonStyle(height: 28))
+                            .disabled(!model.canPerformCoverageAction(action))
+                    }
+                    if issue.rows.count > 1 {
+                        Button(expanded ? "Hide details" : "Show details") {
+                            if expanded { expandedIssues.remove(issue.id) } else { expandedIssues.insert(issue.id) }
+                        }
+                        .buttonStyle(QuietButtonStyle(foreground: Palette.link, height: 22, horizontalPadding: 4))
+                    }
+                }
+            }
+            if expanded { issueDetails(issue).padding(.leading, 28) }
         }
         .padding(.horizontal, 16).padding(.vertical, 12)
         .frame(minHeight: 48)
+        .accessibilityElement(children: .contain)
+    }
+
+    /// Each source and state separately, with its own retry. Labels shared by every row stay on the issue.
+    private func issueDetails(_ issue: AppModel.CoverageIssue) -> some View {
+        let sharedSource = issue.parts.count <= 1
+        let sharedState = !issue.stateText.contains(" · ")
+        return VStack(spacing: 0) {
+            ForEach(Array(issue.rows.enumerated()), id: \.element.id) { index, row in
+                HStack(alignment: .top, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(row.detail ?? (row.sourceLabel.isEmpty ? "Location unknown" : row.sourceLabel))
+                            .font(.system(size: 12)).foregroundStyle(Palette.ink2)
+                        Text([row.detail == nil || sharedSource ? "" : row.sourceLabel, sharedState ? "" : row.stateLabel,
+                              plural(row.count, "record"),
+                              recordedText(first: row.firstObservedAt, last: row.lastObservedAt) ?? ""]
+                            .filter { !$0.isEmpty }.joined(separator: " · "))
+                            .font(.system(size: 11)).foregroundStyle(Palette.tertiary)
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                    if let action = row.action, ownAction(action) {
+                        let enabled = model.canPerformCoverageAction(action)
+                        Button(action.label) { model.performCoverageAction(action) }
+                            .buttonStyle(QuietButtonStyle(foreground: Palette.link, height: 22, horizontalPadding: 4))
+                            .opacity(enabled ? 1 : 0.45)
+                            .disabled(!enabled)
+                    }
+                }
+                .padding(.horizontal, 12).padding(.vertical, 8)
+                .overlay(alignment: .top) { if index > 0 { Rectangle().fill(Palette.hairline).frame(height: 1) } }
+            }
+        }
+        .card(radius: 8, ring: 0.05)
+    }
+
+    /// Diagnostics export already heads the section, so detail rows offer only reads.
+    private func ownAction(_ action: CoverageAction) -> Bool {
+        switch action {
+        case .retrySource, .retrySources, .retryHistory, .manageAgents: true
+        case .exportDiagnostics: false
+        }
+    }
+
+    private func recordedText(first: Date?, last: Date?) -> String? {
+        guard let first else { return nil }
+        return "First recorded \(DisplayTime.full(first))"
+            + (last.flatMap { $0 > first ? " · Last recorded \(DisplayTime.full($0))" : nil } ?? "")
+    }
+
+    /// Stated limits rather than failures: no retry can recover this content.
+    @ViewBuilder private var notAnalyzed: some View {
+        let excluded = model.excludedCoverageCounts
+        let codex = shownRoutes.contains { $0.provider == .codex }
+        if excluded != nil || codex {
+            VStack(alignment: .leading, spacing: 8) {
+                groupHeader("Not analyzed by design") {
+                    Text("Limits, not failures").font(.system(size: 11.5)).foregroundStyle(Palette.tertiary)
+                }
+                VStack(spacing: 0) {
+                    if let excluded {
+                        limitRow("Images and other non-text content", "Excluded from text analysis", excluded)
+                    }
+                    if codex {
+                        limitRow("Codex beta limits",
+                                 "Automatic side chats, encrypted subagent instructions, and general hook-injected context aren’t covered.",
+                                 "Readable replies and tool results are analyzed when available. These limits do not clear recorded gaps.")
+                            .overlay(alignment: .top) { if excluded != nil { Rectangle().fill(Palette.hairline).frame(height: 1) } }
+                            .accessibilityIdentifier("coverage.codex-beta-limits")
+                    }
+                }
+                .card()
+            }
+        }
+    }
+
+    private func limitRow(_ title: String, _ state: String, _ detail: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            indicator(.settled)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title).font(.system(size: 12.5, weight: .medium)).foregroundStyle(Palette.ink2)
+                Text(state).font(.system(size: 11.5, weight: .medium)).foregroundStyle(Palette.secondary).lineSpacing(2)
+                Text(detail).font(.system(size: 11)).foregroundStyle(Palette.tertiary).lineSpacing(2).monospacedDigit()
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 16).padding(.vertical, 12)
+        .accessibilityElement(children: .combine)
     }
 }
 

@@ -17,6 +17,7 @@ import uuid
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "Tests"))
 from Support.acceptance_artifacts import AcceptanceArtifacts
+from Support.workflow_observation import WorkflowObservations, read_workflow_report
 
 TOKEN = "ghp_8nR4vY2qL7sD9mF3xK6cP1aB5hJ0uE4wT9zS"
 WORKFLOW_MARKERS = [TOKEN, "ghp_6tV2kQ9sR4nH7xB1wJ8mF3cL0yD5pA9eU2zG",
@@ -68,6 +69,8 @@ def main():
         stdout_file, stderr_file = root / "stdout.bin", root / "stderr.bin"
         with stdout_file.open("wb") as stdout, stderr_file.open("wb") as stderr:
             process = subprocess.Popen(command, stdout=stdout, stderr=stderr, start_new_session=True)
+            observations = WorkflowObservations(process.pid)
+            artifacts.report["workflowStateObservations"] = observations.report()
             args.ready.parent.mkdir(parents=True, exist_ok=True)
             ready = {"ready": True, "directory": str(root), "source": str(source), "appReport": str(report_path),
                      "processID": process.pid, "syntheticOnly": True, "leaseSeconds": args.duration}
@@ -75,6 +78,11 @@ def main():
             print(json.dumps({"ready": True, "readyReport": str(args.ready)}), flush=True)
             deadline = time.monotonic() + args.duration
             while process.poll() is None and time.monotonic() < deadline:
+                try:
+                    observations.observe(read_workflow_report(report_path))
+                except (OSError, ValueError):
+                    pass
+                artifacts.report["workflowStateObservations"] = observations.report()
                 time.sleep(0.2)
             timed_out = process.poll() is None
             if timed_out:
@@ -84,7 +92,12 @@ def main():
                 except subprocess.TimeoutExpired:
                     os.killpg(process.pid, 9)
                     process.wait(timeout=5)
-        result = json.loads(report_path.read_text()) if report_path.is_file() else {"reportMissing": True}
+        try:
+            result = read_workflow_report(report_path)
+        except (OSError, ValueError):
+            result = {"reportMissingOrRejected": True}
+        observations.observe(result)
+        artifacts.report["workflowStateObservations"] = observations.report()
         clean = store.is_dir() and all(all(marker.encode() not in p.read_bytes() for marker in WORKFLOW_MARKERS)
                                       for p in store.rglob("*") if p.is_file())
         lifecycle_passed = (not timed_out and process.returncode == 0 and result.get("queueCount") == 0
@@ -94,6 +107,7 @@ def main():
             "stdoutBytes": stdout_file.stat().st_size, "diagnosticBytes": stderr_file.stat().st_size,
             "ciphertextMarkerInspectionPassed": clean, "result": result,
             "ciphertextSyntheticMarkersChecked": len(WORKFLOW_MARKERS),
+            "workflowStateObservations": observations.report(),
             "passed": bool(lifecycle_passed),
             "passScope": "Normal native app termination, empty queue, ciphertext inspection and new-vault cleanup; manual workflow events require separate review."}
         args.ready.write_text(json.dumps({"ready": False, "finished": True}, indent=2) + "\n")

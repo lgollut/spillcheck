@@ -2,7 +2,8 @@
 """Actual Claude CLI -> production helper -> encrypted queue -> adapter/detector/store.
 
 Only disposable configs and synthetic values are used. Authentication is reused
-without configuration/history reuse; copied auth and provider transcripts are removed.
+without configuration/history reuse; copied auth is always removed. Successful
+runs remove transcripts; failed runs retain their owned, private source artifacts.
 Printed reports contain counts/checks, never provider stdout, credentials or raw events.
 """
 import argparse
@@ -11,6 +12,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -21,14 +23,17 @@ import uuid
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "Tests"))
 from Support.processes import stop_group
+from Support.claude_native_evidence import inspect_disposable_native_sources
 
 SECRET = "ghp_8nR4vY2qL7sD9mF3xK6cP1aB5hJ0uE4wT9zS"
+CHILD_PROMPT = f"""LEAKRET_M3_CHILD_PROMPT {SECRET}. Disposable synthetic test. Your first assistant text must contain LEAKRET_M3_CHILD_INTERMEDIATE {SECRET}. Use Bash to run printf 'LEAKRET_M3_CHILD_TOOL_OUTPUT {SECRET}\\n'. Then use Bash to run printf 'LEAKRET_M3_CHILD_TOOL_ERROR {SECRET}\\n' >&2; exit 7. This failure is intentional; do not repair it. End with LEAKRET_M3_CHILD_FINAL {SECRET}. Do not read files or browse."""
 PROMPT = f"""Disposable local Spillcheck test. Every credential below is synthetic and must never be used for authentication. Do not read files or browse. User marker LEAKRET_M3_PROMPT {SECRET}.
 1. Your first assistant text must contain LEAKRET_M3_INTERMEDIATE {SECRET}.
 2. Run printf 'LEAKRET_M3_SHELL_OK {SECRET}\\n'; sleep 1 using Bash.
 3. Run printf 'LEAKRET_M3_SHELL_ERROR {SECRET}\\n' >&2; exit 7 using Bash. This failure is intentional; do not repair it.
 4. Call spillcheck_synthetic synthetic_output MCP with fail=false, then fail=true. The error is intentional; do not repair it.
-5. Use your built-in Agent tool with prompt LEAKRET_M3_CHILD_PROMPT {SECRET}. Instruct the child to respond LEAKRET_M3_CHILD_FINAL {SECRET} only. Wait for its result.
+5. Use your built-in Agent tool with the following exact prompt. Wait for its result:
+{CHILD_PROMPT}
 6. End with LEAKRET_M3_FINAL {SECRET}.
 """
 
@@ -39,7 +44,8 @@ def authentication(env, config):
         shutil.copyfile(auth, config / ".credentials.json")
         os.chmod(config / ".credentials.json", 0o600)
     else:
-        result = subprocess.run(["/usr/bin/security", "find-generic-password", "-s", "Claude Code-credentials", "-w"], capture_output=True)
+        result = subprocess.run(["/usr/bin/security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
+                                capture_output=True, timeout=10)
         if result.returncode == 0:
             try:
                 token = json.loads(result.stdout).get("claudeAiOauth", {}).get("accessToken")
@@ -47,6 +53,105 @@ def authentication(env, config):
                     env["CLAUDE_CODE_OAUTH_TOKEN"] = token
             except (ValueError, TypeError):
                 pass
+
+
+def provider_failure_details(output, errors, *, exit_code, timed_out=False):
+    """Classify bounded, explicitly flagged provider errors without exporting their text.
+
+    Ordinary model text, prompts, tool results and malformed output are not evidence
+    for an account diagnosis. Unknown or conflicting error formats stay generic.
+    """
+    if timed_out:
+        return {"failureCategory": "providerTimedOut", "failureClassificationTruncated": False}
+    if exit_code == 0:
+        return {}
+    categories, truncated = set(), False
+    codes = {"rate_limit": "rateLimit", "rate_limit_error": "rateLimit",
+        "authentication_error": "authenticationUnavailable", "authentication_failed": "authenticationUnavailable",
+        "invalid_api_key": "authenticationUnavailable", "error_max_budget_usd": "fixtureBudgetLimit"}
+
+    def text_category(value):
+        nonlocal truncated
+        if not isinstance(value, str):
+            return
+        truncated = truncated or len(value) > 4096
+        selected = value[:4096].strip().lower()
+        for pattern, category in (
+            (r"^(?:you['’]ve|you have) hit your session limit\b", "sessionLimit"),
+            (r"^(?:not logged in\b|invalid api key\b|authentication failed\b)", "authenticationUnavailable"),
+            (r"^(?:rate limit exceeded\b|too many requests\b)", "rateLimit")):
+            if re.search(pattern, selected):
+                categories.add(category)
+
+    def unique(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("duplicate provider field")
+            value[key] = item
+        return value
+
+    for data, limit in ((output, 256 * 1024), (errors, 16 * 1024)):
+        if not isinstance(data, bytes):
+            continue
+        if len(data) > limit:
+            truncated = True
+            data = data[-limit:]
+            _, separator, data = data.partition(b"\n")
+            if not separator:
+                continue
+        lines = data.splitlines()
+        truncated = truncated or len(lines) > 128
+        for line in lines[-128:]:
+            if len(line) > 32768:
+                truncated = True
+                continue
+            try:
+                row = json.loads(line, object_pairs_hook=unique)
+            except (ValueError, RecursionError):
+                continue
+            if not isinstance(row, dict):
+                continue
+            kind, error = row.get("type"), row.get("error")
+            subtype = row.get("subtype")
+            flagged = (kind == "error" or kind == "result" and
+                (row.get("is_error") is True or isinstance(subtype, str) and subtype.startswith("error_"))
+                or kind == "assistant" and (row.get("isApiErrorMessage") is True
+                    or isinstance(error, str) and error in codes or isinstance(error, dict)))
+            if not flagged:
+                continue
+            for code in (subtype, error if isinstance(error, str) else None,
+                         error.get("type") if isinstance(error, dict) else None,
+                         error.get("code") if isinstance(error, dict) else None):
+                if isinstance(code, str) and code in codes:
+                    categories.add(codes[code])
+            if isinstance(error, dict):
+                text_category(error.get("message"))
+            elif isinstance(error, str):
+                text_category(error)
+            if kind == "result":
+                text_category(row.get("result"))
+                messages = row.get("errors", [])
+                if isinstance(messages, list):
+                    truncated = truncated or len(messages) > 32
+                    for message in messages[:32]:
+                        text_category(message)
+            elif kind == "error":
+                text_category(row.get("message"))
+            elif kind == "assistant":
+                message = row.get("message")
+                content = message.get("content") if isinstance(message, dict) else None
+                if isinstance(content, list):
+                    truncated = truncated or len(content) > 32
+                    for block in content[:32]:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            text_category(block.get("text"))
+    # A session quota is a more specific rate limit. Other conflicts remain unknown.
+    if "sessionLimit" in categories:
+        categories.discard("rateLimit")
+    return {"failureCategory": next(iter(categories)) if len(categories) == 1 else "providerFailed",
+            "failureClassificationTruncated": truncated}
+
 
 def run_provider(executable, prompt, env, project, mcp, timeout=150):
     command = [str(executable), "--print", "--verbose", "--output-format", "stream-json", "--include-partial-messages",
@@ -57,14 +162,118 @@ def run_provider(executable, prompt, env, project, mcp, timeout=150):
     try:
         output, errors = child.communicate(prompt.encode(), timeout=timeout)
         result = {"exitCode":child.returncode,"outputBytes":len(output),"diagnosticBytes":len(errors)}
+        result.update(provider_failure_details(output, errors, exit_code=child.returncode))
+    except subprocess.TimeoutExpired as error:
+        result = {"exitCode":None,"timedOut":True,"outputBytes":len(error.output or b""),
+                  "diagnosticBytes":len(error.stderr or b"")}
+        result.update(provider_failure_details(b"", b"", exit_code=None, timed_out=True))
     finally:
         cleanup = stop_group(child)
     result["processGroupCleanup"] = cleanup
     return result
 
+def required_coverage_complete(result):
+    # Absence of evidence must not pass when used with an older driver.
+    return result.get("gapReasons") == [] and result.get("coverageReportTruncated") is False
+
+def remove_temporary_authentication(config):
+    """Retain only owned provider sources, never config/authentication material.
+
+    Claude may refresh credentials or create other configuration files, so deleting
+    just the original credentials filename is insufficient. Do not follow links.
+    """
+    try:
+        config.lstat()
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    removed = True
+    try:
+        if config.is_symlink():
+            config.unlink()
+            return True
+        for path in config.iterdir():
+            try:
+                if path.name == "projects" and path.is_dir() and not path.is_symlink():
+                    continue
+                if path.is_dir() and not path.is_symlink():
+                    shutil.rmtree(path)
+                else:
+                    path.unlink()
+            except OSError:
+                removed = False
+    except OSError:
+        removed = False
+    return removed
+
+def write_artifact_pointer(pointer, root, auth_removed):
+    """Never replace an earlier run's handoff, even after a partial write."""
+    try:
+        pointer.parent.mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(pointer, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(descriptor, "w") as stream:
+            json.dump({"schemaVersion":1,"ownedArtifactRoot":str(root),
+                       "temporaryAuthenticationRemoved":auth_removed}, stream, indent=2)
+            stream.write("\n")
+        return True
+    except OSError:
+        return False
+
+def finalize_artifacts(root, passed, pointer):
+    """Delete successful fixtures; keep failed fake sources after stripping auth."""
+    auth_removed = remove_temporary_authentication(root / "claude")
+    root_deletion_failed = False
+    if passed and auth_removed:
+        try:
+            shutil.rmtree(root)
+        except OSError:
+            root_deletion_failed = True
+    retained, root_state_confirmed = True, True
+    try:
+        root.lstat()
+    except FileNotFoundError:
+        retained = False
+    except OSError:
+        root_state_confirmed = False
+    pointer_written, fallback_used, stderr_handoff = False, False, False
+    if retained:
+        pointer_written = write_artifact_pointer(pointer, root, auth_removed)
+        if not pointer_written:
+            recovery_pointer = pointer.with_name(pointer.stem + ".recovery.json")
+            pointer_written = write_artifact_pointer(recovery_pointer, root, auth_removed)
+            fallback_used = pointer_written
+        if not pointer_written:
+            try:
+                print("Private acceptance artifacts retained: " + str(root), file=sys.stderr, flush=True)
+                stderr_handoff = True
+            except (OSError, ValueError):
+                pass
+    return {"disposableRootRemoved":not retained,"failedArtifactsRetained":retained,
+            "temporaryAuthenticationRemoved":auth_removed,"rootDeletionFailed":root_deletion_failed,
+            "artifactRootStateConfirmed":root_state_confirmed,"artifactPointerWritten":pointer_written,
+            "artifactPointerUsedFallback":fallback_used,"artifactPointerWriteFailed":retained and not pointer_written,
+            "privateStderrHandoffWritten":stderr_handoff,
+            "cleanupComplete":auth_removed and not root_deletion_failed and root_state_confirmed
+                and (not retained or pointer_written)}
+
 EXPECTED_MARKERS = {"PROMPT": "userPrompt", "INTERMEDIATE": "intermediateResponse", "FINAL": "finalResponse",
                     "SHELL_OK": "toolOutput", "SHELL_ERROR": "toolError", "MCP_OK": "toolOutput",
-                    "MCP_ERROR": "toolError", "CHILD_PROMPT": "userPrompt", "CHILD_FINAL": "finalResponse"}
+                    "MCP_ERROR": "toolError", "CHILD_PROMPT": "userPrompt", "CHILD_INTERMEDIATE": "intermediateResponse",
+                    "CHILD_FINAL": "finalResponse", "CHILD_TOOL_OUTPUT": "toolOutput", "CHILD_TOOL_ERROR": "toolError"}
+
+def typed_role_coverage_complete(result):
+    """All twelve original source markers need exact committed role/revision evidence."""
+    roles = result.get("typedCommittedByRole", {})
+    native = result.get("nativeSourceRoles", {})
+    if (result.get("roleEvidenceWithinBudget") is not True
+        or type(native.get("conflictingSourceIdentityCount")) is not int or native["conflictingSourceIdentityCount"] != 0
+        or any(type(native.get(key)) is not int or native[key] < 1
+               for key in ("verifiedParentSourceCount", "verifiedOwnChildSourceCount"))):
+        return False
+    return all(type(roles.get("child" if marker.startswith("CHILD_") else "parent", {}).get(marker)) is int
+        and roles["child" if marker.startswith("CHILD_") else "parent"][marker] > 0 for marker in EXPECTED_MARKERS)
+
 
 # Fixed diagnostic labels only. Unknown field values are counted as "other", never exported.
 DIAGNOSTIC_ENVELOPES = {"user", "assistant", "file-history-snapshot", "progress", "system", "queue-operation",
@@ -128,78 +337,29 @@ def native_format_diagnostics(projects):
         "scope": "Owned native fixture files before cleanup; shape counts alone do not establish required-content loss."}
 
 def native_history_evidence(projects):
-    """Inspect only this run's histories; retain native identities and hashes privately."""
+    """Inspect exact owned source files; retain only native signatures privately."""
+    paths, evidence = inspect_disposable_native_sources(projects, SECRET)
     signatures = {}
-    versions, kinds, markers = set(), {}, {}
-    framing, fields_valid, rows = True, True, 0
-    def strings(value):
-        if isinstance(value, str):
-            return [value]
-        if isinstance(value, list):
-            return [text for item in value for text in strings(item)]
-        if isinstance(value, dict):
-            if value.get("type") in {"image", "image_url", "audio", "tool_reference"}:
-                return []
-            return [text for key, item in value.items() if key != "type" for text in strings(item)]
-        return []
-    for path in sorted(projects.rglob("*.jsonl")):
-        payload = path.read_bytes()
-        framing = framing and (not payload or payload.endswith(b"\n"))
-        native_ids = []
-        for line in payload.splitlines():
-            try:
+    if evidence["requiredNativeFieldsValid"] and evidence["completeJSONLFraming"]:
+        # The bounded inspector selects the only paths eligible for this fixture.
+        # Re-read using its same ownership, no-follow, stability and byte limits.
+        from Support.claude_native_evidence import _read, MAXIMUM_TOTAL_BYTES
+        total = 0
+        for path, _ in paths:
+            payload = _read(path, MAXIMUM_TOTAL_BYTES - total)
+            total += len(payload)
+            native_ids = []
+            for line in payload.splitlines():
                 row = json.loads(line)
-            except ValueError:
-                fields_valid = False
-                continue
-            if not isinstance(row, dict):
-                fields_valid = False
-                continue
-            if row.get("type") not in {"user", "assistant"}:
-                continue
-            rows += 1
-            message = row.get("message", {})
-            fields_valid = fields_valid and isinstance(message, dict) and message.get("role") == row["type"]
-            if not isinstance(message, dict):
-                continue
-            fields_valid = fields_valid and all(isinstance(row.get(key), str) and row[key]
-                for key in ("uuid", "sessionId", "timestamp"))
-            native_ids.append((row.get("sessionId"), row.get("uuid")))
-            version = row.get("version") if isinstance(row.get("version"), str) and row["version"] else "unknown"
-            versions.add(version)
-            content = message.get("content", [])
-            blocks = content if isinstance(content, list) else [{"type": "text", "text": content}]
-            for block in blocks:
-                if not isinstance(block, dict):
-                    fields_valid = False
+                if row.get("type") not in {"user", "assistant"}:
                     continue
-                if block.get("type") == "text":
-                    kind = "userPrompt" if row["type"] == "user" else (
-                        "finalResponse" if message.get("stop_reason") == "end_turn" else "intermediateResponse")
-                    text = block.get("text", "")
-                elif block.get("type") == "tool_result":
-                    kind = "toolError" if block.get("is_error") is True else "toolOutput"
-                    text = "\n".join(strings(block.get("content")))
-                    native_ids.append((row.get("sessionId"), block.get("tool_use_id")))
-                else:
-                    continue
-                if not isinstance(text, str) or SECRET not in text:
-                    continue
-                kinds.setdefault(version, set()).add(kind)
-                for marker, expected_kind in EXPECTED_MARKERS.items():
-                    if kind != expected_kind or "LEAKRET_M3_" + marker not in text:
-                        continue
-                    if marker.startswith("CHILD_") and "/subagents/agent-" not in str(path):
-                        continue
-                    if marker == "CHILD_PROMPT" and not text.strip().startswith("LEAKRET_M3_CHILD_PROMPT"):
-                        continue
-                    markers.setdefault(version, set()).add(marker)
-        signatures[str(path)] = (hashlib.sha256(payload).digest(), tuple(native_ids))
-    return signatures, {"producerVersions": sorted(versions), "nativeTranscriptCount": len(signatures),
-        "contentRowCount": rows, "completeJSONLFraming": framing, "requiredNativeFieldsValid": bool(fields_valid),
-        "contentTypesByProducer": {version: sorted(values) for version, values in sorted(kinds.items())},
-        "typedMarkersByProducer": {version: sorted(values) for version, values in sorted(markers.items())},
-        "nativeFormatDiagnostics": native_format_diagnostics(projects)}
+                native_ids.append((row.get("sessionId"), row.get("uuid")))
+                content = row.get("message", {}).get("content", [])
+                if isinstance(content, list):
+                    native_ids.extend((row.get("sessionId"), block.get("tool_use_id")) for block in content
+                        if isinstance(block, dict) and block.get("type") == "tool_result")
+            signatures[str(path)] = (hashlib.sha256(payload).digest(), tuple(native_ids))
+    return signatures, {**evidence, "nativeFormatDiagnostics": native_format_diagnostics(projects)}
 
 def deliver_history(helper, root, projects):
     # This is the existing production history request, delivered to the encrypted queue.
@@ -246,9 +406,17 @@ def main():
             raise SystemExit("Historical producer does not match --expected-historical-version")
     elif args.expected_historical_version is not None:
         parser.error("--expected-historical-version requires --historical-producer-executable")
+    artifact_pointer = args.output.with_suffix(".private-artifacts.json")
+    if artifact_pointer.exists() or artifact_pointer.is_symlink():
+        raise SystemExit("Existing failed-artifact pointer must be preserved; choose a new --output path")
     started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    with tempfile.TemporaryDirectory(prefix="lr-m6-claude-quoted ' $ `-",dir="/tmp") as name:
-        root = pathlib.Path(name).resolve()
+    report = {"schemaVersion": 4 if historical_executable else 3, "agentVersion": version,
+              "executablePath": str(executable), "expectedVersion": args.expected_version,
+              "interface": "standaloneCLI", "startedAt": started_at, "passed": False,
+              "providerRuns":[], "historicalProducerRuns":[], "driverLaunched":False}
+    root = pathlib.Path(tempfile.mkdtemp(prefix="lr-m6-claude-quoted ' $ `-",dir="/tmp")).resolve()
+    execution_completed = False
+    try:
         quoted_helper = root / "helper quoted ' $ `"
         shutil.copyfile(helper, quoted_helper); os.chmod(quoted_helper, 0o700)
         config = root / "claude"; config.mkdir()
@@ -259,7 +427,8 @@ def main():
         env = dict(os.environ)
         env["DISABLE_AUTOUPDATER"] = "1"
         authentication(env,config)
-        historical_provider_runs, historical_signatures, historical_evidence = [], {}, {}
+        historical_provider_runs = report["historicalProducerRuns"]
+        historical_signatures, historical_evidence = {}, {}
         historical_failure = None
         if historical_executable is not None:
             try:
@@ -267,15 +436,13 @@ def main():
                 historical_signatures, historical_evidence = native_history_evidence(config / "projects")
                 if historical_provider_runs[0]["exitCode"] != 0:
                     historical_failure = "historicalProviderRunFailed"
+                    report["providerFailureCategory"] = historical_provider_runs[0].get("failureCategory", "providerFailed")
                 elif not (historical_evidence["completeJSONLFraming"] and historical_evidence["requiredNativeFieldsValid"]
+                    and historical_evidence.get("completeNativeParentChildPairCountByProducer", {}).get(historical_version, 0) > 0
                     and set(EXPECTED_MARKERS) <= set(historical_evidence["typedMarkersByProducer"].get(historical_version, []))):
                     historical_failure = "historicalProviderRequiredNativeContentMissing"
             except (OSError, ValueError, subprocess.SubprocessError) as error:
                 historical_failure = "historicalProviderUnavailable-" + type(error).__name__
-        providers, driver_cleanup = [], None
-        report = {"schemaVersion": 4 if historical_executable else 3, "agentVersion": version,
-                  "executablePath": str(executable), "expectedVersion": args.expected_version,
-                  "interface": "standaloneCLI", "startedAt": started_at, "passed": False}
         if historical_executable is not None:
             report.update(historicalProducerVersion=historical_version,
                 historicalExecutablePath=str(historical_executable), expectedHistoricalVersion=args.expected_historical_version,
@@ -284,22 +451,33 @@ def main():
         if historical_failure:
             report.update(unmetGate=historical_failure, providerRuns=[], driverLaunched=False)
         else:
-            report, providers, driver_cleanup = drive_collection(args, root, config, project, mcp, env,
+            report, _, _ = drive_collection(args, root, config, project, mcp, env,
                 binary, quoted_helper, executable, version, report, historical_version, historical_signatures)
         if historical_executable is not None:
             historical_version_after = subprocess.check_output([str(historical_executable), "--version"], text=True).split()[0]
             report.update(historicalProducerVersionAfterRun=historical_version_after,
                 historicalExecutableVersionStable=historical_version_after == historical_version)
             report["passed"] = report["passed"] and report["historicalExecutableVersionStable"]
+        execution_completed = True
+    except Exception as error:
+        report["passed"] = False
+        # Never export exception text: subprocess errors can include prompt/auth data.
+        report.setdefault("unmetGate", "fixtureExecutionFailed" if report["driverLaunched"] else "fixtureSetupFailed")
+        report["failureKind"] = (type(error).__name__ if isinstance(error,
+            (OSError, ValueError, subprocess.SubprocessError, AssertionError)) else "other")
+    finally:
+        cleanup_checks = [p["processGroupCleanup"] for p in report["providerRuns"] + report["historicalProducerRuns"]]
+        driver_cleanup = report.pop("driverProcessGroupCleanup", None)
+        if driver_cleanup is not None:
+            cleanup_checks.append(driver_cleanup)
+        processes_stopped = (not report["driverLaunched"] or driver_cleanup is not None) and all(
+            not check["term_permission_denied"] and not check["kill_permission_denied"] for check in cleanup_checks)
+        report["passed"] = report["passed"] and execution_completed and processes_stopped
+        report["cleanup"] = finalize_artifacts(root, report["passed"], artifact_pointer)
+        report["cleanup"].update(ownedProcessGroupsStopped=processes_stopped,
+            driverProcessGroupCleanup=driver_cleanup, existingHookSettingsModified=False, existingHistoriesModified=False)
     report["finishedAt"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    cleanup_checks = [p["processGroupCleanup"] for p in providers + historical_provider_runs]
-    if driver_cleanup is not None:
-        cleanup_checks.append(driver_cleanup)
-    processes_stopped = all(not check["term_permission_denied"] and not check["kill_permission_denied"] for check in cleanup_checks)
-    report["cleanup"] = {"disposableRootRemoved":not root.exists(),"temporaryAuthenticationRemoved":not root.exists(),
-                         "ownedProcessGroupsStopped":processes_stopped,"driverProcessGroupCleanup":driver_cleanup,
-                         "existingHookSettingsModified":False,"existingHistoriesModified":False}
-    report["passed"] = report["passed"] and report["cleanup"]["disposableRootRemoved"] and processes_stopped
+    report["passed"] = report["passed"] and report["cleanup"]["disposableRootRemoved"] and report["cleanup"]["cleanupComplete"]
     args.output.parent.mkdir(parents=True,exist_ok=True)
     args.output.write_text(json.dumps(report,indent=2)+"\n")
     print(json.dumps(report,sort_keys=True))
@@ -311,6 +489,8 @@ def drive_collection(args, root, config, project, mcp, env, binary, quoted_helpe
         "--helper",str(quoted_helper),"--version",version,"--scanner",str(ROOT/".build/scanner/betterleaks"),
         "--rules",str(ROOT/".build/scanner/betterleaks.toml"),"--source-root",str(config/"projects"),"--duration",str(args.timeout)],
         stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+    report["driverLaunched"] = True
+    providers = report["providerRuns"]
     lines = []
     diagnostics = bytearray()
     def consume(stream,destination):
@@ -324,9 +504,13 @@ def drive_collection(args, root, config, project, mcp, env, binary, quoted_helpe
         error_thread = threading.Thread(target=consume,args=(driver.stderr,diagnostics),daemon=True); error_thread.start()
         if historical_version is not None:
             report["historicalCaptureDelivery"] = deliver_history(quoted_helper, root, config / "projects")
-        providers = [run_provider(executable,ready["verificationPrompt"],env,project,mcp),
-                     run_provider(executable,PROMPT,env,project,mcp),
-                     run_provider(executable,f"Respond exactly LEAKRET_M3_FINAL {SECRET}. This is synthetic test data.",env,project,mcp)]
+        for prompt in (ready["verificationPrompt"], PROMPT,
+                       f"Respond exactly LEAKRET_M3_FINAL {SECRET}. This is synthetic test data."):
+            providers.append(run_provider(executable,prompt,env,project,mcp))
+            if providers[-1]["exitCode"] != 0:
+                report.update(unmetGate="providerRunFailed",
+                    providerFailureCategory=providers[-1].get("failureCategory", "providerFailed"))
+                break
         (root/"provider-finished").touch()
         driver.wait(timeout=args.timeout)
         thread.join(timeout=2); error_thread.join(timeout=2)
@@ -338,13 +522,17 @@ def drive_collection(args, root, config, project, mcp, env, binary, quoted_helpe
                   "driverDiagnosticBytes":len(diagnostics),"result":final,
                   "driverLaunched":True,"t3LatencyMeasured":False,
                   "historicalLatencyMeasured":final["sourceLatency"]["historical"]["committedSourceRevisionCount"] > 0})
-        expected = {"PROMPT","INTERMEDIATE","FINAL","SHELL_OK","SHELL_ERROR","MCP_OK","MCP_ERROR","CHILD_PROMPT","CHILD_FINAL"}
+        expected = set(EXPECTED_MARKERS)
         report["passed"] = (report["executableVersionStable"] and version in final["producerVersions"]
             and final["observedExecutableVersion"] == version
             and all(p["exitCode"]==0 for p in providers) and driver.returncode==0 and final["setupState"]=="connected"
-            and expected <= set(final["typedCommitted"]) and final["syntheticValuePresent"] and final["sessionCount"]>=2
+            and typed_role_coverage_complete(final)
+            and final.get("committedNativeParentChildPairCountByProducer", {}).get(version, 0) > 0 and expected <= set(final["typedCommitted"]) and final["syntheticValuePresent"] and final["sessionCount"]>=2
             and {"userPrompt","intermediateResponse","finalResponse","toolOutput","toolError"} <= set(final["occurrencesByContentType"])
             and final["syntheticAlertCount"]>=2 and final["queueCount"]==0 and final["replayStable"] and final["ciphertextMarkerInspectionPassed"])
+        report["individualRoleCoveragePassed"] = typed_role_coverage_complete(final)
+        report["requiredCoverageComplete"] = required_coverage_complete(final)
+        report["passed"] = report["passed"] and report["requiredCoverageComplete"]
         latency = final["sourceLatency"]
         live = latency["live"]
         report["latencyMeasurementPassed"] = (live["committedSourceRevisionCount"] > 0
@@ -355,6 +543,11 @@ def drive_collection(args, root, config, project, mcp, env, binary, quoted_helpe
             live["canonicalObservationToCommitObservation"]["count"] > 0
             and live["canonicalObservationToCommitObservation"]["p95"] < 120000)
         report["passed"] = report["passed"] and report["latencyMeasurementPassed"]
+        _, native_evidence = inspect_disposable_native_sources(config / "projects", SECRET)
+        report["nativeSourceEvidence"] = native_evidence
+        report["passed"] = (report["passed"] and native_evidence["requiredNativeFieldsValid"]
+            and native_evidence["completeJSONLFraming"] and native_evidence["individualNativeRoleCoverageComplete"]
+            and native_evidence["completeNativeParentChildPairCountByProducer"].get(version, 0) > 0 and set(EXPECTED_MARKERS) <= set(native_evidence["typedMarkers"]))
         report["nativeFormatDiagnostics"] = native_format_diagnostics(config / "projects")
         if historical_version is not None:
             after_signatures, after_evidence = native_history_evidence(config / "projects")
@@ -367,10 +560,14 @@ def drive_collection(args, root, config, project, mcp, env, binary, quoted_helpe
                 typedCommittedCountsCoverBothProducerCorpora=typed_counts_cover_both,
                 historicalCaptureWasSyntheticDelivery=True)
             report["passed"] = (report["passed"] and identities_stable and typed_counts_cover_both and mixed_versions
+                and all(after_evidence["completeNativeParentChildPairCountByProducer"].get(producer, 0) > 0
+                    and final.get("committedNativeParentChildPairCountByProducer", {}).get(producer, 0) > 0
+                    for producer in (historical_version, version))
                 and report["historicalLatencyMeasured"] and report["historicalCaptureDelivery"]["exitCode"] == 0
                 and final.get("historicalQueueAdmissionCount", 0) > 0 and final.get("historicalAdmissionsSettled") is True)
     finally:
         driver_cleanup = stop_group(driver)
+        report["driverProcessGroupCleanup"] = driver_cleanup
     return report, providers, driver_cleanup
 
 if __name__ == "__main__":

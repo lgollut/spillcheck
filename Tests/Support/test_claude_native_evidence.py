@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from claude_native_evidence import MAXIMUM_FILE_BYTES, inspect_selected_native_source
+from claude_native_evidence import EXPECTED, MAXIMUM_FILE_BYTES, inspect_selected_native_source
 
 SECRET = "synthetic-evidence-value"
 
@@ -46,6 +46,66 @@ class NativeEvidenceBoundaries(unittest.TestCase):
         self.assertNotIn("FINAL", evidence["typedMarkers"])
         self.assertNotIn("native-parent", json.dumps(evidence))
         self.assertNotIn(SECRET, json.dumps(evidence))
+
+    def test_all_child_types_stay_in_own_role(self):
+        write(self.parent, [row("user", "LEAKRET_M3_PROMPT " + SECRET, "main-row")])
+        child = self.root / "native-parent/subagents/agent-owned.jsonl"
+        intermediate = row("assistant", "LEAKRET_M3_CHILD_INTERMEDIATE " + SECRET, "child-intermediate")
+        intermediate["message"]["stop_reason"] = "tool_use"
+        rows = [row("user", "LEAKRET_M3_CHILD_PROMPT " + SECRET, "child-prompt"), intermediate,
+            row("assistant", "LEAKRET_M3_CHILD_FINAL " + SECRET, "child-final")]
+        for suffix, error in (("OUTPUT", False), ("ERROR", True)):
+            result = row("user", "", "child-" + suffix)
+            result["message"]["content"] = [{"type": "tool_result", "tool_use_id": suffix,
+                "is_error": error, "content": "LEAKRET_M3_CHILD_TOOL_" + suffix + " " + SECRET}]
+            rows.append(result)
+        rows.append(row("assistant", "LEAKRET_M3_FINAL " + SECRET, "wrong-role"))
+        write(child, rows)
+        _, evidence = self.inspect()
+        self.assertTrue(evidence["requiredNativeFieldsValid"])
+        self.assertEqual(len(evidence["typedMarkersByRole"]["child"]), 5)
+        self.assertEqual(evidence["typedMarkersByRole"]["parent"], ["PROMPT"])
+        self.assertNotIn("FINAL", evidence["typedMarkers"])
+        self.assertEqual(len(evidence["contentTypesByRole"]["child"]), 5)
+
+    def test_same_native_row_identity_in_parent_and_child_fails(self):
+        write(self.parent, [row("user", "LEAKRET_M3_PROMPT " + SECRET, "same-row")])
+        write(self.root / "native-parent/subagents/agent-owned.jsonl",
+            [row("user", "LEAKRET_M3_CHILD_PROMPT " + SECRET, "same-row")])
+        _, evidence = self.inspect()
+        self.assertFalse(evidence["requiredNativeFieldsValid"])
+        self.assertIn("nativeIdentityAppearedInDistinctSourceFiles", evidence["nativeEvidenceLimitReasons"])
+
+    def marker_row(self, marker, kind):
+        value = row("user" if kind in ("userPrompt", "toolOutput", "toolError") else "assistant",
+            "LEAKRET_M3_" + marker + " " + SECRET, marker)
+        if kind == "intermediateResponse":
+            value["message"]["stop_reason"] = "tool_use"
+        if kind in ("toolOutput", "toolError"):
+            value["message"]["content"] = [{"type": "tool_result", "tool_use_id": marker,
+                "is_error": kind == "toolError", "content": "LEAKRET_M3_" + marker + " " + SECRET}]
+        return value
+
+    def test_cannot_pool_missing_types_across_two_own_children(self):
+        write(self.parent, [self.marker_row(marker, kind) for marker, kind in EXPECTED.items()
+            if not marker.startswith("CHILD_")])
+        children = [self.marker_row(marker, kind) for marker, kind in EXPECTED.items() if marker.startswith("CHILD_")]
+        write(self.root / "native-parent/subagents/agent-one.jsonl", children[:3])
+        write(self.root / "native-parent/subagents/agent-two.jsonl", children[3:])
+        _, evidence = self.inspect()
+        self.assertEqual(len(evidence["typedMarkers"]), 12)
+        self.assertFalse(evidence["individualNativeRoleCoverageComplete"])
+        self.assertEqual(evidence["completeNativeParentChildPairCountByProducer"], {"2.1.295": 0})
+        write(self.root / "native-parent/subagents/agent-two.jsonl", [])
+        write(self.root / "native-parent/subagents/agent-one.jsonl", children)
+        _, evidence = self.inspect()
+        # An empty selected child file remains incomplete native evidence.
+        self.assertFalse(evidence["individualNativeRoleCoverageComplete"])
+        (self.root / "native-parent/subagents/agent-two.jsonl").unlink()
+        _, evidence = self.inspect()
+        self.assertTrue(evidence["individualNativeRoleCoverageComplete"])
+        self.assertEqual(evidence["completeNativeParentChildPairCount"], 1)
+        self.assertEqual(evidence["completeNativeParentChildPairCountByProducer"], {"2.1.295": 1})
 
     def test_child_symlink_is_rejected_without_reading_unrelated_source(self):
         write(self.parent, [row("user", "LEAKRET_M3_PROMPT " + SECRET, "main-row")])

@@ -70,12 +70,7 @@ def main():
                 raise RuntimeError("Acceptance driver did not become ready.")
             command = " ".join([f"CODEX_HOME={shlex.quote(str(home))}", shlex.quote(str(codex)), "--no-daemon",
                 "-a", "never", "-s", "read-only", "-C", shlex.quote(str(work))])
-            prompt = f"""Synthetic Spillcheck acceptance. Never authenticate with the test token. LEAKRET_M4_PROMPT {TOKEN}.
-Send commentary LEAKRET_M4_INTERMEDIATE {TOKEN}.
-Run printf 'LEAKRET_M4_SHELL_OK {TOKEN}\\n' in shell.
-Run printf 'LEAKRET_M4_SHELL_ERROR {TOKEN}\\n'; exit 7 in shell, keeping the intentional failure.
-Call spillcheck_synthetic.synthetic_output with fail=false, then fail=true.
-Finish with LEAKRET_M4_FINAL {TOKEN}. Do not read files or browse. Keep responses short."""
+            prompt = fixture.fixture_prompt()
             ready.update(command=command, directory=str(root), finishFile=str(root/"provider-finished"),
                 fixturePrompt=prompt, trustInstruction="Run /hooks and explicitly review/trust the installed Spillcheck definition; then submit verificationPrompt exactly.")
             path = pathlib.Path(args.ready); path.parent.mkdir(parents=True, exist_ok=True)
@@ -87,14 +82,15 @@ Finish with LEAKRET_M4_FINAL {TOKEN}. Do not read files or browse. Keep response
             driver.wait(timeout=args.duration + 60)
             stdout_thread.join(timeout=2); stderr_thread.join(timeout=2)
             final = next((x for x in reversed(reports) if x.get("finished")), None)
-            expected = {"PROMPT", "INTERMEDIATE", "FINAL", "SHELL_OK", "SHELL_ERROR", "MCP_OK", "MCP_ERROR"}
             passed = bool(final and driver.returncode == 0 and final["setupState"] == "connected"
                 and final.get("actualReaderVersion") == version and final.get("observedProducerVersions") == [version]
-                and expected <= set(final["typedCommitted"]) and final["syntheticValuePresent"]
+                and fixture.typed_source_gate(final) and final["syntheticValuePresent"]
+                and final.get("nativeLocationsUnique") and not final.get("gapReasons")
                 and final["queueCount"] == 0 and final["replayStable"] and final["ciphertextMarkerInspectionPassed"])
             report = {"schemaVersion": 1, "hookTrustBypassed": False, "existingConfigurationModified": False,
                 "actualProducerVersion": version, "actualReaderVersion": final.get("actualReaderVersion") if final else None,
-                "expectedVersion": args.expect_version, "driverExitCode": driver.returncode, "diagnosticBytes": len(errors), "result": final, "passed": passed}
+                "expectedVersion": args.expect_version, "requiredTypedMarkers": sorted(fixture.REQUIRED_MARKERS),
+                "nativeChildAllFiveTypesEstablished": fixture.typed_source_gate(final), "driverExitCode": driver.returncode, "diagnosticBytes": len(errors), "result": final, "passed": passed}
             path = pathlib.Path(args.report); path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps(report, indent=2)+"\n")
             print(json.dumps({"finished": True, "passed": passed, "report": str(path)}), flush=True)

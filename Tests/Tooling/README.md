@@ -3,12 +3,17 @@
 Run from the repository root:
 
 ```sh
-python3 Tests/Tooling/check-scanner-bundling.py
-python3 Tests/Tooling/check-release-policy.py
+python3 Tests/Tooling/run-python-tests.py
 npm ci
 npm run test:release
 npm run release:check
 ```
+
+The Python entrypoint includes the scanner-bundling and release-policy checks
+along with the offline acceptance boundary suites. Use `--suite Tooling` to run
+only this directory, or `--list` to see the scope and separate compiled checks.
+The entrypoint runs Python only. See the [test guide](../README.md) for
+prerequisites and the separate compiled checks.
 
 These tests use disposable fixtures and fake signing tools to check incremental
 scanner bundling and release rejection/staging behavior. They do not launch the

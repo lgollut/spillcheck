@@ -352,7 +352,19 @@ final class AppModel {
     var collectionLimitations: [CoverageGap] = []
     var lastReadDates: [CollectionScope: Date] = [:]
     var lastOperationReads: [CollectionScope: [CollectionOperation: Date]] = [:]
-    var coverageReport: CoverageReport?
+    var coverageReport: CoverageReport? {
+        didSet {
+            switch (oldValue, coverageReport) {
+            case (nil, nil): break
+            case let (old?, new?) where old.hasSameRecords(as: new): break
+            default: coverageRecordsRevision &+= 1
+            }
+        }
+    }
+    /// Identifies the report's records for the coverage caches. Reassigning identical records,
+    /// with only a later window end, keeps the revision and the cached rows.
+    private(set) var coverageRecordsRevision = 0
+    @ObservationIgnored var coverageCache = CoveragePresentationCache()
     var retryingHistory: Set<AgentProvider> = []
     var exportingDiagnostics = false
     @ObservationIgnored var onRetryHistory: ((AgentProvider) -> Void)?
@@ -629,11 +641,6 @@ final class AppModel {
               latest.audit.id != dismissedBannerAuditID,
               latest.ordinaryValueCount > 0 || !coverageGaps.isEmpty else { return nil }
         return latest
-    }
-
-    func isNew(_ summary: EntrySummary) -> Bool {
-        guard let banner = bannerSummary, let valueID = summary.entry.valueID else { return false }
-        return banner.ordinaryValueIDs.contains(valueID)
     }
 
     // MARK: Monitoring and coverage
@@ -917,7 +924,9 @@ final class AppModel {
         queueProcessing = activity.processing
         updateQueue(count: activity.pendingCount)
     }
-    func updateCoverage(_ status: CoverageStatus) { monitoring.updateCoverage(status) }
+    func updateCoverage(_ status: CoverageStatus) {
+        if monitoring.coverage != status { monitoring.updateCoverage(status) }
+    }
     func clearRevealedContent() {
         revealedContent.removeAll()
         revealedExcerpts.removeAll()

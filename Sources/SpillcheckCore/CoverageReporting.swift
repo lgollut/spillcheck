@@ -12,6 +12,8 @@ public struct CoverageQueryPage<Item: Sendable>: Sendable {
     }
 }
 
+extension CoverageQueryPage: Equatable where Item: Equatable {}
+
 /// Protected native profile identity. Diagnostic exports must replace it with an opaque alias.
 public struct CoverageAuditIdentity: Hashable, Codable, Sendable {
     public let auditID: UUID
@@ -85,6 +87,15 @@ public struct CoverageReport: Sendable {
 
     public var isTruncated: Bool {
         gapEvents.isTruncated || omissions.isTruncated || history.isTruncated || work.isTruncated || successfulReads.isTruncated
+    }
+
+    /// Compares every returned record, count and capacity figure. The window is excluded
+    /// because its end moves with each query even when no record changed.
+    public func hasSameRecords(as other: CoverageReport) -> Bool {
+        gapEvents == other.gapEvents && omissions == other.omissions && history == other.history
+            && queue == other.queue && oldestPendingCaptureAt == other.oldestPendingCaptureAt && work == other.work
+            && omissionStateCounts == other.omissionStateCounts && successfulReads == other.successfulReads
+            && capacity == other.capacity
     }
 
     public var unresolvedOmissions: [CoverageOmission] { omissions.items.filter(\.isUnresolved) }

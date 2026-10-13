@@ -93,7 +93,7 @@ public struct StoredCollectionWork: Codable, Equatable, Sendable {
     }
 }
 
-public struct SuccessfulCollectionRead: Codable, Sendable {
+public struct SuccessfulCollectionRead: Codable, Equatable, Sendable {
     public let scope: CollectionScope
     public let operation: CollectionOperation
     public let succeededAt: Date

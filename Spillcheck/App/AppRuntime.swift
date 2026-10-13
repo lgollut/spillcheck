@@ -954,7 +954,7 @@ final class AppRuntime {
                 let scope = CollectionScope(provider: .codex, profileID: profile.profileID,
                     interface: interface, path: .publicHistory)
                 let assessment = await codexHistory.assessment(scope: scope)
-                model.collectionAssessments[scope] = assessment
+                if model.collectionAssessments[scope] != assessment { model.collectionAssessments[scope] = assessment }
                 for operation in assessment.usableOperations where Self.operationAssessed(assessment, operation) {
                     _ = try? await store?.resolveHealthIncidents(scope: scope, operation: operation)
                 }
@@ -1086,11 +1086,13 @@ final class AppRuntime {
             _ = try await store.maintainQueue()
             try await store.expireCoverageRecovery(at: .now)
             let report = try await store.coverageReport()
-            model.coverageReport = report
+            // Unchanged records are not reassigned, so views reading the report aren't invalidated
+            // every second. The kept report's window ends earlier; exports query a fresh report.
+            if model.coverageReport?.hasSameRecords(as: report) != true { model.coverageReport = report }
             if model.historyProgress != report.history.items { model.historyProgress = report.history.items }
             model.updateQueue(count: report.queue.count)
             model.updateHistoryWork(queued: report.queue.historicalCount)
-            model.collectionLimitations = model.activeCollectionLimitations
+            model.refreshCollectionLimitations()
             await refreshSetup()
             #if DEBUG
             await performAcceptanceInventoryReplay()
@@ -1116,8 +1118,7 @@ final class AppRuntime {
             model.restoreSuccessfulReads(from: report)
             // The report retains recovered incidents for inspection, while current collection
             // health considers only unresolved omissions and operation failures.
-            let gaps = model.activeCollectionLimitations
-            model.collectionLimitations = gaps
+            let gaps = model.refreshCollectionLimitations()
             model.updateCoverage(model.coverageNeedsAttention || model.coverageHasUnreadHistory
                 ? .partial(gaps.isEmpty ? [.init(reason: .budgetExhausted)] : gaps)
                 : (collectionObserved ? .complete : .notConfigured))

@@ -206,6 +206,8 @@ private struct SidebarView: View {
     private var valueList: some View {
         let groups = model.groups
         let showHandled = model.handledExpanded
+        // Rows receive the result so they don't each depend on coverage.
+        let newValueIDs = model.bannerSummary?.ordinaryValueIDs ?? []
         return GeometryReader { viewport in ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 VStack(alignment: .leading, spacing: 2) {
@@ -215,7 +217,10 @@ private struct SidebarView: View {
                             .frame(maxWidth: .infinity).padding(.vertical, 24)
                     } else {
                         GroupHeading(title: "Not rotated yet", count: groups.active.count, top: 4)
-                        ForEach(groups.active) { ActiveValueRow(model: model, summary: $0) }
+                        ForEach(groups.active) { summary in
+                            ActiveValueRow(model: model, summary: summary,
+                                           isNew: summary.entry.valueID.map(newValueIDs.contains) == true)
+                        }
                         if groups.active.isEmpty {
                             HStack(spacing: 10) {
                                 Image(systemName: "checkmark").font(.system(size: 11, weight: .bold))
@@ -409,6 +414,7 @@ private struct GroupHeading: View {
 private struct ActiveValueRow: View {
     let model: AppModel
     let summary: EntrySummary
+    let isNew: Bool
 
     private var selected: Bool { model.selectedEntryID == summary.id }
     private var appearances: String {
@@ -423,7 +429,7 @@ private struct ActiveValueRow: View {
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         Text(summary.kind.shortName).font(.system(size: 13.5, weight: .medium)).lineLimit(1)
                         Text(summary.label).font(Palette.mono).foregroundStyle(Palette.tertiary).fixedSize()
-                        if model.isNew(summary) {
+                        if isNew {
                             Text("New").font(.system(size: 10.5, weight: .semibold)).foregroundStyle(Palette.link).fixedSize()
                         }
                     }

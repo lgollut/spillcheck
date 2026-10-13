@@ -393,6 +393,44 @@ func coveragePresentationAssertions() throws -> [String] {
     try require(model.storageAvailability == .failed && model.monitoringIndicator == .unavailable
         && !model.canPerformCoverageAction(retryAction), "failed-storage-kept-ready-indicator-or-enabled-retry")
     model.storageFailed = false
+
+    // Rows are cached by their inputs, so each input change must show on the next read.
+    let cached = AppModel()
+    cached.storageReady = true
+    cached.agentProfiles[.codex] = model.agentProfiles[.codex]
+    cached.agentSetupStates[.codex] = .connected
+    let unreachable = StoredCoverageGapEvent(gap: .init(reason: .sourceUnavailable, scope: scope, operation: .historicalRead),
+                                        observedAt: now)
+    cached.coverageReport = report(events: [unreachable])
+    let revision = cached.coverageRecordsRevision
+    guard case .retryHistory? = cached.coverageGaps.first?.action else {
+        throw CoverageAssertionFailure.failed("cache-initial-row-missing-profile-retry")
+    }
+    let current = cached.coverageReport!
+    cached.coverageReport = CoverageReport(window: .init(start: current.window.start, end: now.addingTimeInterval(1)),
+        gapEvents: current.gapEvents, omissions: current.omissions, history: current.history, queue: current.queue,
+        oldestPendingCaptureAt: current.oldestPendingCaptureAt, work: current.work,
+        omissionStateCounts: current.omissionStateCounts, successfulReads: current.successfulReads, capacity: current.capacity)
+    try require(cached.coverageRecordsRevision == revision && cached.coverageGaps.count == 1,
+        "cache-treated-moving-window-as-changed-records")
+    cached.agentSetupStates[.codex] = .installedUnverified
+    guard case .manageAgents? = cached.coverageGaps.first?.action else {
+        throw CoverageAssertionFailure.failed("cache-kept-action-after-setup-state-change")
+    }
+    cached.agentProfiles[.codex]?.profileID = "SYNTHETIC_REPLACEMENT_PROFILE"
+    guard case .exportDiagnostics? = cached.coverageGaps.first?.action else {
+        throw CoverageAssertionFailure.failed("cache-kept-action-after-profile-change")
+    }
+    cached.coverageReport = report(events: [unreachable, legacy])
+    try require(cached.coverageRecordsRevision != revision && cached.coverageGaps.count == 2,
+        "cache-kept-rows-after-records-changed")
+    cached.coverageReport = nil
+    cached.updateCoverage(.partial([unreachable.gap]))
+    try require(cached.coverageGaps.count == 1, "cache-kept-report-rows-after-report-removed")
+    cached.updateCoverage(.complete)
+    try require(cached.coverageGaps.isEmpty && cached.activeCollectionLimitations.isEmpty,
+        "cache-kept-rows-after-monitored-coverage-changed")
+
     return ["coverage-distinguishes-restored-operation-from-unrecovered-content",
             "coverage-preserves-terminal-legacy-and-truncated-omissions-without-duplicates",
             "coverage-diagnostics-redact-native-identities-values-paths-and-arbitrary-versions",
@@ -403,5 +441,6 @@ func coveragePresentationAssertions() throws -> [String] {
             "coverage-keeps-encrypted-required-input-visible-without-ineffective-retry",
             "coverage-keeps-unexposed-native-child-input-visible-without-guessing-encryption",
             "coverage-explains-hook-conflicts-interruption-content-and-capacity-without-history-retry",
-            "coverage-restoration-survives-restart-without-inventing-live-readiness"]
+            "coverage-restoration-survives-restart-without-inventing-live-readiness",
+            "coverage-cache-reflects-each-input-change"]
 }

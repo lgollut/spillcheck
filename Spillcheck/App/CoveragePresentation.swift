@@ -49,6 +49,27 @@ struct CoverageProfileKey: Hashable {
     let profileID: String
 }
 
+/// Views and refresh read coverage many times for each report. A result is reused only while
+/// every input it was derived from is unchanged, so no caller has to invalidate it.
+struct CoveragePresentationCache {
+    struct ObservationInputs: Equatable {
+        let recordsRevision: Int
+        /// Used only while no report is available.
+        let monitoredCoverage: CoverageStatus?
+        let operationReads: [CollectionScope: [CollectionOperation: Date]]
+        let assessments: [CollectionScope: CollectionAssessment]
+    }
+    struct RowInputs: Equatable {
+        let observations: ObservationInputs
+        let setupStates: [AgentProvider: AgentSetupState]
+        let profileIDs: [AgentProvider: String]
+        /// Row details name today and yesterday.
+        let day: Date
+    }
+    var observations: (inputs: ObservationInputs, value: [AppModel.CoverageObservation])?
+    var rows: (inputs: RowInputs, value: [AppModel.CoverageGapRow])?
+}
+
 struct CoverageGroupKey: Hashable {
     let profile: CoverageProfileKey?
     let interface: AgentInterface?
@@ -206,14 +227,34 @@ extension AppModel {
 
     /// Historical loss and excluded media do not mean the current read operation is failing.
     var activeCollectionLimitations: [CoverageGap] {
-        coverageObservations(report: coverageReport).filter {
+        currentCoverageObservations.filter {
             ![.recovered, .queued, .reading, .historicalLoss, .excluded, .operationRestored].contains($0.state)
         }.map(\.gap)
     }
 
+    /// Every route reads these limitations, so an unchanged result is not republished.
+    @discardableResult func refreshCollectionLimitations() -> [CoverageGap] {
+        let gaps = activeCollectionLimitations
+        if collectionLimitations != gaps { collectionLimitations = gaps }
+        return gaps
+    }
+
     /// Acceptance still accounts for historical loss when the route can read again.
     var unresolvedCoverageGaps: [CoverageGap] {
-        coverageObservations(report: coverageReport).filter { ![.recovered, .queued, .reading, .excluded].contains($0.state) }.map(\.gap)
+        currentCoverageObservations.filter { ![.recovered, .queued, .reading, .excluded].contains($0.state) }.map(\.gap)
+    }
+
+    private var coverageObservationInputs: CoveragePresentationCache.ObservationInputs {
+        .init(recordsRevision: coverageRecordsRevision, monitoredCoverage: coverageReport == nil ? monitoring.coverage : nil,
+              operationReads: lastOperationReads, assessments: collectionAssessments)
+    }
+
+    private var currentCoverageObservations: [CoverageObservation] {
+        let inputs = coverageObservationInputs
+        if let cached = coverageCache.observations, cached.inputs == inputs { return cached.value }
+        let observations = coverageObservations(report: coverageReport)
+        coverageCache.observations = (inputs, observations)
+        return observations
     }
 
     func coverageObservations(report: CoverageReport?) -> [CoverageObservation] {
@@ -348,19 +389,34 @@ extension AppModel {
     }
 
     private var coverageRows: [CoverageGapRow] {
-        var rows = routes.compactMap { route -> CoverageGapRow? in
-            guard route.state == .unsupported || route.state == .unavailable else { return nil }
-            return .init(id: .route(route.provider),
-                text: "\(route.name): \(route.state == .unsupported ? "this collection route has not been established." : "its executable, hooks, or configuration need attention.")",
+        let inputs = CoveragePresentationCache.RowInputs(observations: coverageObservationInputs,
+            setupStates: agentSetupStates, profileIDs: agentProfiles.mapValues(\.profileID),
+            day: Calendar.current.startOfDay(for: .now))
+        if let cached = coverageCache.rows, cached.inputs == inputs { return cached.value }
+        let rows = buildCoverageRows()
+        coverageCache.rows = (inputs, rows)
+        return rows
+    }
+
+    private func buildCoverageRows() -> [CoverageGapRow] {
+        // Same state as `routes`, without deriving assessments that these rows don't show.
+        var rows = AgentProvider.allCases.compactMap { provider -> CoverageGapRow? in
+            let state = agentSetupStates[provider] ?? .notChecked
+            guard state == .unsupported || state == .unavailable else { return nil }
+            return .init(id: .route(provider),
+                text: "\(provider.displayName): \(state == .unsupported ? "this collection route has not been established." : "its executable, hooks, or configuration need attention.")",
                 action: .manageAgents)
         }
-        let observations = coverageObservations(report: coverageReport)
-        let grouped = Dictionary(grouping: observations, by: \.groupKey)
         // First-occurrence ordering is stable within a snapshot without serializing private keys.
-        var seen = Set<CoverageGroupKey>()
-        for observation in observations where seen.insert(observation.groupKey).inserted {
+        var keys: [CoverageGroupKey] = []
+        var groups: [CoverageGroupKey: [CoverageObservation]] = [:]
+        for observation in currentCoverageObservations {
             let key = observation.groupKey
-            guard let group = grouped[key] else { continue }
+            if groups[key] == nil { keys.append(key) }
+            groups[key, default: []].append(observation)
+        }
+        for key in keys {
+            guard let group = groups[key], let observation = group.first else { continue }
             let gap = observation.gap
             let scopeText = gap.scope.map { "\($0.provider.displayName) shared profile" }
                 ?? observation.profile?.provider.displayName ?? "Collection"

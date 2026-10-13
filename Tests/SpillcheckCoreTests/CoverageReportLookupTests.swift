@@ -188,6 +188,21 @@ struct CoverageReportLookupTests {
         #expect(pending > 100)
     }
 
+    @Test func sameRecordsIgnoreOnlyTheMovingWindow() throws {
+        var random = SeededGenerator(state: 7)
+        let report = try fixture(size: 40, using: &random)
+        let later = CoverageReport(window: .init(start: report.window.start, end: now.addingTimeInterval(1)),
+            gapEvents: report.gapEvents, omissions: report.omissions, history: report.history, queue: report.queue,
+            oldestPendingCaptureAt: report.oldestPendingCaptureAt, work: report.work,
+            omissionStateCounts: report.omissionStateCounts, successfulReads: report.successfulReads, capacity: report.capacity)
+        #expect(report.hasSameRecords(as: later))
+        let changed = CoverageReport(window: report.window, gapEvents: report.gapEvents, omissions: report.omissions,
+            history: report.history, queue: report.queue, oldestPendingCaptureAt: report.oldestPendingCaptureAt,
+            work: .init(items: Array(report.work.items.dropLast()), totalCount: report.work.totalCount),
+            omissionStateCounts: report.omissionStateCounts, successfulReads: report.successfulReads, capacity: report.capacity)
+        #expect(!report.hasSameRecords(as: changed))
+    }
+
     /// The report limit allows 1,000 rows per collection, and refresh joins them every second.
     /// Nested scans took about 4 s in Debug for 2,000 rows; the bound leaves a wide margin.
     @Test func joinsStayLinearAtTheReportLimit() throws {

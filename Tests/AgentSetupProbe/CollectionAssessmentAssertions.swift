@@ -1,7 +1,7 @@
 import Foundation
 import SpillcheckCore
 
-private enum CollectionAssessmentAssertionFailure: Error { case failed(String) }
+enum CollectionAssessmentAssertionFailure: Error { case failed(String) }
 
 private struct AssessmentOmissionFixture: Encodable {
     let id = UUID()
@@ -53,6 +53,9 @@ func collectionAssessmentAssertions() throws -> [String] {
         func assessment(_ selected: CollectionScope) -> CollectionAssessment? {
             model.routes.first { $0.provider == provider }?.assessments.first { $0.scope == selected }
         }
+        model.collectionAssessments[scope] = successfulRead
+        let healthyHost = model.routes.first { $0.provider == provider }?.hostRoutes.first
+        try require(healthyHost?.status == .compatible, "successful-reads-reported-partial-coverage")
         model.coverageReport = try report(state: .blocked)
         model.collectionLimitations = model.activeCollectionLimitations
 
@@ -63,6 +66,10 @@ func collectionAssessmentAssertions() throws -> [String] {
             && assessment(scope)?.unavailableContent == [.toolOutput], "unsettled-omission-missing-from-route")
         try require(model.collectionAssessments[scope] == successfulRead
             && assessment(sibling)?.status == .compatible, "derived-failure-mutated-observation-or-sibling")
+        let limitedHost = model.routes.first { $0.provider == provider }?.hostRoutes.first
+        try require(limitedHost?.status == .partial && limitedHost?.summary != healthyHost?.summary
+            && limitedHost?.summary == "Partial coverage · Live reads available · Catch-up available · Host not identified",
+            "partial-coverage-summary-identical-to-healthy-route-\(provider.rawValue)")
 
         // A refresh observes the commit. No new batch or executable assessment follows it.
         model.coverageReport = try report(state: .recovered)
@@ -72,6 +79,16 @@ func collectionAssessmentAssertions() throws -> [String] {
             && assessment(scope)?.unavailableContent.isEmpty == true
             && model.recoveredCoverageGaps.count == 1 && model.coverageGaps.isEmpty,
             "settled-recovery-left-stale-route-failure-until-another-batch")
+        try require(model.routes.first { $0.provider == provider }?.hostRoutes.first?.summary == healthyHost?.summary,
+            "settled-recovery-left-stale-partial-coverage-summary-\(provider.rawValue)")
+
+        // A reader can support both operations while omitting a required content type.
+        model.collectionAssessments[scope] = .init(scope: scope,
+            usableOperations: [.liveRead, .historicalRead], unavailableContent: [.toolOutput])
+        let missingContentHost = model.routes.first { $0.provider == provider }?.hostRoutes.first
+        try require(missingContentHost?.status == .partial
+            && missingContentHost?.summary == limitedHost?.summary,
+            "partial-content-assessment-hidden-behind-available-reads-\(provider.rawValue)")
 
         let operationFailure = CompatibilityFailure(reason: .sourceUnavailable, operation: .historicalRead)
         let rawFailure = CollectionAssessment(scope: scope, observedExecutableVersion: version,
@@ -173,6 +190,7 @@ func collectionAssessmentAssertions() throws -> [String] {
         && hookExportRoutes.first { $0["path"] as? String == "publicHistory" }?["unavailableContent"] as? [String] == [],
         "diagnostics-lost-hook-limitation-or-assigned-it-to-native-route")
     return ["settled-content-recovery-clears-derived-route-failures-without-new-provider-input",
+            "partial-coverage-summary-distinguishes-gaps-and-missing-content-from-available-reads",
             "recovery-preserves-intrinsic-reader-failures-and-sibling-host-assessments",
             "hook-limitation-stays-visible-without-inventing-failure-or-disabling-native-history",
             "shared-profiles-collect-without-assigning-host-and-preserve-scoped-status",

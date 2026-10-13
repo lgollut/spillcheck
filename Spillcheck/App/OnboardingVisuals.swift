@@ -129,15 +129,17 @@ struct CardArtBackground: View {
 // MARK: - Motion
 
 /// Seconds since the view appeared, redrawn every frame. With Reduce Motion on, `time` is nil and
-/// nothing is redrawn, so each animation shows a still frame instead.
+/// nothing is redrawn, so each animation shows a still frame instead. Pausing does the same while
+/// keeping the content's identity, so its own animations aren't interrupted.
 struct MotionClock<Content: View>: View {
+    var paused = false
     @ViewBuilder let content: (_ time: Double?) -> Content
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var start = Date.now
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: nil, paused: reduceMotion)) { context in
-            content(reduceMotion ? nil : context.date.timeIntervalSince(start))
+        TimelineView(.animation(minimumInterval: nil, paused: reduceMotion || paused)) { context in
+            content(reduceMotion || paused ? nil : context.date.timeIntervalSince(start))
         }
     }
 }
@@ -223,8 +225,10 @@ struct RadarSweep: View {
     }
 }
 
-/// A small ring spinner for hooks being added.
+/// A small ring spinner for hooks being added and history being read.
 struct RingSpinner: View {
+    var size: CGFloat = 14
+
     var body: some View {
         MotionClock { time in
             ZStack {
@@ -232,9 +236,9 @@ struct RingSpinner: View {
                 Circle().trim(from: 0, to: 0.25).stroke(Brand.greenDeep, lineWidth: 2)
                     .rotationEffect(.degrees(-135 + (time ?? 0) / 0.8 * 360))
             }
-            .frame(width: 14, height: 14)
+            .frame(width: size, height: size)
         }
-        .frame(width: 16, height: 16)
+        .frame(width: size + 2, height: size + 2)
         .accessibilityHidden(true)
     }
 }

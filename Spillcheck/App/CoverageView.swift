@@ -110,7 +110,7 @@ struct CoverageView: View {
     }
 
     /// With an empty inventory this is the main window's first screen, so the headline says what was
-    /// found as well as how much was read. Activity appears inline, so the layout never shifts.
+    /// found as well as how much was read. Each agent's row shows its own catch-up.
     private var hero: some View {
         let conversations = model.activity?.conversationCount ?? 0
         let nothingFound = (model.hasAnalyzedContent || model.monitoringProven) && !model.hasEntries
@@ -134,14 +134,7 @@ struct CoverageView: View {
             Text(model.coverageSummaryText)
                 .monospacedDigit()
                 .font(.system(size: 13)).foregroundStyle(Palette.secondary)
-            // Live analysis is reported in the header; only a catch-up changes what this summary means.
-            if reading {
-                ReadingHistoryBanner()
-                    .padding(.top, 10)
-                    .transition(.opacity.combined(with: .offset(y: -4)))
-            }
         }
-        .animation(.easeOut(duration: 0.25), value: reading)
     }
 
     private var totals: some View {
@@ -223,7 +216,7 @@ struct CoverageView: View {
 
     private func legend(_ cell: DayCell, _ label: String) -> some View {
         HStack(spacing: 5) {
-            cell.frame(width: 9, height: 9).clipShape(RoundedRectangle(cornerRadius: 2))
+            cell.frame(width: 10, height: 10).clipShape(RoundedRectangle(cornerRadius: 2.5, style: .continuous))
             Text(label)
         }
         .font(.system(size: 11.5)).foregroundStyle(Palette.tertiary)
@@ -237,9 +230,15 @@ struct CoverageView: View {
         let cells: [DayCell.Kind] = days.map { analyzed.contains($0) ? .read : (everCollected ? .nothingSeen : .notSetUp) }
         let read = cells.filter { $0 == .read }.count
         let status = route.status
+        let reading = model.monitoringEnabled && model.catchingUpProviders.contains(route.provider)
         return HStack(spacing: 24) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(route.name).font(.system(size: 13, weight: .medium)).lineLimit(1)
+                // Beside the name, so a catch-up starting or ending never shifts the row.
+                HStack(spacing: 10) {
+                    Text(route.name).font(.system(size: 13, weight: .medium)).lineLimit(1)
+                    if reading { ReadingHistoryLabel().transition(.opacity) }
+                }
+                .animation(.easeOut(duration: 0.25), value: reading)
                 HStack(spacing: 6) {
                     StatusDot(color: status.dot, outlined: status.outlined, size: 6)
                     Text(status.text).lineLimit(1)
@@ -257,15 +256,21 @@ struct CoverageView: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            HStack(spacing: 5) {
-                ForEach(Array(zip(days, cells)), id: \.0) { day, kind in
-                    DayCell(kind: kind).frame(width: 20, height: 20)
-                        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
-                        .help("\(day.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day())) · \(kind.label)")
+            // History is read by conversation, not by day, so no single day is shown as current.
+            // While catching up, a wave crosses the days that may still gain content.
+            MotionClock(paused: !reading) { time in
+                HStack(spacing: 3) {
+                    ForEach(Array(zip(days, cells).enumerated()), id: \.element.0) { index, cell in
+                        let pending = reading && cell.1 != .read
+                        DayCell(kind: cell.1, pending: pending ? DayCell.wave(at: time, index: index) : nil)
+                            .frame(width: 18, height: 24)
+                            .clipShape(DayCell.segment(index, of: cells.count))
+                            .help("\(cell.0.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day())) · \(pending ? "Nothing seen yet" : cell.1.label)")
+                    }
                 }
             }
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("\(route.name): \(status.text). Content analyzed on \(read) of the last 7 days.")
+            .accessibilityLabel("\(route.name): \(status.text). Content analyzed on \(read) of the last 7 days\(reading ? " so far" : "").")
             Text("\(read) of 7").font(.system(size: 12.5)).foregroundStyle(Palette.ink2).monospacedDigit()
                 .frame(width: 56, alignment: .trailing)
         }
@@ -343,21 +348,19 @@ struct CoverageView: View {
     }
 }
 
-/// A catch-up in progress, with motion, so the numbers above read as still growing.
-private struct ReadingHistoryBanner: View {
+/// An agent's catch-up in progress, with motion, so its days and the totals read as still growing.
+/// It names the same state as the Processing total, short enough to stay on the name's line.
+private struct ReadingHistoryLabel: View {
     var body: some View {
-        HStack(spacing: 10) {
-            RingSpinner()
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Reading the last 7 days").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Brand.greenText)
-                Text("Counts and results update as earlier conversations are analyzed.")
-                    .font(.system(size: 12)).foregroundStyle(Palette.secondary)
-            }
+        HStack(spacing: 5) {
+            RingSpinner(size: 10)
+            Text("Catching up")
         }
-        .padding(.leading, 12).padding(.trailing, 16).padding(.vertical, 9)
-        .background(Brand.calloutFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Brand.calloutRing, lineWidth: 1))
-        .accessibilityElement(children: .combine)
+        .font(.system(size: 11.5, weight: .medium)).foregroundStyle(Brand.greenText)
+        .lineLimit(1).fixedSize()
+        .help("Reading the last 7 days. Counts and results update as earlier conversations are analyzed.")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Catching up: reading the last 7 days")
     }
 }
 
@@ -373,12 +376,51 @@ struct DayCell: View {
         }
     }
     let kind: Kind
+    /// From 0 to 1, how strongly an unread day shows that its agent is still catching up.
+    var pending: Double?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// A narrow crest that crosses the week from left to right every 2.4 s, then rests.
+    /// Under Reduce Motion the days hold a still tint instead.
+    static func wave(at time: Double?, index: Int) -> Double {
+        guard let time else { return 0.4 }
+        let phase = time / 2.4 - Double(index) * 0.09
+        return pow(0.5 - 0.5 * cos(2 * .pi * phase), 3)
+    }
+
+    /// The week reads as one bar split into days, not as a row of boxes: only its ends are rounded.
+    static func segment(_ index: Int, of count: Int) -> UnevenRoundedRectangle {
+        let leading: CGFloat = index == 0 ? 6 : 2, trailing: CGFloat = index == count - 1 ? 6 : 2
+        return UnevenRoundedRectangle(topLeadingRadius: leading, bottomLeadingRadius: leading,
+            bottomTrailingRadius: trailing, topTrailingRadius: trailing, style: .continuous)
+    }
 
     var body: some View {
-        switch kind {
-        case .read: Rectangle().fill(Palette.readCell)
-        case .nothingSeen: Rectangle().strokeBorder(Color(hex: 0xbbc2be, dark: 0x585c5a), lineWidth: 1).background(Palette.background)
-        case .notSetUp: Rectangle().fill(Color(hex: 0xe3e8e5, dark: 0x2e312f))
+        ZStack {
+            if kind == .notSetUp {
+                Hatch().stroke(Color(hex: 0xd3d9d6, dark: 0x434745), lineWidth: 1)
+                    .background(Color(hex: 0xf2f4f3, dark: 0x262927))
+            } else {
+                Rectangle().fill(Color(hex: 0xe3e8e5, dark: 0x3a3e3c))
+            }
+            if let pending { Rectangle().fill(Palette.readCell.opacity(0.08 + 0.32 * pending)) }
+            // A day that gains content fills up from the bottom.
+            Rectangle().fill(Palette.readCell)
+                .scaleEffect(x: 1, y: kind == .read || reduceMotion ? 1 : 0.05, anchor: .bottom)
+                .opacity(kind == .read ? 1 : 0)
         }
+        .animation(Brand.settle(0.45), value: kind)
+    }
+}
+
+/// Diagonal stripes, for days when the agent wasn't set up.
+private struct Hatch: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        for x in stride(from: rect.minX - rect.height, to: rect.maxX, by: 4) {
+            path.move(to: CGPoint(x: x, y: rect.maxY))
+            path.addLine(to: CGPoint(x: x + rect.height, y: rect.minY))
+        }
+        return path
     }
 }

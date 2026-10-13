@@ -203,6 +203,31 @@ struct CoverageReportLookupTests {
         #expect(!report.hasSameRecords(as: changed))
     }
 
+    /// Exactly the work `queue.historicalCount` counts names an agent as reading its history.
+    @Test func historyReadersAreTheAgentsWithQueuedHistoryWork() throws {
+        let codex = CollectionScope(provider: .codex, profileID: profile, interface: .t3, path: .publicHistory)
+        let claude = CollectionScope(provider: .claudeCode, profileID: profile, interface: .standaloneCLI, path: .versionedTranscript)
+        func work(_ scope: CollectionScope, _ state: CollectionWorkState, history: Bool = true) throws -> StoredCollectionWork {
+            let audit = history ? CoverageAuditIdentity(auditID: try HistoricalAuditContext(reason: .resume, endingAt: now).id,
+                provider: scope.provider, profileID: profile) : nil
+            return StoredCollectionWork(id: UUID(), context: CollectionWorkContext(scope: scope,
+                operation: history ? .historicalRead : .liveRead, audit: audit), state: state, admittedAt: now)
+        }
+        func report(_ items: [StoredCollectionWork]) -> CoverageReport {
+            CoverageReport(window: .init(start: now.addingTimeInterval(-60), end: now),
+                gapEvents: .init(items: [], totalCount: 0), omissions: .init(items: [], totalCount: 0),
+                history: .init(items: [], totalCount: 0),
+                queue: .init(count: 0, encryptedBytes: 0, claimedCount: 0, historicalCount: 0), oldestPendingCaptureAt: nil,
+                work: .init(items: items, totalCount: items.count))
+        }
+        let settled = try [work(claude, .completed), work(claude, .terminal), work(claude, .recovered), work(claude, .queued, history: false)]
+        #expect(report(settled).providersReadingHistory.isEmpty)
+        for state in [CollectionWorkState.queued, .processing, .stalled] {
+            #expect(report(try settled + [work(codex, state)]).providersReadingHistory == [.codex])
+        }
+        #expect(report(try settled + [work(codex, .stalled), work(claude, .processing)]).providersReadingHistory == [.codex, .claudeCode])
+    }
+
     /// The report limit allows 1,000 rows per collection, and refresh joins them every second.
     /// Nested scans took about 4 s in Debug for 2,000 rows; the bound leaves a wide margin.
     @Test func joinsStayLinearAtTheReportLimit() throws {

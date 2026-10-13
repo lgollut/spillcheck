@@ -235,9 +235,11 @@ func coveragePresentationAssertions() throws -> [String] {
     try require(waiting.canPerformCoverageAction(.retryHistory(.codex)), "verified-idle-profile-cannot-retry")
     waiting.performCoverageAction(.retryHistory(.claudeCode))
     try require(retries == 0, "unconfigured-provider-retry-was-dispatched")
-    waiting.updateHistoryWork(queued: 1)
+    waiting.updateHistoryWork(queued: 1, providers: [.codex])
     try require(!waiting.canPerformCoverageAction(.retryHistory(.codex)), "queued-audit-allows-duplicate-retry")
-    waiting.updateHistoryWork(queued: 0)
+    try require(waiting.catchingUpProviders == [.codex], "queued-audit-not-shown-on-its-agent")
+    waiting.updateHistoryWork(queued: 0, providers: [.codex])
+    try require(waiting.catchingUpProviders.isEmpty, "finished-audit-still-shown-on-its-agent")
     waiting.pauseAfterBarrier()
     try require(waiting.processingText == "Not checking while paused" && waiting.processingShort == "Not checking"
         && !waiting.canPerformCoverageAction(.retryHistory(.codex)), "paused-profile-claimed-activity-or-allowed-retry")

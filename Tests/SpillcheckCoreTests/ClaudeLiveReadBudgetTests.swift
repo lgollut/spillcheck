@@ -21,7 +21,8 @@ struct ClaudeLiveReadBudgetTests {
         let main = sources.appendingPathComponent("parent.jsonl")
         let child = sources.appendingPathComponent("parent/subagents/agent-child.jsonl")
         let files = event == "SubagentStop" ? [main, child] : [main]
-        let now = Date(timeIntervalSince1970: 1_791_900_000)
+        // The pipeline commits sources against the wall clock, so its queue claim must be current too.
+        let now = Date()
         for (index, file) in files.enumerated() {
             try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
             let session = index == 0 ? "parent" : "child"

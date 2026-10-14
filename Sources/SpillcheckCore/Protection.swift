@@ -742,12 +742,14 @@ public final class InventoryViewingSession {
         // A request made while another is in flight waits for it instead of prompting twice.
         let earlierOperation = pending
         let task = Task { @MainActor [self] () throws -> Data in
-            _ = await earlierOperation?.result
+            let earlier = await earlierOperation?.result
             // A canceled framework operation may still finish. Its final deauthorization
             // completes before a subsequent authorization can begin on the same right.
             _ = await previousOperation?.result
             await deauthorization?.value
             do {
+                // A request that waited on a prompt that failed fails the same way.
+                if case .failure(let error)? = earlier, generation != requestGeneration { throw error }
                 try checkGeneration(requestGeneration)
                 retiringOperation = nil
                 if !isAuthorized {

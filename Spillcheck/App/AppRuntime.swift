@@ -545,18 +545,25 @@ final class AppRuntime {
     private func installWorkflowActions() {
         model.onSelectionChanged = { [weak self] entry in
             self?.viewingGeneration = UUID()
-            let id: UUID?
-            switch entry {
-            case .value(let valueID), .unlocated(let valueID): id = valueID
-            case .obsoleteMarker, nil: id = nil
-            }
-            self?.viewing?.select(valueID: id)
+            self?.viewing?.select(valueID: Self.viewingID(entry))
             self?.sourceOpening.cancel()
         }
-        model.onOccurrenceSelectionChanged = { [weak self] _ in
-            self?.viewingGeneration = UUID()
-            self?.viewing?.hide()
-            self?.sourceOpening.cancel()
+        model.onOccurrenceSelectionChanged = { [weak self] occurrence in
+            guard let self else { return }
+            self.viewingGeneration = UUID()
+            self.sourceOpening.cancel()
+            // Revealing covers the whole value, so another of its appearances stays revealed and shows
+            // its own context. A new entry selects its default appearance before the viewing selection
+            // follows, so that change is not mistaken for one within the revealed entry.
+            if let viewing = self.viewing, viewing.state == .revealed || viewing.state == .authenticating,
+               let entry = self.model.selectedEntryID, let id = Self.viewingID(entry), viewing.selectedValueID == id {
+                let generation = self.viewingGeneration
+                self.performAction { runtime in
+                    await runtime.reveal(entry: entry, occurrenceID: occurrence, generation: generation)
+                }
+            } else {
+                self.viewing?.hide()
+            }
         }
         model.onHide = { [weak self] in self?.hide() }
         model.onLock = { [weak self] in self?.lock() }
@@ -709,6 +716,13 @@ final class AppRuntime {
         if let valueID = model.selectedID, let value = viewing.content.value { model.revealedContent[valueID] = value }
         model.revealedExcerpts = viewing.content.excerpts
         model.revealedSourceMetadata = viewing.content.sourceMetadata
+    }
+
+    private static func viewingID(_ entry: InventoryEntryID?) -> UUID? {
+        switch entry {
+        case .value(let valueID), .unlocated(let valueID): valueID
+        case .obsoleteMarker, nil: nil
+        }
     }
 
     private func unlock() async {

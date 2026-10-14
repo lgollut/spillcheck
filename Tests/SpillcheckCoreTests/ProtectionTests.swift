@@ -418,8 +418,8 @@ struct ProtectionTests {
             key.authorizationGate = nil
             if cancelFirst {
                 await #expect(throws: ViewingAuthorizationError.cancelled) { try await firstTask.value }
-                // A cancelled prompt fails the waiting request rather than opening a second one.
-                await #expect(throws: ViewingAuthorizationError.invalidated) { try await secondTask.value }
+                // A cancelled prompt fails the waiting request the same way rather than opening a second one.
+                await #expect(throws: ViewingAuthorizationError.cancelled) { try await secondTask.value }
                 #expect(!viewing.isAuthorized)
                 #expect(viewing.revealed.isEmpty)
             } else {

@@ -292,17 +292,9 @@ private struct NativeWorkflowProbe {
             selectionModel.loadSnapshot(intraEntry.ledger.snapshot)
             selectionModel.selectedEntryID = .value(intraEntry.valueID)
             var occurrenceSelectionChanges = 0
-            selectionModel.onOccurrenceSelectionChanged = { _ in
-                occurrenceSelectionChanges += 1
-                intraEntry.controller.hide()
-            }
+            selectionModel.onOccurrenceSelectionChanged = { _ in occurrenceSelectionChanges += 1 }
             selectionModel.selectedOccurrenceID = intraEntry.occurrenceID
             let initialSelectionChanges = occurrenceSelectionChanges
-            let firstContext = try InventoryRevealSelection.occurrence(in: intraEntry.ledger.snapshot,
-                occurrenceID: intraEntry.occurrenceID)
-            intraEntry.key.hold = true
-            let firstContextTask = Task { await intraEntry.controller.reveal(firstContext) }
-            try await until { intraEntry.key.gate != nil }
             selectionModel.revealedContent[intraEntry.valueID] = "synthetic previous value"
             selectionModel.revealedExcerpts[intraEntry.occurrenceID] = RetainedExcerpt(text: "synthetic cached A", clipped: false)
             selectionModel.revealedSourceMetadata[intraEntry.occurrenceID] = RetainedSourceContext(sessionIdentifier: "synthetic")
@@ -311,34 +303,71 @@ private struct NativeWorkflowProbe {
             selectionModel.viewingMessage = "synthetic previous message"
             selectionModel.actionMessage = "synthetic previous action"
             selectionModel.selectedOccurrenceID = secondOccurrence
+            // The value stays revealed across its appearances; only the per-appearance command resets.
             try require(selectionModel.selectedEntryID == .value(intraEntry.valueID)
-                && occurrenceSelectionChanges == initialSelectionChanges + 1 && selectionModel.revealedContent.isEmpty
-                && selectionModel.revealedExcerpts.isEmpty && selectionModel.revealedSourceMetadata.isEmpty
-                && selectionModel.terminalResumeCommand == nil && !selectionModel.contentRevealed
+                && occurrenceSelectionChanges == initialSelectionChanges + 1 && selectionModel.contentRevealed
+                && selectionModel.revealedContent[intraEntry.valueID] == "synthetic previous value"
+                && selectionModel.revealedExcerpts[intraEntry.occurrenceID] != nil
+                && selectionModel.terminalResumeCommand == nil
                 // Action messages are timed toasts, independent of retained occurrence content.
                 && selectionModel.viewingMessage == nil && selectionModel.actionMessage == "synthetic previous action",
-                "same-entry-selection-masks-immediately")
-            intraEntry.key.release()
-            await firstContextTask.value
-            try require(intraEntry.controller.state == .masked && intraEntry.controller.content.excerpts.isEmpty
-                && intraEntry.controller.content.sourceMetadata.isEmpty && intraEntry.session.revealed.isEmpty,
-                "same-entry-late-authentication-denied")
-            let secondContext = try InventoryRevealSelection.occurrence(in: intraEntry.ledger.snapshot,
-                occurrenceID: secondOccurrence)
-            await intraEntry.controller.reveal(secondContext)
-            selectionModel.revealedExcerpts = intraEntry.controller.content.excerpts
-            selectionModel.revealedSourceMetadata = intraEntry.controller.content.sourceMetadata
-            selectionModel.contentRevealed = intraEntry.controller.isAuthorized
+                "same-entry-selection-keeps-revealed-value")
             selectionModel.terminalResumeCommand = "synthetic command B"
             selectionModel.selectedOccurrenceID = secondOccurrence
-            try require(occurrenceSelectionChanges == initialSelectionChanges + 1 && selectionModel.contentRevealed
-                && selectionModel.revealedExcerpts[secondOccurrence]?.text == "synthetic context B"
-                && selectionModel.revealedSourceMetadata[secondOccurrence]?.title == "synthetic title B"
-                && selectionModel.terminalResumeCommand == "synthetic command B"
-                && intraEntry.key.authorizations == 1,
+            try require(occurrenceSelectionChanges == initialSelectionChanges + 1
+                && selectionModel.terminalResumeCommand == "synthetic command B",
                 "same-occurrence-selection-keeps-current-content")
-            checks.append("intra-entry-occurrence-selection-rejects-late-authentication")
+            checks.append("intra-entry-occurrence-selection-keeps-revealed-value")
             checks.append("unchanged-occurrence-selection-keeps-current-content")
+
+            // Switching appearance while the prompt is open reveals only the newer one, after a single prompt.
+            let firstAppearance = try InventoryRevealSelection.occurrenceWithValue(in: intraEntry.ledger.snapshot,
+                occurrenceID: intraEntry.occurrenceID)
+            let secondAppearance = try InventoryRevealSelection.occurrenceWithValue(in: intraEntry.ledger.snapshot,
+                occurrenceID: secondOccurrence)
+            intraEntry.key.hold = true
+            let firstAppearanceTask = Task { await intraEntry.controller.reveal(firstAppearance) }
+            try await until { intraEntry.key.gate != nil }
+            let secondAppearanceTask = Task { await intraEntry.controller.reveal(secondAppearance) }
+            for _ in 0..<10 { await Task.yield() }
+            intraEntry.key.release()
+            await firstAppearanceTask.value
+            await secondAppearanceTask.value
+            try require(intraEntry.controller.state == .revealed
+                && intraEntry.controller.content.value == "SYNTHETIC-NATIVE-VIEWING-Ä-🔐"
+                && Set(intraEntry.controller.content.excerpts.keys) == [secondOccurrence]
+                && intraEntry.key.authorizations == 1, "superseded-appearance-reveal")
+            checks.append("appearance-change-during-authentication-reveals-newer-appearance")
+
+            // With the value revealed, another appearance adds its context without hiding the value or prompting.
+            var shownStates: [InventoryViewingState] = []
+            intraEntry.controller.onChange = { shownStates.append(intraEntry.controller.state) }
+            await intraEntry.controller.reveal(firstAppearance)
+            try require(shownStates == [.revealed] && intraEntry.controller.content.value == "SYNTHETIC-NATIVE-VIEWING-Ä-🔐"
+                && Set(intraEntry.controller.content.excerpts.keys) == [intraEntry.occurrenceID, secondOccurrence]
+                && intraEntry.controller.content.sourceMetadata[intraEntry.occurrenceID]?.title == "synthetic title"
+                && intraEntry.key.authorizations == 1, "appearance-change-extends-revealed-content")
+            checks.append("appearance-change-keeps-value-revealed")
+
+            let cancelledSwitch = try await ViewingFixture()
+            let cancelledSecond = try await cancelledSwitch.addSecondOccurrence()
+            let cancelledFirst = try InventoryRevealSelection.occurrenceWithValue(in: cancelledSwitch.ledger.snapshot,
+                occurrenceID: cancelledSwitch.occurrenceID)
+            let cancelledNext = try InventoryRevealSelection.occurrenceWithValue(in: cancelledSwitch.ledger.snapshot,
+                occurrenceID: cancelledSecond)
+            cancelledSwitch.key.hold = true
+            cancelledSwitch.key.cancellation = true
+            let cancelledFirstTask = Task { await cancelledSwitch.controller.reveal(cancelledFirst) }
+            try await until { cancelledSwitch.key.gate != nil }
+            let cancelledNextTask = Task { await cancelledSwitch.controller.reveal(cancelledNext) }
+            for _ in 0..<10 { await Task.yield() }
+            cancelledSwitch.key.release()
+            await cancelledFirstTask.value
+            await cancelledNextTask.value
+            try require(cancelledSwitch.controller.state == .cancelled && cancelledSwitch.controller.content.value == nil
+                && !cancelledSwitch.controller.isAuthorized && cancelledSwitch.key.authorizations == 1,
+                "cancelled-appearance-switch")
+            checks.append("cancelled-prompt-during-appearance-change-reports-cancellation")
 
             let deleted = try await ViewingFixture()
             deleted.key.hold = true

@@ -457,7 +457,8 @@ final class AppModel {
     var selectedOccurrenceID: UUID? {
         didSet {
             guard oldValue != selectedOccurrenceID else { return }
-            clearRevealedContent()
+            // A revealed value stays revealed across its appearances; the resume command is per appearance.
+            terminalResumeCommand = nil
             viewingMessage = nil
             revealIssue = nil
             onOccurrenceSelectionChanged?(selectedOccurrenceID)

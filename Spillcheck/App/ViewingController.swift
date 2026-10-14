@@ -34,6 +34,7 @@ final class ViewingController {
     @ObservationIgnored private let loadPayload: @MainActor (ProtectedPayloadReference) async throws -> ProtectedPayload?
     @ObservationIgnored private let selectionIsCurrent: @MainActor (InventoryRevealSelection) async -> Bool
     @ObservationIgnored private var guardState = InventoryRevealGuard()
+    @ObservationIgnored private var currentRequest: InventoryRevealGuard.Ticket?
 
     init(session: InventoryViewingSession,
          loadPayload: @escaping @MainActor (ProtectedPayloadReference) async throws -> ProtectedPayload?,
@@ -44,6 +45,7 @@ final class ViewingController {
     }
 
     var isAuthorized: Bool { session.isAuthorized }
+    var selectedValueID: UUID? { guardState.selectedValueID }
 
     func select(valueID: UUID?) {
         guard guardState.selectedValueID != valueID else { return }
@@ -79,19 +81,27 @@ final class ViewingController {
 
     /// Called by the session's existing lifecycle callback, without recursively invalidating it.
     func didInvalidate(_ reason: ViewingInvalidationReason = .userMask) {
-        let requestWillReportFailure = reason == .authorizationFailure && state == .authenticating
+        let requestWillReportFailure = reason == .authorizationFailure
+            && currentRequest.map { guardState.accepts($0) } == true
         if !requestWillReportFailure { guardState.invalidate() }
         content = RevealedInventoryContent()
         if !requestWillReportFailure { state = .masked }
         onChange?()
     }
 
+    /// A newer reveal supersedes one still in flight. Adding another appearance's context to revealed
+    /// content keeps that content on screen meanwhile.
     func reveal(_ selection: InventoryRevealSelection) async {
-        guard state != .authenticating, !unlocking else { return }
+        guard !unlocking else { return }
+        let extending = state == .revealed
         let ticket: InventoryRevealGuard.Ticket
         do { ticket = try guardState.begin(selection) } catch { return }
-        state = .authenticating
-        onChange?()
+        currentRequest = ticket
+        defer { if currentRequest == ticket { currentRequest = nil } }
+        if !extending {
+            state = .authenticating
+            onChange?()
+        }
         do {
             guard await selectionIsCurrent(selection), guardState.accepts(ticket) else {
                 throw ViewingAuthorizationError.invalidated

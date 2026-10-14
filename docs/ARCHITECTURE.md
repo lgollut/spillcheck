@@ -74,8 +74,9 @@ at rest; diagnostics and searchable summaries use controlled metadata.
 
 `InventoryViewingWorkflow.swift` and the app's `ViewingController.swift` manage
 reveals. One authentication unlocks a viewing session, and revealing needs no
-further prompt while it lasts. Hiding content or changing the selection clears
-what was shown without ending the session. The session expires after five
+further prompt while it lasts. A revealed value stays revealed across its
+appearances. Hiding content or selecting another entry clears what was shown
+without ending the session. The session expires after five
 minutes of inactivity and ends on locking, window closure, sleep or macOS
 session lock. Closing a window keeps
 monitoring active; pause suspends collection, processing and alerts; quit stops

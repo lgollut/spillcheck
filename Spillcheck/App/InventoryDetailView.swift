@@ -307,16 +307,17 @@ private struct ConversationCard: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                Text(conversation.label.text).font(.system(size: 12.5, weight: .semibold))
-                Text(agentLabel).font(.system(size: 11)).foregroundStyle(Palette.ink2)
-                    .padding(.horizontal, 7).frame(height: 18)
-                    .background(Palette.chip, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                AgentTile(provider: conversation.provider, size: 20)
+                Text(agentLabel).font(.system(size: 12.5, weight: .semibold))
+                Text("·").foregroundStyle(Palette.faint)
+                Text(conversation.label.text).font(.system(size: 12.5)).foregroundStyle(Palette.secondary)
                 Spacer()
                 Text(plural(occurrences.count, "appearance")).font(.system(size: 11.5)).foregroundStyle(Palette.tertiary).monospacedDigit()
             }
             .padding(.horizontal, 14)
-            .frame(height: 36)
+            .frame(height: 38)
             .background(Color(hex: 0xf9fbfa, dark: 0x1f2321))
+            .accessibilityElement(children: .combine)
             .overlay(alignment: .bottom) { Rectangle().fill(Palette.hairline).frame(height: 1) }
             ForEach(Array(occurrences.enumerated()), id: \.element.id) { index, occurrence in
                 OccurrenceRow(model: model, summary: summary, occurrence: occurrence,
@@ -446,15 +447,12 @@ private struct OccurrenceDetail: View {
     private var excerpt: RetainedExcerpt? { model.viewingAuthorized ? model.revealedExcerpts[occurrence.id] : nil }
     private var source: RetainedSourceContext? { model.viewingAuthorized ? model.revealedSourceMetadata[occurrence.id] : nil }
 
+    // Reads top to bottom: what was seen, the facts about it, then what you can do with it.
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 14) {
             context
-            if let review = occurrence.review {
-                ReviewToggle(review: review, disabled: disabled) { model.onReview?(occurrence.id, $0) }
-                    .accessibilityIdentifier("inventory.occurrence.\(occurrence.id.uuidString.lowercased()).review")
-            }
-            routeRow
-            Text(alertText).font(.system(size: 11.5)).foregroundStyle(Palette.tertiary)
+            facts
+            actionBar
         }
     }
 
@@ -464,25 +462,21 @@ private struct OccurrenceDetail: View {
             Text("Nothing kept for this appearance. Source and time only.")
                 .font(.system(size: 12)).foregroundStyle(Palette.secondary)
         } else if let excerpt {
-            VStack(alignment: .leading, spacing: 8) {
+            // Framed like a code block: the source names it, the body is the excerpt.
+            VStack(alignment: .leading, spacing: 0) {
+                excerptHeader(clipped: excerpt.clipped)
                 Text(highlighted(excerpt.text))
                     .font(.system(size: 12, design: .monospaced)).lineSpacing(3)
                     .foregroundStyle(Palette.ink2)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 12).padding(.vertical, 10)
-                    .background(Palette.well, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .padding(.horizontal, 14).padding(.vertical, 12)
                     .privacySensitive()
                     .accessibilityIdentifier("inventory.occurrence.\(occurrence.id.uuidString.lowercased()).revealed-context")
-                sourceLine
-                if excerpt.clipped {
-                    Text("Excerpt, clipped around this appearance. Not the full conversation.")
-                        .font(.system(size: 11.5)).foregroundStyle(Palette.tertiary)
-                }
             }
-        } else if source != nil {
-            sourceLine
-        } else if occurrence.protectedExcerpt != nil || occurrence.protectedMetadata != nil {
+            .background(Self.excerptBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(Palette.shade.opacity(0.08)))
+        } else if occurrence.protectedExcerpt != nil || occurrence.protectedMetadata != nil, source == nil {
             HStack(spacing: 14) {
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach([0.9, 0.64, 0.78], id: \.self) { width in
@@ -507,17 +501,88 @@ private struct OccurrenceDetail: View {
         }
     }
 
-    @ViewBuilder
-    private var sourceLine: some View {
-        if let source {
-            HStack(spacing: 12) {
-                if let title = source.title { Text(verbatim: title) }
-                if let path = source.projectPath { Text(verbatim: path).font(.system(size: 11, design: .monospaced)) }
+    /// Darker than the expanded row in dark mode, white in light, so the excerpt always reads as its own surface.
+    private static let excerptBackground = Color(hex: 0xffffff, dark: 0x161917)
+
+    private func excerptHeader(clipped: Bool) -> some View {
+        HStack(spacing: 8) {
+            if let title = source?.title {
+                Text(verbatim: title).font(.system(size: 11.5, weight: .medium)).foregroundStyle(Palette.ink2)
+                    .lineLimit(1).privacySensitive()
             }
-            .font(.system(size: 11.5)).foregroundStyle(Palette.secondary)
-            .textSelection(.enabled)
-            .privacySensitive()
+            if let path = source?.projectPath {
+                Text(verbatim: path).font(.system(size: 11, design: .monospaced)).foregroundStyle(Palette.tertiary)
+                    .lineLimit(1).truncationMode(.middle)
+                    .layoutPriority(-1)
+                    .help(path)
+                    .privacySensitive()
+            }
+            if source?.title == nil && source?.projectPath == nil {
+                Text("Excerpt").font(.system(size: 11.5, weight: .medium)).foregroundStyle(Palette.tertiary)
+            }
+            Spacer(minLength: 8)
+            if clipped {
+                Text("Clipped")
+                    .font(.system(size: 10.5, weight: .medium)).foregroundStyle(Palette.tertiary)
+                    .padding(.horizontal, 6).frame(height: 18)
+                    .background(Palette.chip, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                    .help("Clipped around this appearance. Not the full conversation.")
+                    .accessibilityLabel("Excerpt clipped around this appearance. Not the full conversation.")
+            }
         }
+        .textSelection(.enabled)
+        .padding(.horizontal, 14)
+        .frame(height: 32)
+        .overlay(alignment: .bottom) { Rectangle().fill(Palette.shade.opacity(0.07)).frame(height: 1) }
+    }
+
+    // MARK: Facts
+
+    /// Label/value pairs with a shared label column, so each fact can be found by scanning down the left edge.
+    private var facts: some View {
+        let route = route
+        let alert = alert
+        return Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 16, verticalSpacing: 7) {
+            if excerpt == nil, let source, source.title != nil || source.projectPath != nil {
+                GridRow {
+                    factLabel("Source")
+                    VStack(alignment: .leading, spacing: 2) {
+                        if let title = source.title { Text(verbatim: title).foregroundStyle(Palette.ink2) }
+                        if let path = source.projectPath {
+                            Text(verbatim: path).font(.system(size: 11, design: .monospaced)).foregroundStyle(Palette.tertiary)
+                                .lineLimit(1).truncationMode(.middle).help(path)
+                        }
+                    }
+                    .textSelection(.enabled)
+                    .privacySensitive()
+                }
+            }
+            GridRow {
+                factLabel("Alert")
+                factValue(alert.title, alert.detail)
+            }
+            GridRow {
+                factLabel("Link")
+                HStack(alignment: .firstTextBaseline, spacing: 7) {
+                    StatusDot(color: route.color, size: 6).alignmentGuide(.firstTextBaseline) { $0[.bottom] - 0.5 }
+                    factValue(route.chip, route.text)
+                }
+            }
+        }
+        .font(.system(size: 12))
+    }
+
+    private func factLabel(_ text: String) -> some View {
+        Text(text).foregroundStyle(Palette.quaternary)
+            .gridColumnAlignment(.leading)
+            .frame(minWidth: 38, alignment: .leading)
+    }
+
+    private func factValue(_ title: String, _ detail: String?) -> some View {
+        (Text(title).foregroundStyle(Palette.ink2)
+            + Text(detail.map { " · \($0)" } ?? "").foregroundStyle(Palette.tertiary))
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func highlighted(_ text: String) -> AttributedString {
@@ -581,17 +646,28 @@ private struct OccurrenceDetail: View {
         occurrence.protectedMetadata != nil && source?.openingCapability != .unavailable
     }
 
-    private var routeRow: some View {
+    // MARK: Actions
+
+    /// Judging this appearance on the left, going to its conversation on the right.
+    @ViewBuilder
+    private var actionBar: some View {
         let route = route
-        return HStack(spacing: 10) {
-            HStack(spacing: 6) {
-                StatusDot(color: route.color)
-                Text(route.chip)
+        if occurrence.review != nil || route.openLabel != nil || canResume {
+            HStack(spacing: 8) {
+                if let review = occurrence.review {
+                    ReviewToggle(review: review, disabled: disabled) { model.onReview?(occurrence.id, $0) }
+                        .accessibilityIdentifier("inventory.occurrence.\(occurrence.id.uuidString.lowercased()).review")
+                }
+                Spacer(minLength: 12)
+                sourceButtons(route)
             }
-            .chip(background: Palette.well, foreground: Palette.ink2)
-            Text(route.text).font(.system(size: 12)).foregroundStyle(Palette.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(minWidth: 160, maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 12)
+            .overlay(alignment: .top) { Rectangle().fill(Palette.shade.opacity(0.07)).frame(height: 1) }
+        }
+    }
+
+    private func sourceButtons(_ route: RouteInfo) -> some View {
+        HStack(spacing: 8) {
             if let label = route.openLabel {
                 Button(label) {
                     model.selectedOccurrenceID = occurrence.id
@@ -602,7 +678,7 @@ private struct OccurrenceDetail: View {
                 .accessibilityIdentifier("inventory.occurrence.\(occurrence.id.uuidString.lowercased()).open-source")
             }
             if canResume {
-                Button("Resume in Terminal…") {
+                Button("Resume in Terminal") {
                     model.selectedOccurrenceID = occurrence.id
                     sheet = .resume(occurrence.id)
                 }
@@ -612,21 +688,22 @@ private struct OccurrenceDetail: View {
                 .accessibilityIdentifier("inventory.occurrence.\(occurrence.id.uuidString.lowercased()).terminal-resume")
             }
         }
+        .fixedSize()
     }
 
-    private var alertText: String {
-        let conversation = occurrence.conversation.label.text
+    private var alert: (title: String, detail: String?) {
+        let first = "First strong appearance in \(occurrence.conversation.label.text)"
         switch occurrence.alert {
-        case .alerted(.delivered): return "Alerted · first strong appearance in \(conversation)"
-        case .alerted(.pending): return "Alert pending · first strong appearance in \(conversation)"
-        case .alerted(.permissionDenied): return "Not announced · notifications are off. First strong appearance in \(conversation)."
-        case .alerted(.cancelled): return "Alert withdrawn"
-        case .repeatInConversation: return "No alert · repeat in the same conversation"
-        case .awaitingReview: return "No alert · ambiguous detections wait for your review"
-        case .catchUp: return "No alert · found during catch-up and included in its summary"
-        case .obsolete: return "No alert · obsolete value"
-        case .unlocated: return "No alert · the exact value wasn’t located"
-        case .notAlerted: return "No alert"
+        case .alerted(.delivered): return ("Sent", first)
+        case .alerted(.pending): return ("Pending", first)
+        case .alerted(.permissionDenied): return ("Not announced", "Notifications are off. \(first)")
+        case .alerted(.cancelled): return ("Withdrawn", nil)
+        case .repeatInConversation: return ("None", "Repeat in the same conversation")
+        case .awaitingReview: return ("None", "Ambiguous detections wait for your review")
+        case .catchUp: return ("None", "Found during catch-up and included in its summary")
+        case .obsolete: return ("None", "Obsolete value")
+        case .unlocated: return ("None", "The exact value wasn’t located")
+        case .notAlerted: return ("None", nil)
         }
     }
 
@@ -647,17 +724,16 @@ private struct ReviewToggle: View {
     let onChange: (OccurrenceReview) -> Void
 
     var body: some View {
-        HStack(spacing: 8) {
-            Text("This appearance").font(.system(size: 11.5)).foregroundStyle(Palette.tertiary)
+        HStack(spacing: 10) {
+            // Same words either way so the control never moves; colour carries the "still to review" state.
+            Text("Is this a secret?").font(.system(size: 12))
+                .foregroundStyle(review == .unreviewed ? Palette.amberText : Palette.tertiary)
             HStack(spacing: 2) {
                 option("Secret", .confirmedSecret)
                 option("Not a secret", .falsePositive)
             }
             .padding(2)
             .background(Palette.shade.opacity(0.05), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-            if review == .unreviewed {
-                Text("Unreviewed").font(.system(size: 11.5)).foregroundStyle(Palette.amberText)
-            }
         }
         .disabled(disabled)
         .accessibilityElement(children: .contain)
@@ -775,6 +851,7 @@ private struct ValueActionSheet: View {
     let summary: EntrySummary
     let kind: DetailSheet
     @State private var acknowledgement: ObsoleteAcknowledgement = .rotated
+    @State private var copied = false
     @Environment(\.dismiss) private var dismiss
 
     private var name: String { summary.name }
@@ -792,7 +869,7 @@ private struct ValueActionSheet: View {
         case .acknowledge: "Acknowledge \(name) as addressed?"
         case .remove: "Remove retained content for \(name)?"
         case .forget: "Forget obsolete recognition for \(name)?"
-        case .resume: "Prepare a resume command for \(resumeOccurrence?.conversation.label.text ?? "this conversation")?"
+        case .resume: "Resume \(resumeOccurrence?.conversation.label.text ?? "this conversation") in \(resumeOccurrence?.conversation.provider.displayName ?? "its agent")"
         }
     }
 
@@ -814,19 +891,33 @@ private struct ValueActionSheet: View {
                     summary.entry.kind == .rememberedObsoleteMarker ? (.kept, "Processed history won’t recreate removed occurrences")
                         : (.kept, "Retained occurrences and reviews stay")]
         case .resume:
-            return [(.info, "Shows a command for you to run in Terminal"), (.caution, "Resuming can send new requests to \(provider)"),
-                    (.kept, "To only inspect, reveal the retained excerpt instead")]
+            return [(.caution, "Resuming can send new requests to \(provider)"),
+                    (.info, "To only inspect, reveal the retained excerpt instead")]
         }
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 12) {
-                ValueTile(text: summary.kind.monogram, colors: TileColors.forEntry(summary.entry), size: 38)
-                Text(title).font(.system(size: 14, weight: .semibold)).lineSpacing(2)
-                    .fixedSize(horizontal: false, vertical: true)
+                // The resume sheet is about a conversation, so it carries the agent's mark rather than the value's.
+                if let occurrence = resumeOccurrence {
+                    AgentTile(provider: occurrence.conversation.provider, size: 38)
+                } else {
+                    ValueTile(text: summary.kind.monogram, colors: TileColors.forEntry(summary.entry), size: 38)
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title).font(.system(size: 14, weight: .semibold)).lineSpacing(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if resumeOccurrence != nil {
+                        Text("Run this command in Terminal to pick the conversation up where it left off.")
+                            .font(.system(size: 12)).foregroundStyle(Palette.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
             }
             if kind == .acknowledge { acknowledgementChoice }
+            // For a resume, the command is the point; the notes qualify it.
+            if let occurrence = resumeOccurrence { resumeCommand(occurrence) }
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(Array(items.enumerated()), id: \.offset) { _, item in
                     HStack(spacing: 10) {
@@ -835,9 +926,25 @@ private struct ValueActionSheet: View {
                     }
                 }
             }
-            if let occurrence = resumeOccurrence { resumeCommand(occurrence) }
             HStack(spacing: 8) {
                 Spacer()
+                if let command = resumeCommandText {
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(command, forType: .string)
+                        copied = true
+                    } label: {
+                        Label(copied ? "Copied" : "Copy command", systemImage: copied ? "checkmark" : "doc.on.doc")
+                            .labelStyle(TightLabelStyle())
+                            .frame(minWidth: 104)
+                    }
+                    .buttonStyle(OutlineButtonStyle(height: 26))
+                    .task(id: copied) {
+                        guard copied else { return }
+                        try? await Task.sleep(for: .seconds(1.6))
+                        copied = false
+                    }
+                }
                 if resumeOccurrence == nil {
                     Button("Cancel") { dismiss() }
                         .buttonStyle(OutlineButtonStyle(height: 26))
@@ -854,6 +961,12 @@ private struct ValueActionSheet: View {
         .frame(width: 440)
         .background(Palette.surface)
         .focusVisible()
+    }
+
+    private var resumeCommandText: String? {
+        guard let occurrence = resumeOccurrence, model.viewingAuthorized,
+              model.revealedSourceMetadata[occurrence.id] != nil else { return nil }
+        return model.terminalResumeCommand
     }
 
     private var confirmTitle: String {
@@ -937,10 +1050,12 @@ private struct ValueActionSheet: View {
                     Text(occurrence.conversation.provider == .codex ? "codex resume ••••••••••••" : "claude --resume ••••••••••••")
                 }
             }
-            .font(.system(size: 12.5, design: .monospaced))
+            .font(.system(size: 12, design: .monospaced)).lineSpacing(3)
+            .foregroundStyle(Palette.ink)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 11).padding(.vertical, 9)
-            .background(Color(hex: 0xf5f5f3, dark: 0x262a28), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .padding(.horizontal, 12).padding(.vertical, 11)
+            .background(Color(hex: 0xf5f6f5, dark: 0x161917), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Palette.shade.opacity(0.08)))
             if !revealed {
                 HStack(spacing: 10) {
                     Text(model.viewingBusy ? "Waiting for Touch ID…" : "The conversation ID is protected.")

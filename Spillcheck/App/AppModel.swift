@@ -426,7 +426,10 @@ final class AppModel {
     var revealedContent: [UUID: String] = [:]
     var revealedExcerpts: [UUID: RetainedExcerpt] = [:]
     var revealedSourceMetadata: [UUID: RetainedSourceContext] = [:]
-    var viewingAuthorized = false
+    /// The viewing session is authorized, so revealing needs no further prompt.
+    var viewingUnlocked = false
+    /// The selection's protected content is on screen.
+    var contentRevealed = false
     var viewingBusy = false
     var viewingMessage: String?
     var revealIssue: RevealIssue?
@@ -454,7 +457,8 @@ final class AppModel {
     var selectedOccurrenceID: UUID? {
         didSet {
             guard oldValue != selectedOccurrenceID else { return }
-            clearRevealedContent()
+            // A revealed value stays revealed across its appearances; the resume command is per appearance.
+            terminalResumeCommand = nil
             viewingMessage = nil
             revealIssue = nil
             onOccurrenceSelectionChanged?(selectedOccurrenceID)
@@ -486,7 +490,9 @@ final class AppModel {
     @ObservationIgnored var onSelectionChanged: ((InventoryEntryID?) -> Void)?
     @ObservationIgnored var onOccurrenceSelectionChanged: ((UUID?) -> Void)?
     @ObservationIgnored var onReveal: ((InventoryEntryID, UUID?) -> Void)?
-    @ObservationIgnored var onMask: (() -> Void)?
+    @ObservationIgnored var onHide: (() -> Void)?
+    @ObservationIgnored var onUnlock: (() -> Void)?
+    @ObservationIgnored var onLock: (() -> Void)?
     @ObservationIgnored var onReview: ((UUID, OccurrenceReview) -> Void)?
     @ObservationIgnored var onReviewAll: (([UUID], OccurrenceReview) -> Void)?
     @ObservationIgnored var onAcknowledge: ((ValueFingerprint, ObsoleteAcknowledgement) -> Void)?
@@ -948,7 +954,7 @@ final class AppModel {
         revealedExcerpts.removeAll()
         revealedSourceMetadata.removeAll()
         terminalResumeCommand = nil
-        viewingAuthorized = false
+        contentRevealed = false
     }
     func loadSnapshot(_ snapshot: InventorySnapshot) {
         guard !isDemo, let next = try? InventoryPresentation(snapshot: snapshot) else { return }
@@ -969,10 +975,17 @@ final class AppModel {
         selectedEntryID = .value(id)
     }
 
-    func maskNow() {
+    /// Hides the selection's content and keeps the viewing session unlocked.
+    func hideNow() {
         clearRevealedContent()
         revealIssue = nil
-        onMask?()
+        onHide?()
+    }
+
+    func lockNow() {
+        clearRevealedContent()
+        revealIssue = nil
+        onLock?()
     }
 
     func stop() {

@@ -335,9 +335,9 @@ private struct SidebarView: View {
             .accessibilityIdentifier("inventory.settings")
 
             Spacer(minLength: 0)
-            if model.viewingAuthorized {
-                Button { model.maskNow() } label: {
-                    Label("Hide values", systemImage: "lock.open.fill")
+            if model.viewingUnlocked {
+                Button { model.lockNow() } label: {
+                    Label("Lock", systemImage: "lock.open.fill")
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(Palette.onAccent)
                         .padding(.horizontal, 11)
@@ -345,20 +345,28 @@ private struct SidebarView: View {
                         .background(Palette.accent, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
                 }
                 .buttonStyle(.plain)
-                .help("Values are visible. Click to mask them again.")
-                .accessibilityIdentifier("inventory.mask")
+                .help("Unlocked. Values reveal without asking again until you lock, after 5 min idle, when the window closes, or when the Mac sleeps.")
+                .accessibilityLabel("Unlocked. Lock now")
+                .accessibilityIdentifier("inventory.lock")
             } else {
-                // Collapses to the lock alone when the coverage word needs the room.
-                ViewThatFits(in: .horizontal) {
-                    Label("Values hidden", systemImage: "lock.fill").labelStyle(TightLabelStyle()).fixedSize()
-                    Image(systemName: "lock.fill").imageScale(.small)
+                Button { model.onUnlock?() } label: {
+                    // Collapses to the lock alone when the coverage word needs the room.
+                    ViewThatFits(in: .horizontal) {
+                        Label("Unlock…", systemImage: "lock.fill").labelStyle(TightLabelStyle()).fixedSize()
+                        Image(systemName: "lock.fill").imageScale(.small)
+                    }
+                    .font(.system(size: 12))
+                    .foregroundStyle(Palette.secondary)
+                    .padding(.horizontal, 8)
+                    .frame(height: 28)
+                    .contentShape(Rectangle())
+                    .hoverFill(hover: Palette.shade.opacity(0.06))
                 }
-                .font(.system(size: 12))
-                .foregroundStyle(Palette.secondary)
-                .padding(.horizontal, 8)
-                .help("Values, excerpts, titles, and paths stay masked until you reveal one with Touch ID")
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("Values hidden")
+                .buttonStyle(.plain)
+                .disabled(model.viewingBusy || model.isDemo || !model.storageReady)
+                .help("Values, excerpts, titles, and paths stay hidden. Unlock once with Touch ID or your password to reveal them without asking again.")
+                .accessibilityLabel("Values locked. Unlock")
+                .accessibilityIdentifier("inventory.unlock")
             }
         }
         .padding(.horizontal, 10)

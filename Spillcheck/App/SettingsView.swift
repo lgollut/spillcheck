@@ -212,7 +212,7 @@ private struct GeneralSettings: View {
                 }
             }
         }
-        Text("Values, excerpts, conversation titles, and project paths stay masked until you reveal them with Touch ID or your password. Viewing locks after 5 minutes idle, when the window closes, or when the Mac sleeps or locks.")
+        Text("Values, excerpts, conversation titles, and project paths stay hidden until you unlock with Touch ID or your password. While unlocked, revealing doesn’t ask again. The app locks after 5 minutes idle, when the window closes, or when the Mac sleeps or locks.")
             .font(.system(size: 12)).foregroundStyle(Palette.tertiary).lineSpacing(2)
             .padding(.horizontal, 2).padding(.top, -18)
         SettingsSection(title: "Setup") {

@@ -137,9 +137,9 @@ Settings cover agent discovery and connection management, notification permissio
 
 Exact values, raw context, conversation titles and identifiers, and project paths stay protected until macOS authentication authorizes a viewing session. Locked views and notifications use app-controlled conversation labels such as "Conversation 4". Arbitrary session text must not leak through a title, tooltip, preview, or accessibility label.
 
-Support masked, authenticating, revealed, cancelled, failed, and unavailable-content states. Cancelling or failing authentication leaves protected content masked and lets the user retry. Use the system Touch ID or password prompt.
+Support locked and unlocked viewing sessions, and masked, authenticating, revealed, cancelled, failed, and unavailable-content states. Cancelling or failing authentication leaves protected content masked and lets the user retry. Use the system Touch ID or password prompt.
 
-A viewing session locks after five minutes of inactivity, when the window closes, when the Mac sleeps or locks, and when the user chooses Mask. Selection changes clear revealed content; authentication finishing for an old selection must not reveal it in a new detail view. Monitoring can continue while viewing is locked.
+One authentication unlocks a viewing session, like a password manager: while it is unlocked, revealing another value needs no further prompt. The session locks after five minutes of inactivity, when the window closes, when the Mac sleeps or locks, and when the user chooses Lock. A revealed value stays revealed while the user moves between its appearances, and each appearance shows its own context. Hiding content and selecting another entry clear revealed content without locking. Authentication finishing for an old selection may unlock the session, but must not reveal that selection in a new detail view. Monitoring can continue while viewing is locked.
 
 Masked content, removed content, and an unlocated value have different meanings. Their explanations and available controls must match what the app can actually show.
 

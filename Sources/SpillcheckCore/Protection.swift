@@ -149,7 +149,7 @@ public enum ProtectionError: Error, Equatable, Sendable {
 }
 
 public enum ViewingAuthorizationError: Error, Equatable, Sendable {
-    case cancelled, unavailable(code: Int), denied(code: Int), invalidated, busy
+    case cancelled, unavailable(code: Int), denied(code: Int), invalidated
 }
 
 private func framedFields(_ fields: [String]) -> Data {
@@ -660,6 +660,7 @@ public final class InventoryViewingSession {
     private let uptime: @MainActor () -> TimeInterval
     private let wallTime: @MainActor () -> Date
     private var generation: UInt64 = 0
+    private var concealment: UInt64 = 0
     private var deadline: TimeInterval?
     private var expiresAt: Date?
     private var lastActivityAt: Date?
@@ -693,6 +694,12 @@ public final class InventoryViewingSession {
                                acceptedActivityCount: activityCount, isAuthorized: isAuthorized)
     }
 
+    /// Authorizes the session without decrypting anything, so later reveals need no prompt.
+    public func unlock(localizedReason: String) async throws {
+        expireIfNeeded()
+        _ = try await authorized(localizedReason: localizedReason) { _ in Data() }
+    }
+
     public func reveal(
         _ payload: ProtectedPayload, binding: PayloadBinding, localizedReason: String
     ) async throws -> Data {
@@ -700,35 +707,9 @@ public final class InventoryViewingSession {
         try payload.validate(expectedBinding: binding)
         guard !binding.kind.isBackgroundAccessible, payload.algorithm == .inventoryECIESAESGCM,
               payload.keyID == manifest.inventoryRightID else { throw ProtectionError.incorrectKey }
-        guard pending == nil else { throw ViewingAuthorizationError.busy }
-        generation &+= 1
-        let requestGeneration = generation
-        let previousOperation = retiringOperation
-        let task = Task { @MainActor [self] () throws -> Data in
-            // A canceled framework operation may still finish. Its final deauthorization
-            // completes before a subsequent authorization can begin on the same right.
-            _ = await previousOperation?.result
-            await deauthorization?.value
-            try checkGeneration(requestGeneration)
-            retiringOperation = nil
-            if !isAuthorized {
-                do { try await privateKey.authorize(localizedReason: localizedReason) }
-                catch {
-                    try await checkPrivateCompletion(requestGeneration)
-                    throw error
-                }
-                try await checkPrivateCompletion(requestGeneration)
-                guard privateKey.isAuthorized else { throw ViewingAuthorizationError.invalidated }
-                lastActivityAt = nil
-                lastActivityKind = nil
-                activityCount = 0
-                deadline = uptime() + timeoutSeconds
-                expiresAt = wallTime().addingTimeInterval(timeoutSeconds)
-            }
-            try checkGeneration(requestGeneration)
-            guard isAuthorized, let wrappedKey = payload.wrappedDataKey else {
-                throw ViewingAuthorizationError.invalidated
-            }
+        let requestConcealment = concealment
+        let output = try await authorized(localizedReason: localizedReason) { [self] requestGeneration in
+            guard let wrappedKey = payload.wrappedDataKey else { throw ViewingAuthorizationError.invalidated }
             let bytes: Data
             do { bytes = try await privateKey.decrypt(wrappedKey) }
             catch {
@@ -739,16 +720,73 @@ public final class InventoryViewingSession {
             guard isAuthorized, bytes.count == 32 else { throw ViewingAuthorizationError.invalidated }
             return try openAES(payload, key: SymmetricKey(data: bytes))
         }
+        // Content hidden while this reveal was in flight stays hidden. The session stays unlocked.
+        guard concealment == requestConcealment else { throw ViewingAuthorizationError.invalidated }
+        revealed[binding.reference] = output
+        acceptActivity(.successfulReveal)
+        return output
+    }
+
+    /// Hides revealed plaintext, including a reveal still in flight, without ending the session.
+    public func conceal() {
+        concealment &+= 1
+        revealed.removeAll(keepingCapacity: false)
+    }
+
+    /// Runs one private-key operation at a time, authorizing first when the session is locked.
+    private func authorized(
+        localizedReason: String, _ operation: @escaping @MainActor (UInt64) async throws -> Data
+    ) async throws -> Data {
+        let requestGeneration = generation
+        let previousOperation = retiringOperation
+        // A request made while another is in flight waits for it instead of prompting twice.
+        let earlierOperation = pending
+        let task = Task { @MainActor [self] () throws -> Data in
+            let earlier = await earlierOperation?.result
+            // A canceled framework operation may still finish. Its final deauthorization
+            // completes before a subsequent authorization can begin on the same right.
+            _ = await previousOperation?.result
+            await deauthorization?.value
+            do {
+                // A request that waited on a prompt that failed fails the same way.
+                if case .failure(let error)? = earlier, generation != requestGeneration { throw error }
+                try checkGeneration(requestGeneration)
+                retiringOperation = nil
+                if !isAuthorized {
+                    do { try await privateKey.authorize(localizedReason: localizedReason) }
+                    catch {
+                        try await checkPrivateCompletion(requestGeneration)
+                        throw error
+                    }
+                    try await checkPrivateCompletion(requestGeneration)
+                    guard privateKey.isAuthorized else { throw ViewingAuthorizationError.invalidated }
+                    lastActivityAt = nil
+                    lastActivityKind = nil
+                    activityCount = 0
+                    deadline = uptime() + timeoutSeconds
+                    expiresAt = wallTime().addingTimeInterval(timeoutSeconds)
+                }
+                try checkGeneration(requestGeneration)
+                guard isAuthorized else { throw ViewingAuthorizationError.invalidated }
+                return try await operation(requestGeneration)
+            } catch {
+                // Fail the session before a waiting request can start its own prompt.
+                if generation == requestGeneration {
+                    invalidate(reason: .authorizationFailure)
+                    await deauthorization?.value
+                }
+                throw error
+            }
+        }
         pending = task
         do {
             let output = try await task.value
             try checkGeneration(requestGeneration)
             guard isAuthorized else { throw ViewingAuthorizationError.invalidated }
-            pending = nil
-            revealed[binding.reference] = output
-            acceptActivity(.successfulReveal)
+            if pending == task { pending = nil }
             return output
         } catch {
+            if pending == task { pending = nil }
             // An obsolete completion must not mask a newer authorized request.
             if generation == requestGeneration {
                 invalidate(reason: .authorizationFailure)

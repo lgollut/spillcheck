@@ -236,7 +236,6 @@ private struct ProtectionSignedProbe {
             case ViewingAuthorizationError.unavailable(let code): failure = "authorization-unavailable"; errorCode = code
             case ViewingAuthorizationError.denied(let code): failure = "authorization-denied"; errorCode = code
             case ViewingAuthorizationError.invalidated: failure = "authorization-invalidated"
-            case ViewingAuthorizationError.busy: failure = "authorization-busy"
             case KeyUnavailable.unusableKey(_, let code): failure = "key-unusable"; errorCode = code
             case let error as KeyUnavailable: failure = "key-unavailable"; errorCode = (error as NSError).code
             case let error as ProtectionError: failure = "cryptography-failure"; errorCode = (error as NSError).code

@@ -455,9 +455,9 @@ final class AppRuntime {
                 }
             }
         } catch is CancellationError {
-            mask(.windowClose)
+            lock(.windowClose)
         } catch {
-            mask(.authorizationFailure)
+            lock(.authorizationFailure)
             if let store { await store.setMonitoring(enabled: false) }
             await server.stop()
             monitoringRequested = false
@@ -522,7 +522,7 @@ final class AppRuntime {
             #if DEBUG
             self.recordWorkflowEvent("notification-navigation")
             #endif
-            self.mask()
+            self.hide()
             switch target {
             case .value(let id): self.model.selectValue(id)
             case .historicalAudit(let id):
@@ -545,20 +545,31 @@ final class AppRuntime {
     private func installWorkflowActions() {
         model.onSelectionChanged = { [weak self] entry in
             self?.viewingGeneration = UUID()
-            let id: UUID?
-            switch entry {
-            case .value(let valueID), .unlocated(let valueID): id = valueID
-            case .obsoleteMarker, nil: id = nil
+            self?.viewing?.select(valueID: Self.viewingID(entry))
+            self?.sourceOpening.cancel()
+        }
+        model.onOccurrenceSelectionChanged = { [weak self] occurrence in
+            guard let self else { return }
+            self.viewingGeneration = UUID()
+            self.sourceOpening.cancel()
+            // Revealing covers the whole value, so another of its appearances stays revealed and shows
+            // its own context. A new entry selects its default appearance before the viewing selection
+            // follows, so that change is not mistaken for one within the revealed entry.
+            if let viewing = self.viewing, viewing.state == .revealed || viewing.state == .authenticating,
+               let entry = self.model.selectedEntryID, let id = Self.viewingID(entry), viewing.selectedValueID == id {
+                let generation = self.viewingGeneration
+                self.performAction { runtime in
+                    await runtime.reveal(entry: entry, occurrenceID: occurrence, generation: generation)
+                }
+            } else {
+                self.viewing?.hide()
             }
-            self?.viewing?.select(valueID: id)
-            self?.sourceOpening.cancel()
         }
-        model.onOccurrenceSelectionChanged = { [weak self] _ in
-            self?.viewingGeneration = UUID()
-            self?.viewing?.invalidate(.userMask)
-            self?.sourceOpening.cancel()
+        model.onHide = { [weak self] in self?.hide() }
+        model.onLock = { [weak self] in self?.lock() }
+        model.onUnlock = { [weak self] in
+            self?.performAction { runtime in await runtime.unlock() }
         }
-        model.onMask = { [weak self] in self?.mask() }
         model.onReveal = { [weak self] entry, occurrence in
             guard let self else { return }
             self.model.selectedOccurrenceID = occurrence
@@ -690,18 +701,36 @@ final class AppRuntime {
         }
         #endif
         model.clearRevealedContent()
-        model.viewingBusy = viewing.state == .authenticating
-        model.viewingMessage = viewing.state.message
+        model.viewingUnlocked = viewing.isAuthorized
+        // An unlocked session reveals without a prompt, so its brief decryption shows no waiting state.
+        let prompting = viewing.unlocking || (viewing.state == .authenticating && !viewing.isAuthorized)
+        model.viewingBusy = prompting
+        model.viewingMessage = viewing.state == .authenticating && !prompting ? nil : viewing.state.message
         model.revealIssue = switch viewing.state {
         case .cancelled: .cancelled
         case .unavailable: .failed
         case .masked, .authenticating, .revealed: nil
         }
-        model.viewingAuthorized = viewing.isAuthorized && viewing.state == .revealed
-        guard model.viewingAuthorized else { return }
+        model.contentRevealed = viewing.isAuthorized && viewing.state == .revealed
+        guard model.contentRevealed else { return }
         if let valueID = model.selectedID, let value = viewing.content.value { model.revealedContent[valueID] = value }
         model.revealedExcerpts = viewing.content.excerpts
         model.revealedSourceMetadata = viewing.content.sourceMetadata
+    }
+
+    private static func viewingID(_ entry: InventoryEntryID?) -> UUID? {
+        switch entry {
+        case .value(let valueID), .unlocated(let valueID): valueID
+        case .obsoleteMarker, nil: nil
+        }
+    }
+
+    private func unlock() async {
+        guard let viewing, model.windowVisible, !terminating else { return }
+        do { try await viewing.unlock() }
+        catch ViewingAuthorizationError.denied, ViewingAuthorizationError.unavailable {
+            model.actionMessage = "Authentication failed. Values stay hidden."
+        } catch {}
     }
 
     private func reveal(entry: InventoryEntryID, occurrenceID: UUID?, generation: UUID) async {
@@ -787,7 +816,7 @@ final class AppRuntime {
                 model.handledExpanded = true
                 model.actionMessage = "Acknowledged as \(acknowledgement.rawValue). Later appearances will show as obsolete, without alerts. This wasn’t checked with the service."
             case .remove(let fingerprint):
-                mask()
+                hide()
                 let plan = try await store.removeContent(for: fingerprint)
                 #if DEBUG
                 recordWorkflowEvent("content-removed")
@@ -797,7 +826,7 @@ final class AppRuntime {
                     ? "Retained content removed. Agent histories weren’t touched. If it appears again, it’s treated as new."
                     : "Retained content removed. It stays recognized as obsolete."
             case .forget(let fingerprint):
-                mask()
+                hide()
                 try await store.forgetObsoleteMarker(fingerprint)
                 #if DEBUG
                 recordWorkflowEvent("marker-forgotten")
@@ -845,7 +874,7 @@ final class AppRuntime {
     private func prepareTerminalResume(id: UUID, entry selected: InventoryEntryID?, generation: UUID) async {
         guard model.selectedEntryID == selected, model.selectedOccurrenceID == id,
               generation == viewingGeneration, model.windowVisible else { return }
-        guard model.viewingAuthorized, let metadata = model.revealedSourceMetadata[id], let store else {
+        guard model.contentRevealed, let metadata = model.revealedSourceMetadata[id], let store else {
             model.sourceActionMessages[id] = "Reveal this occurrence's retained references before preparing a terminal command."
             return
         }
@@ -853,7 +882,7 @@ final class AppRuntime {
         protection?.viewingSession.expireIfNeeded()
         guard !terminating, !Task.isCancelled, model.selectedEntryID == selected,
               model.selectedOccurrenceID == id,
-              generation == viewingGeneration, model.viewingAuthorized, viewing?.isAuthorized == true,
+              generation == viewingGeneration, model.contentRevealed, viewing?.isAuthorized == true,
               model.revealedSourceMetadata[id] == metadata,
               let (session, _) = sourceReference(id: id, snapshot: snapshot) else { return }
         do { model.terminalResumeCommand = try sourceOpening.terminalResumePlan(session: session).displayCommand }
@@ -1542,7 +1571,9 @@ final class AppRuntime {
         report["workflowEvents"] = workflowEvents
         report["alertsByDeliveryState"] = Dictionary(grouping: snapshot.alertDecisions.values,
             by: { $0.delivery.rawValue }).mapValues(\.count)
-        report["viewingAuthorized"] = model.viewingAuthorized
+        // Acceptance evidence reads this key as "protected content is on screen".
+        report["viewingAuthorized"] = model.contentRevealed
+        report["viewingUnlocked"] = model.viewingUnlocked
         report["revealedValueCount"] = model.revealedContent.count
         report["revealedExcerptCount"] = model.revealedExcerpts.count
         report["revealedSourceMetadataCount"] = model.revealedSourceMetadata.count
@@ -1844,7 +1875,16 @@ final class AppRuntime {
     }
     #endif
 
-    func mask(_ reason: ViewingInvalidationReason = .userMask) {
+    /// Hides revealed content without ending the viewing session.
+    func hide() {
+        viewingGeneration = UUID()
+        viewing?.hide()
+        sourceOpening.cancel()
+        model.clearRevealedContent()
+    }
+
+    /// Ends the viewing session. The next reveal asks for authentication again.
+    func lock(_ reason: ViewingInvalidationReason = .userMask) {
         viewingGeneration = UUID()
         if let viewing { viewing.invalidate(reason) }
         else { protection?.viewingSession.invalidate(reason: reason) }
@@ -1857,7 +1897,7 @@ final class AppRuntime {
         #if DEBUG
         writeAcceptancePhase("stopping")
         #endif
-        mask(.windowClose)
+        lock(.windowClose)
         await sourceOpening.shutdown()
         notifications.shutdown()
         let ownedActions = Array(actions.values)
@@ -2520,13 +2560,13 @@ final class AppRuntime {
             workspaceObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
                 let reason: ViewingInvalidationReason = note.name == NSWorkspace.willSleepNotification ? .sleep : .sessionLock
                 MainActor.assumeIsolated {
-                    self?.mask(reason)
+                    self?.lock(reason)
                 }
             })
         }
         lockObserver = DistributedNotificationCenter.default().addObserver(
             forName: NSNotification.Name("com.apple.screenIsLocked"), object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.mask(.sessionLock) }
+                MainActor.assumeIsolated { self?.lock(.sessionLock) }
             }
         let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {

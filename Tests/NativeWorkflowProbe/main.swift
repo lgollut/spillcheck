@@ -240,6 +240,50 @@ private struct NativeWorkflowProbe {
                 "reveal-after-unlock-without-prompt")
             checks.append("unlock-then-reveal-without-prompt")
 
+            // Unlocked, an appearance's context is decrypted with its value kept hidden until asked for.
+            let context = try await ViewingFixture()
+            try await context.controller.unlock()
+            await context.controller.reveal(try InventoryRevealSelection.occurrenceWithValue(in: context.ledger.snapshot,
+                occurrenceID: context.occurrenceID))
+            try require(context.controller.state == .revealed && !context.controller.valueShown
+                && context.controller.content.excerpts[context.occurrenceID] != nil
+                && context.controller.content.sourceMetadata[context.occurrenceID]?.title == "synthetic title"
+                && context.key.authorizations == 1, "unlocked-context-keeps-value-hidden")
+            let decryptedFields = context.session.revealed.count
+            try require(context.controller.showValue() && context.controller.valueShown
+                && context.session.revealed.count == decryptedFields && context.key.authorizations == 1,
+                "show-decrypted-value-without-prompt")
+            context.controller.hideValue()
+            try require(!context.controller.valueShown && context.controller.state == .revealed
+                && context.controller.content.excerpts[context.occurrenceID] != nil && context.controller.isAuthorized,
+                "hide-value-keeps-context")
+            try require(context.controller.showValue(), "show-value-again")
+            context.controller.select(valueID: UUID())
+            try require(!context.controller.valueShown && !context.controller.showValue()
+                && context.controller.isAuthorized, "selection-change-hides-value")
+            checks.append("unlocked-context-hides-value-until-shown")
+
+            let asked = try await ViewingFixture()
+            try require(!asked.controller.showValue(), "locked-value-needs-reveal")
+            await asked.controller.reveal(try asked.selection(), showingValue: true)
+            try require(asked.controller.valueShown && asked.key.authorizations == 1, "asked-reveal-shows-value")
+            asked.controller.invalidate(.userMask)
+            try require(!asked.controller.valueShown && asked.controller.content.value == nil, "lock-hides-value")
+            checks.append("asked-reveal-shows-value-until-locked")
+
+            // Hiding the value while its reveal waits for the prompt keeps it hidden once the prompt succeeds.
+            let withdrawn = try await ViewingFixture()
+            withdrawn.key.hold = true
+            let withdrawnSelection = try withdrawn.selection()
+            let withdrawnTask = Task { await withdrawn.controller.reveal(withdrawnSelection, showingValue: true) }
+            try await until { withdrawn.key.gate != nil }
+            withdrawn.controller.hideValue()
+            withdrawn.key.release()
+            await withdrawnTask.value
+            try require(withdrawn.controller.state == .revealed && !withdrawn.controller.valueShown
+                && withdrawn.controller.isAuthorized, "hide-during-reveal-withdraws-value")
+            checks.append("hide-during-authentication-keeps-value-hidden")
+
             let cancelledUnlock = try await ViewingFixture()
             cancelledUnlock.key.cancellation = true
             do {
@@ -319,6 +363,14 @@ private struct NativeWorkflowProbe {
                 "same-occurrence-selection-keeps-current-content")
             checks.append("intra-entry-occurrence-selection-keeps-revealed-value")
             checks.append("unchanged-occurrence-selection-keeps-current-content")
+            selectionModel.valueRevealed = true
+            var hiddenValues = 0
+            selectionModel.onHideValue = { hiddenValues += 1 }
+            selectionModel.hideValue()
+            try require(!selectionModel.valueRevealed && selectionModel.contentRevealed && hiddenValues == 1
+                && selectionModel.revealedExcerpts[intraEntry.occurrenceID] != nil
+                && selectionModel.revealedContent[intraEntry.valueID] != nil, "model-hide-value-keeps-context")
+            checks.append("hide-value-keeps-context-on-screen")
 
             // Switching appearance while the prompt is open reveals only the newer one, after a single prompt.
             let firstAppearance = try InventoryRevealSelection.occurrenceWithValue(in: intraEntry.ledger.snapshot,
@@ -326,14 +378,15 @@ private struct NativeWorkflowProbe {
             let secondAppearance = try InventoryRevealSelection.occurrenceWithValue(in: intraEntry.ledger.snapshot,
                 occurrenceID: secondOccurrence)
             intraEntry.key.hold = true
-            let firstAppearanceTask = Task { await intraEntry.controller.reveal(firstAppearance) }
+            let firstAppearanceTask = Task { await intraEntry.controller.reveal(firstAppearance, showingValue: true) }
             try await until { intraEntry.key.gate != nil }
             let secondAppearanceTask = Task { await intraEntry.controller.reveal(secondAppearance) }
             for _ in 0..<10 { await Task.yield() }
             intraEntry.key.release()
             await firstAppearanceTask.value
             await secondAppearanceTask.value
-            try require(intraEntry.controller.state == .revealed
+            // The newer appearance's request carries on the asked-for value of the one it superseded.
+            try require(intraEntry.controller.state == .revealed && intraEntry.controller.valueShown
                 && intraEntry.controller.content.value == "SYNTHETIC-NATIVE-VIEWING-Ä-🔐"
                 && Set(intraEntry.controller.content.excerpts.keys) == [secondOccurrence]
                 && intraEntry.key.authorizations == 1, "superseded-appearance-reveal")
@@ -343,7 +396,8 @@ private struct NativeWorkflowProbe {
             var shownStates: [InventoryViewingState] = []
             intraEntry.controller.onChange = { shownStates.append(intraEntry.controller.state) }
             await intraEntry.controller.reveal(firstAppearance)
-            try require(shownStates == [.revealed] && intraEntry.controller.content.value == "SYNTHETIC-NATIVE-VIEWING-Ä-🔐"
+            try require(shownStates == [.revealed] && intraEntry.controller.valueShown
+                && intraEntry.controller.content.value == "SYNTHETIC-NATIVE-VIEWING-Ä-🔐"
                 && Set(intraEntry.controller.content.excerpts.keys) == [intraEntry.occurrenceID, secondOccurrence]
                 && intraEntry.controller.content.sourceMetadata[intraEntry.occurrenceID]?.title == "synthetic title"
                 && intraEntry.key.authorizations == 1, "appearance-change-extends-revealed-content")

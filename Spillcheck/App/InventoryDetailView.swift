@@ -173,7 +173,7 @@ struct InventoryDetailView: View {
     }
 
     private var revealedValue: String? {
-        guard model.contentRevealed, let valueID = entry.valueID else { return nil }
+        guard model.contentRevealed, model.valueRevealed, let valueID = entry.valueID else { return nil }
         return model.revealedContent[valueID]
     }
 
@@ -204,7 +204,9 @@ struct InventoryDetailView: View {
 
     @ViewBuilder
     private var secretControl: some View {
-        let canReveal = summary.unlocated ? selectedOccurrence?.protectedMetadata != nil : entry.canRevealRetainedValue
+        // An unlocked app already shows an unlocated result's source in its appearance.
+        let canReveal = summary.unlocated ? selectedOccurrence?.protectedMetadata != nil && !model.viewingUnlocked
+            : entry.canRevealRetainedValue
         if model.viewingBusy {
             HStack(spacing: 6) {
                 ProgressView().controlSize(.small)
@@ -212,11 +214,11 @@ struct InventoryDetailView: View {
             }
             .font(.system(size: 12)).foregroundStyle(Palette.secondary)
         } else if canReveal {
-            let revealed = model.contentRevealed && (revealedValue != nil || summary.unlocated)
+            let revealed = summary.unlocated ? model.contentRevealed : revealedValue != nil
             // The ellipsis marks the authentication prompt a locked reveal opens first.
             let prompt = model.viewingUnlocked ? "" : "…"
             Button {
-                if revealed { model.hideNow() } else { model.onReveal?(entry.id, model.selectedOccurrenceID) }
+                if revealed { model.hideValue() } else { model.onReveal?(entry.id, model.selectedOccurrenceID) }
             } label: {
                 Label(revealed ? "Hide" : (model.revealIssue != nil ? "Try again" : (summary.unlocated ? "Reveal source" : "Reveal") + prompt),
                       systemImage: revealed ? "eye.slash" : "eye")
@@ -227,7 +229,7 @@ struct InventoryDetailView: View {
             .buttonStyle(QuietButtonStyle(height: 26))
             .padding(.trailing, -6)
             .disabled(disabled)
-            .help(revealed ? "Hide again. The app stays unlocked."
+            .help(revealed ? "Hide the value again. Its context stays readable while the app is unlocked."
                 : model.viewingUnlocked ? "Unlocked, so no prompt" : "Touch ID or password, then the app stays unlocked")
             .accessibilityIdentifier(revealed ? "inventory.detail.hide" : "inventory.reveal-value")
         }
@@ -449,6 +451,8 @@ private struct OccurrenceDetail: View {
 
     private var excerpt: RetainedExcerpt? { model.contentRevealed ? model.revealedExcerpts[occurrence.id] : nil }
     private var source: RetainedSourceContext? { model.contentRevealed ? model.revealedSourceMetadata[occurrence.id] : nil }
+    /// Decrypted with the context so it can be covered there, and shown only once revealed.
+    private var value: String? { summary.entry.valueID.flatMap { model.revealedContent[$0] } }
 
     // Reads top to bottom: what was seen, the facts about it, then what you can do with it.
     var body: some View {
@@ -465,17 +469,35 @@ private struct OccurrenceDetail: View {
             Text("Nothing kept for this appearance. Source and time only.")
                 .font(.system(size: 12)).foregroundStyle(Palette.secondary)
         } else if let excerpt {
+            let pieces = value.flatMap { excerpt.pieces(around: $0) }
             // Framed like a code block: the source names it, the body is the excerpt.
             VStack(alignment: .leading, spacing: 0) {
                 excerptHeader(clipped: excerpt.clipped)
-                Text(highlighted(excerpt.text))
-                    .font(.system(size: 12, design: .monospaced)).lineSpacing(3)
-                    .foregroundStyle(Palette.ink2)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 14).padding(.vertical, 12)
-                    .privacySensitive()
-                    .accessibilityIdentifier("inventory.occurrence.\(occurrence.id.uuidString.lowercased()).revealed-context")
+                if model.valueRevealed || pieces != nil {
+                    Text(rendered(excerpt.text, pieces))
+                        .font(.system(size: 12, design: .monospaced)).lineSpacing(3)
+                        .foregroundStyle(Palette.ink2)
+                        .tint(Palette.amberText)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 14).padding(.vertical, 12)
+                        .privacySensitive()
+                        .environment(\.openURL, OpenURLAction { url in
+                            guard url == Self.revealLink, !disabled else { return .discarded }
+                            model.onReveal?(summary.entry.id, occurrence.id)
+                            return .handled
+                        })
+                        .help(model.valueRevealed ? "" : "Click the hidden value to reveal it")
+                        .accessibilityIdentifier("inventory.occurrence.\(occurrence.id.uuidString.lowercased()).revealed-context")
+                } else {
+                    // Without the whole value to cover, any of the excerpt could hold part of it.
+                    Text("The value can’t be found whole in this excerpt, so it can’t be shown with the value hidden. Reveal the value to read it.")
+                        .font(.system(size: 11.5)).foregroundStyle(Palette.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 14).padding(.vertical, 12)
+                        .accessibilityIdentifier("inventory.occurrence.\(occurrence.id.uuidString.lowercased()).covered-context")
+                }
             }
             .background(Self.excerptBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(Palette.shade.opacity(0.08)))
@@ -490,10 +512,20 @@ private struct OccurrenceDetail: View {
                     }
                 }
                 .accessibilityHidden(true)
-                Text(summary.unlocated ? "Source masked. Reveal it to read the title and project." : "Context masked. Reveal the value to read it.")
-                    .font(.system(size: 11.5)).foregroundStyle(Palette.tertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: 220, alignment: .trailing)
+                VStack(alignment: .trailing, spacing: 8) {
+                    Text(lockedMessage)
+                        .font(.system(size: 11.5)).foregroundStyle(Palette.tertiary)
+                        .multilineTextAlignment(.trailing)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if !model.viewingUnlocked {
+                        Button("Unlock…") { model.onUnlock?() }
+                            .buttonStyle(OutlineButtonStyle(height: 24))
+                            .disabled(model.viewingBusy || model.isDemo || !model.storageReady)
+                            .help("Touch ID or password. Values stay hidden until you reveal them.")
+                            .accessibilityIdentifier("inventory.occurrence.\(occurrence.id.uuidString.lowercased()).unlock")
+                    }
+                }
+                .frame(maxWidth: 230, alignment: .trailing)
             }
             .padding(12)
             .background(Palette.well, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -506,6 +538,16 @@ private struct OccurrenceDetail: View {
 
     /// Darker than the expanded row in dark mode, white in light, so the excerpt always reads as its own surface.
     private static let excerptBackground = Color(hex: 0xffffff, dark: 0x161917)
+    /// Clicking the covered value opens this, which the excerpt handles as a reveal.
+    private static let revealLink = URL(string: "spillcheck-reveal:value")
+    private static let hiddenValue = "\u{00A0}hidden value\u{00A0}"
+
+    private var lockedMessage: String {
+        // Unlocked, the context is being decrypted and replaces this in a moment.
+        if model.viewingUnlocked { return summary.unlocated ? "Opening the source…" : "Opening the context…" }
+        return summary.unlocated ? "Source locked. Unlock to read the title and project."
+            : "Context locked. Unlock to read it, with the value still hidden."
+    }
 
     private func excerptHeader(clipped: Bool) -> some View {
         HStack(spacing: 8) {
@@ -588,14 +630,27 @@ private struct OccurrenceDetail: View {
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func highlighted(_ text: String) -> AttributedString {
-        var attributed = AttributedString(text)
-        if let entryValue = summary.entry.valueID.flatMap({ model.revealedContent[$0] }), !entryValue.isEmpty,
-           let range = attributed.range(of: entryValue) {
-            attributed[range].backgroundColor = Palette.highlight
-            attributed[range].foregroundColor = Palette.ink
+    /// Each appearance of the value is highlighted, and covered by a link that reveals it until revealed.
+    private func rendered(_ text: String, _ pieces: [ExcerptPiece]?) -> AttributedString {
+        guard let pieces else { return AttributedString(text) }
+        var rendered = AttributedString()
+        for piece in pieces {
+            switch piece {
+            case .context(let context):
+                rendered += AttributedString(context)
+            case .value(let value):
+                var run = AttributedString(model.valueRevealed ? value : Self.hiddenValue)
+                run.backgroundColor = Palette.highlight
+                if model.valueRevealed {
+                    run.foregroundColor = Palette.ink
+                } else {
+                    run.foregroundColor = Palette.amberText
+                    run.link = Self.revealLink
+                }
+                rendered += run
+            }
         }
-        return attributed
+        return rendered
     }
 
     private struct RouteInfo {
@@ -895,7 +950,7 @@ private struct ValueActionSheet: View {
                         : (.kept, "Retained occurrences and reviews stay")]
         case .resume:
             return [(.caution, "Resuming can send new requests to \(provider)"),
-                    (.info, "To only inspect, reveal the retained excerpt instead")]
+                    (.info, "To only inspect, read the retained excerpt instead")]
         }
     }
 
@@ -1064,7 +1119,7 @@ private struct ValueActionSheet: View {
                     Text(model.viewingBusy ? "Waiting for Touch ID…" : "The conversation ID is protected.")
                         .font(.system(size: 12)).foregroundStyle(Palette.secondary)
                     Spacer()
-                    Button(model.viewingUnlocked ? "Show" : "Unlock to show…") { model.onReveal?(summary.entry.id, occurrence.id) }
+                    Button(model.viewingUnlocked ? "Show" : "Unlock to show…") { model.onUnlock?() }
                         .buttonStyle(OutlineButtonStyle(height: 24))
                         .disabled(model.viewingBusy || model.isDemo || !model.storageReady)
                 }

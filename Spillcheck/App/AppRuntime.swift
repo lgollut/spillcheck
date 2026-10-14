@@ -536,6 +536,8 @@ final class AppRuntime {
                 self.model.route = .coverage
                 self.model.actionMessage = "Collection has a scoped limitation. Review the affected route and content in Coverage."
             }
+            // Navigation hides a revealed value. An unlocked window still shows the selection's context.
+            self.showContextIfUnlocked()
             self.onShowInventory?()
         }
         await notifications.refreshPermission()
@@ -544,28 +546,30 @@ final class AppRuntime {
 
     private func installWorkflowActions() {
         model.onSelectionChanged = { [weak self] entry in
-            self?.viewingGeneration = UUID()
-            self?.viewing?.select(valueID: Self.viewingID(entry))
-            self?.sourceOpening.cancel()
+            guard let self else { return }
+            self.viewingGeneration = UUID()
+            self.viewing?.select(valueID: Self.viewingID(entry))
+            self.sourceOpening.cancel()
+            self.showContextIfUnlocked()
         }
         model.onOccurrenceSelectionChanged = { [weak self] occurrence in
             guard let self else { return }
             self.viewingGeneration = UUID()
             self.sourceOpening.cancel()
-            // Revealing covers the whole value, so another of its appearances stays revealed and shows
-            // its own context. A new entry selects its default appearance before the viewing selection
-            // follows, so that change is not mistaken for one within the revealed entry.
-            if let viewing = self.viewing, viewing.state == .revealed || viewing.state == .authenticating,
+            // While unlocked, each appearance shows its own context, and a revealed value stays revealed
+            // across them. A new entry selects its default appearance before the viewing selection
+            // follows, so that change is not mistaken for one within the shown entry.
+            if let viewing = self.viewing, viewing.isAuthorized || viewing.state == .authenticating,
                let entry = self.model.selectedEntryID, let id = Self.viewingID(entry), viewing.selectedValueID == id {
                 let generation = self.viewingGeneration
                 self.performAction { runtime in
-                    await runtime.reveal(entry: entry, occurrenceID: occurrence, generation: generation)
+                    await runtime.reveal(entry: entry, occurrenceID: occurrence, showingValue: false, generation: generation)
                 }
             } else {
                 self.viewing?.hide()
             }
         }
-        model.onHide = { [weak self] in self?.hide() }
+        model.onHideValue = { [weak self] in self?.viewing?.hideValue() }
         model.onLock = { [weak self] in self?.lock() }
         model.onUnlock = { [weak self] in
             self?.performAction { runtime in await runtime.unlock() }
@@ -573,9 +577,11 @@ final class AppRuntime {
         model.onReveal = { [weak self] entry, occurrence in
             guard let self else { return }
             self.model.selectedOccurrenceID = occurrence
+            // Context shown while unlocked already holds the value, so showing it needs no decryption.
+            if let viewing = self.viewing, viewing.selectedValueID == Self.viewingID(entry), viewing.showValue() { return }
             let generation = self.viewingGeneration
             self.performAction { runtime in
-                await runtime.reveal(entry: entry, occurrenceID: occurrence, generation: generation)
+                await runtime.reveal(entry: entry, occurrenceID: occurrence, showingValue: true, generation: generation)
             }
         }
         model.onReview = { [weak self] id, state in
@@ -713,6 +719,7 @@ final class AppRuntime {
         }
         model.contentRevealed = viewing.isAuthorized && viewing.state == .revealed
         guard model.contentRevealed else { return }
+        model.valueRevealed = viewing.valueShown
         if let valueID = model.selectedID, let value = viewing.content.value { model.revealedContent[valueID] = value }
         model.revealedExcerpts = viewing.content.excerpts
         model.revealedSourceMetadata = viewing.content.sourceMetadata
@@ -725,15 +732,28 @@ final class AppRuntime {
         }
     }
 
+    /// Unlocks if needed, then shows the selected appearance's context with its value hidden.
     private func unlock() async {
         guard let viewing, model.windowVisible, !terminating else { return }
         do { try await viewing.unlock() }
         catch ViewingAuthorizationError.denied, ViewingAuthorizationError.unavailable {
             model.actionMessage = "Authentication failed. Values stay hidden."
-        } catch {}
+            return
+        } catch { return }
+        showContextIfUnlocked()
     }
 
-    private func reveal(entry: InventoryEntryID, occurrenceID: UUID?, generation: UUID) async {
+    /// While unlocked, the selected appearance shows its context and source, with the value hidden until revealed.
+    private func showContextIfUnlocked() {
+        guard let viewing, viewing.isAuthorized, let entry = model.selectedEntryID, Self.viewingID(entry) != nil else { return }
+        let occurrence = model.selectedOccurrenceID
+        let generation = viewingGeneration
+        performAction { runtime in
+            await runtime.reveal(entry: entry, occurrenceID: occurrence, showingValue: false, generation: generation)
+        }
+    }
+
+    private func reveal(entry: InventoryEntryID, occurrenceID: UUID?, showingValue: Bool, generation: UUID) async {
         guard let store, let viewing, entry == model.selectedEntryID,
               occurrenceID == model.selectedOccurrenceID,
               generation == viewingGeneration, model.windowVisible else { return }
@@ -758,9 +778,10 @@ final class AppRuntime {
                   occurrenceID == model.selectedOccurrenceID,
                   model.windowVisible, !terminating, !Task.isCancelled else { return }
             viewing.select(valueID: selection.valueID)
-            await viewing.reveal(selection)
+            await viewing.reveal(selection, showingValue: showingValue)
         } catch {
-            if model.selectedEntryID == entry, generation == viewingGeneration,
+            // Context shown on its own is optional; only an asked-for reveal explains a missing payload.
+            if showingValue, model.selectedEntryID == entry, generation == viewingGeneration,
                occurrenceID == model.selectedOccurrenceID {
                 model.viewingMessage = "No retained content is available for this appearance."
             }
@@ -831,6 +852,8 @@ final class AppRuntime {
                 #if DEBUG
                 recordWorkflowEvent("marker-forgotten")
                 #endif
+                // Retained occurrences stay, so their context returns while unlocked.
+                showContextIfUnlocked()
                 model.actionMessage = "Obsolete recognition forgotten. New appearances will be evaluated normally."
             }
             for presentation in oldPresentations {
@@ -1574,6 +1597,8 @@ final class AppRuntime {
         // Acceptance evidence reads this key as "protected content is on screen".
         report["viewingAuthorized"] = model.contentRevealed
         report["viewingUnlocked"] = model.viewingUnlocked
+        // Context can be on screen with the value decrypted only to hide it.
+        report["valueRevealed"] = model.valueRevealed
         report["revealedValueCount"] = model.revealedContent.count
         report["revealedExcerptCount"] = model.revealedExcerpts.count
         report["revealedSourceMetadataCount"] = model.revealedSourceMetadata.count
@@ -1875,7 +1900,7 @@ final class AppRuntime {
     }
     #endif
 
-    /// Hides revealed content without ending the viewing session.
+    /// Hides revealed content and context without ending the viewing session.
     func hide() {
         viewingGeneration = UUID()
         viewing?.hide()

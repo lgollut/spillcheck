@@ -25,6 +25,77 @@ public enum InventoryRevealField: Hashable, Sendable {
     }
 }
 
+/// One run of a retained excerpt: surrounding context, or text belonging to the occurrence's own value.
+public enum ExcerptPiece: Equatable, Sendable {
+    case context(String)
+    case value(String)
+}
+
+extension RetainedExcerpt {
+    /// Shorter fragments reveal too little to matter, and would hide ordinary text by coincidence.
+    static let minimumEdgeFragment = 4
+
+    /// Splits the excerpt around every appearance of `value`, so the context can be read with the value
+    /// hidden. A clipped excerpt can cut through another appearance at either edge, and that fragment
+    /// counts as the value too. Returns nil when the value doesn't appear whole, because the excerpt
+    /// can't then be shown without part of the value.
+    public func pieces(around value: String) -> [ExcerptPiece]? {
+        guard !value.isEmpty else { return nil }
+        var ranges: [Range<String.Index>] = []
+        var cursor = text.startIndex
+        while cursor < text.endIndex, let found = text.range(of: value, options: .literal, range: cursor..<text.endIndex) {
+            ranges.append(found)
+            cursor = found.upperBound
+        }
+        guard !ranges.isEmpty else { return nil }
+        if clipped {
+            if let head = Self.leadingFragment(of: value, in: text) { ranges.append(head) }
+            if let tail = Self.trailingFragment(of: value, in: text) { ranges.append(tail) }
+        }
+        var merged: [Range<String.Index>] = []
+        for range in ranges.sorted(by: { $0.lowerBound < $1.lowerBound }) {
+            if let last = merged.last, range.lowerBound <= last.upperBound {
+                merged[merged.count - 1] = last.lowerBound..<max(last.upperBound, range.upperBound)
+            } else { merged.append(range) }
+        }
+        var pieces: [ExcerptPiece] = []
+        cursor = text.startIndex
+        for range in merged {
+            if cursor < range.lowerBound { pieces.append(.context(String(text[cursor..<range.lowerBound]))) }
+            pieces.append(.value(String(text[range])))
+            cursor = range.upperBound
+        }
+        if cursor < text.endIndex { pieces.append(.context(String(text[cursor...]))) }
+        return pieces
+    }
+
+    /// The longest end of `value`, short of the whole, that the excerpt starts with.
+    private static func leadingFragment(of value: String, in text: String) -> Range<String.Index>? {
+        let characters = Array(value)
+        guard let first = text.first else { return nil }
+        for length in stride(from: min(characters.count - 1, text.count), through: minimumEdgeFragment, by: -1)
+            where characters[characters.count - length] == first {
+            if text.hasPrefix(String(characters[(characters.count - length)...])) {
+                return text.startIndex..<text.index(text.startIndex, offsetBy: length)
+            }
+        }
+        return nil
+    }
+
+    /// The longest start of `value`, short of the whole, that the excerpt ends with.
+    private static func trailingFragment(of value: String, in text: String) -> Range<String.Index>? {
+        let characters = Array(value)
+        guard let last = text.last else { return nil }
+        for length in stride(from: min(characters.count - 1, text.count), through: minimumEdgeFragment, by: -1)
+            where characters[length - 1] == last {
+            if text.hasSuffix(String(characters[..<length])) {
+                return text.index(text.endIndex, offsetBy: -length)..<text.endIndex
+            }
+        }
+        return nil
+    }
+}
+
 /// Build requests from the current protected snapshot, never from an envelope's own header.
 public struct InventoryRevealSelection: Hashable, Sendable {
     /// For an unlocated result this is its opaque result ID, and never an invented value identity.

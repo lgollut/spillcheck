@@ -423,13 +423,16 @@ final class AppModel {
     var monitoringTransition = false
     private var queueProcessing = false
     private(set) var lastCheckedAt: Date?
+    /// Decrypted values, also kept while hidden so their context can cover them.
     var revealedContent: [UUID: String] = [:]
     var revealedExcerpts: [UUID: RetainedExcerpt] = [:]
     var revealedSourceMetadata: [UUID: RetainedSourceContext] = [:]
     /// The viewing session is authorized, so revealing needs no further prompt.
     var viewingUnlocked = false
-    /// The selection's protected content is on screen.
+    /// The selection's retained context and source are on screen.
     var contentRevealed = false
+    /// The exact value is on screen too, not only covered within its context.
+    var valueRevealed = false
     var viewingBusy = false
     var viewingMessage: String?
     var revealIssue: RevealIssue?
@@ -490,7 +493,7 @@ final class AppModel {
     @ObservationIgnored var onSelectionChanged: ((InventoryEntryID?) -> Void)?
     @ObservationIgnored var onOccurrenceSelectionChanged: ((UUID?) -> Void)?
     @ObservationIgnored var onReveal: ((InventoryEntryID, UUID?) -> Void)?
-    @ObservationIgnored var onHide: (() -> Void)?
+    @ObservationIgnored var onHideValue: (() -> Void)?
     @ObservationIgnored var onUnlock: (() -> Void)?
     @ObservationIgnored var onLock: (() -> Void)?
     @ObservationIgnored var onReview: ((UUID, OccurrenceReview) -> Void)?
@@ -955,6 +958,7 @@ final class AppModel {
         revealedSourceMetadata.removeAll()
         terminalResumeCommand = nil
         contentRevealed = false
+        valueRevealed = false
     }
     func loadSnapshot(_ snapshot: InventorySnapshot) {
         guard !isDemo, let next = try? InventoryPresentation(snapshot: snapshot) else { return }
@@ -975,11 +979,11 @@ final class AppModel {
         selectedEntryID = .value(id)
     }
 
-    /// Hides the selection's content and keeps the viewing session unlocked.
-    func hideNow() {
-        clearRevealedContent()
+    /// Hides the exact value and keeps its context on screen and the viewing session unlocked.
+    func hideValue() {
+        valueRevealed = false
         revealIssue = nil
-        onHide?()
+        onHideValue?()
     }
 
     func lockNow() {

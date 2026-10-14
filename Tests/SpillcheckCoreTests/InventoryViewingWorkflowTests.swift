@@ -178,4 +178,35 @@ struct InventoryViewingWorkflowTests {
             }
         }
     }
+
+    @Test func excerptPiecesSeparateEveryWholeAppearanceOfTheValue() {
+        let excerpt = RetainedExcerpt(text: "KEY=SYNTH-7f3a91 # copy: SYNTH-7f3a91SYNTH-7f3a91", clipped: false)
+        #expect(excerpt.pieces(around: "SYNTH-7f3a91") == [
+            .context("KEY="), .value("SYNTH-7f3a91"), .context(" # copy: "), .value("SYNTH-7f3a91SYNTH-7f3a91"),
+        ])
+        #expect(RetainedExcerpt(text: "SYNTH-7f3a91", clipped: false).pieces(around: "SYNTH-7f3a91") == [.value("SYNTH-7f3a91")])
+    }
+
+    @Test func excerptPiecesFailClosedWithoutAWholeValue() {
+        // Clipped through the only appearance: showing the rest would show part of the value.
+        let clippedThrough = RetainedExcerpt(text: "line one\nKEY=SYNTH-7f3", clipped: true)
+        #expect(clippedThrough.pieces(around: "SYNTH-7f3a91") == nil)
+        #expect(RetainedExcerpt(text: "no value here", clipped: false).pieces(around: "SYNTH-7f3a91") == nil)
+        #expect(RetainedExcerpt(text: "KEY=", clipped: false).pieces(around: "") == nil)
+    }
+
+    @Test func clippedExcerptHidesValueFragmentsAtItsEdges() {
+        let text = "7f3a91 tail\nKEY=SYNTH-7f3a91\nOLD=SYNTH-"
+        #expect(RetainedExcerpt(text: text, clipped: true).pieces(around: "SYNTH-7f3a91") == [
+            .value("7f3a91"), .context(" tail\nKEY="), .value("SYNTH-7f3a91"), .context("\nOLD="), .value("SYNTH-"),
+        ])
+        // An excerpt that wasn't clipped starts and ends where its source does, so its edges are ordinary text.
+        #expect(RetainedExcerpt(text: text, clipped: false).pieces(around: "SYNTH-7f3a91") == [
+            .context("7f3a91 tail\nKEY="), .value("SYNTH-7f3a91"), .context("\nOLD=SYNTH-"),
+        ])
+        // A fragment too short to matter stays readable.
+        #expect(RetainedExcerpt(text: "a91 KEY=SYNTH-7f3a91 x=SYN", clipped: true).pieces(around: "SYNTH-7f3a91") == [
+            .context("a91 KEY="), .value("SYNTH-7f3a91"), .context(" x=SYN"),
+        ])
+    }
 }

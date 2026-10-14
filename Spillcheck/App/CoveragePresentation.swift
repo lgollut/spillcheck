@@ -414,7 +414,7 @@ extension AppModel {
     func performCoverageAction(_ action: CoverageAction) {
         guard canPerformCoverageAction(action) else { return }
         switch action {
-        case .manageAgents: route = .settings(.agents)
+        case .manageAgents: route = .settings(agentsPage)
         case .retryHistory(let provider): onRetryHistory?(provider)
         case .retrySource(let source): onRetrySource?(source)
         case .retrySources(let sources): onRetrySources?(sources.filter(canRetry))

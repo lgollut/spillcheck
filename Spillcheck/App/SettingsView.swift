@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import SpillcheckCore
 
@@ -5,35 +6,19 @@ struct SettingsNavigation: View {
     let model: AppModel
     let page: SettingsPage
 
-    private var agentsNeedAttention: Bool {
-        !model.monitoringProven || model.routes.contains { $0.shownInCoverage && !$0.collecting }
-    }
-
     var body: some View {
         VStack(spacing: 0) {
-            VStack(spacing: 2) {
-                ForEach(SettingsPage.allCases, id: \.self) { item in
-                    Button { model.route = .settings(item) } label: {
-                        HStack(spacing: 8) {
-                            Image(systemName: item.symbol)
-                                .font(.system(size: 13))
-                                .foregroundStyle(page == item ? Palette.ink : Palette.secondary)
-                                .frame(width: 18)
-                                .accessibilityHidden(true)
-                            Text(item.title).font(.system(size: 13)).foregroundStyle(Palette.ink)
-                            Spacer()
-                            if item == .agents && agentsNeedAttention {
-                                StatusDot(color: Palette.amber).accessibilityLabel("Needs attention")
-                            }
-                        }
-                        .padding(.horizontal, 10)
-                        .frame(height: 32)
-                        .contentShape(Rectangle())
-                        .hoverFill(page == item ? Palette.shade.opacity(0.075) : .clear,
-                                   hover: page == item ? Palette.shade.opacity(0.075) : Palette.shade.opacity(0.04))
+            VStack(alignment: .leading, spacing: 2) {
+                item(.general) {
+                    Image(systemName: "slider.horizontal.3").font(.system(size: 13))
+                }
+                Text("Agents").font(.system(size: 11.5, weight: .medium)).foregroundStyle(Palette.tertiary)
+                    .padding(.horizontal, 10).padding(.top, 14).padding(.bottom, 4)
+                    .accessibilityAddTraits(.isHeader)
+                ForEach(model.routes) { route in
+                    item(.agent(route.provider), attention: attention(route)) {
+                        AgentGlyph(provider: route.provider).frame(width: 14, height: 14)
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityAddTraits(page == item ? [.isButton, .isSelected] : .isButton)
                 }
             }
             .padding(.horizontal, 8).padding(.vertical, 4)
@@ -52,6 +37,33 @@ struct SettingsNavigation: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Settings")
+    }
+
+    /// Found agents that aren't collecting; agents that were never found have nothing to fix yet.
+    private func attention(_ route: AgentRoute) -> Color? {
+        guard route.shownInCoverage, !route.collecting else { return nil }
+        return route.state == .unavailable || route.state == .unsupported ? Palette.redDot : Palette.amber
+    }
+
+    private func item<Icon: View>(_ item: SettingsPage, attention: Color? = nil, @ViewBuilder icon: () -> Icon) -> some View {
+        Button { model.route = .settings(item) } label: {
+            HStack(spacing: 8) {
+                icon()
+                    .foregroundStyle(page == item ? Palette.ink : Palette.secondary)
+                    .frame(width: 18)
+                    .accessibilityHidden(true)
+                Text(item.title).font(.system(size: 13)).foregroundStyle(Palette.ink)
+                Spacer()
+                if let attention { StatusDot(color: attention).accessibilityLabel("Needs attention") }
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 32)
+            .contentShape(Rectangle())
+            .hoverFill(page == item ? Palette.shade.opacity(0.075) : .clear,
+                       hover: page == item ? Palette.shade.opacity(0.075) : Palette.shade.opacity(0.04))
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(page == item ? [.isButton, .isSelected] : .isButton)
     }
 }
 
@@ -75,7 +87,7 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 28) {
                     switch page {
                     case .general: GeneralSettings(model: model)
-                    case .agents: AgentSettings(model: model)
+                    case .agent(let provider): AgentSettings(model: model, provider: provider).id(provider)
                     }
                 }
                 .frame(maxWidth: 680)
@@ -187,7 +199,7 @@ private struct GeneralSettings: View {
                     Text(model.notificationState.label).font(.system(size: 12)).foregroundStyle(Palette.tertiary).fixedSize()
                     switch model.notificationState {
                     case .notRequested:
-                        Button("Allow notifications…") { model.onRequestNotificationPermission?() }
+                        Button("Allow notifications") { model.onRequestNotificationPermission?() }
                             .buttonStyle(OutlineButtonStyle(height: 28))
                             .disabled(!model.storageReady || model.notificationBusy || model.isDemo)
                             .accessibilityIdentifier("settings.allow-notifications")
@@ -206,7 +218,7 @@ private struct GeneralSettings: View {
         SettingsSection(title: "Setup") {
             SettingRow(title: "Setup assistant",
                        detail: "Walk through how \(AppIdentity.name) works, choose and verify agents, and set alerts again. Agents that are already verified stay connected.") {
-                Button("Run setup again…") { model.openSetup(at: .welcome) }
+                Button("Run setup again") { model.openSetup(at: .welcome) }
                     .buttonStyle(OutlineButtonStyle(height: 28))
                     .disabled(model.isDemo)
                     .accessibilityIdentifier("settings.run-setup")
@@ -215,45 +227,172 @@ private struct GeneralSettings: View {
     }
 }
 
+
+// MARK: - Agents
+
+/// One agent: where its connection stands, then what can be changed.
 private struct AgentSettings: View {
     let model: AppModel
-    @State private var configuring: AgentProvider?
+    let provider: AgentProvider
+    @State private var draft: AgentProfileDraft
+    @State private var confirmRemoval = false
+
+    init(model: AppModel, provider: AgentProvider) {
+        self.model = model
+        self.provider = provider
+        _draft = State(initialValue: model.agentProfiles[provider] ?? AgentProfileDraft(provider: provider))
+    }
+
+    private var name: String { provider.displayName }
+    private var route: AgentRoute {
+        model.routes.first { $0.provider == provider }
+            ?? AgentRoute(provider: provider, profile: nil, state: .notChecked, waitingForEvent: false)
+    }
+    private var saved: AgentProfileDraft? { model.agentProfiles[provider] }
+    private var installed: Bool { saved?.installed == true }
+    private var edited: Bool { !draft.sameSetup(as: saved) }
+    private var busy: Bool { model.agentSetupBusy.contains(provider) }
+    private var disabled: Bool { !model.storageReady || model.isDemo || busy }
+
+    /// Only what the status doesn't already say; the steps explain a pending test.
+    private var detail: String? {
+        if route.waitingForEvent { return nil }
+        if let message = model.agentSetupMessages[provider] { return message }
+        return switch route.state {
+        case .notDetected, .notChecked: "Not found in the usual locations. Choose its executable below."
+        case .unsupported: saved?.unsupportedMessage ?? "This collection route has not been established."
+        case .unavailable: "\(AppIdentity.name)’s hooks need repair."
+        case .detected, .installedUnverified, .connected: nil
+        }
+    }
+
+    private var action: (label: String, perform: () -> Void)? {
+        switch route.state {
+        case .installedUnverified where !route.waitingForEvent:
+            ("Test connection", { model.onVerifyAgent?(provider) })
+        case .detected:
+            if let saved, saved.isComplete { ("Connect", { install(saved) }) } else { nil }
+        case .unavailable:
+            ("Repair", { model.onRepairAgent?(provider) })
+        case .notDetected, .notChecked, .unsupported, .connected, .installedUnverified:
+            nil
+        }
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            SettingsSection(title: "Agents on this Mac", trailing: AnyView(detectButton)) {
-                ForEach(Array(model.routes.enumerated()), id: \.element.id) { index, route in
-                    AgentRow(model: model, route: route, divider: index > 0) { configuring = route.provider }
+        VStack(alignment: .leading, spacing: 28) {
+            header
+            if route.waitingForEvent {
+                SettingsSection(title: "Test the connection") {
+                    DeliveryCheckSteps(model: model, route: route).padding(16)
                 }
             }
-            HStack(alignment: .firstTextBaseline, spacing: 12) {
-                Text("\(AppIdentity.name) only adds and removes its own hooks. Codex asks you to trust them on next start.")
-                    .font(.system(size: 12)).foregroundStyle(Palette.tertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 0)
-                Button("Open setup assistant") { model.openSetup(at: .chooseAgents) }
-                    .buttonStyle(QuietButtonStyle(foreground: Palette.link, height: 24))
+            SettingsSection(title: "Setup", trailing: AnyView(detectButton)) {
+                AgentSetupFields(draft: $draft, installed: installed)
+            }
+            VStack(alignment: .leading, spacing: 10) {
+                SettingsSection(title: "Collection") {
+                    AgentCollectionFields(draft: $draft, locked: saved?.requiresDesktopDeliveryRoute == true)
+                }
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Text("Coverage shows what \(name) collects and its known limits.")
+                        .font(.system(size: 12)).foregroundStyle(Palette.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                    Button("Open Coverage") { model.route = .coverage }
+                        .buttonStyle(QuietButtonStyle(foreground: Palette.link, height: 24))
+                        .fixedSize()
+                        .accessibilityIdentifier("settings.open-coverage")
+                }
+                .padding(.horizontal, 2)
+            }
+            if edited { pendingChanges }
+            if installed {
+                SettingsSection(title: "Hooks") {
+                    SettingRow(title: "Remove hooks",
+                               detail: "Stops checking this profile. Only \(AppIdentity.name)’s own hooks are removed.") {
+                        Button("Remove") { confirmRemoval = true }
+                            .buttonStyle(QuietButtonStyle(foreground: Palette.red, horizontalPadding: 10))
+                            .fixedSize()
+                            .disabled(disabled)
+                            .accessibilityIdentifier("settings.\(provider.rawValue).remove")
+                    }
+                }
+            }
+        }
+        // A saved change, such as a detection or a failed install, replaces the draft unless it was edited.
+        .onChange(of: saved) { old, new in
+            if draft.sameSetup(as: old) { draft = new ?? AgentProfileDraft(provider: provider) }
+        }
+        .confirmationDialog("Remove \(AppIdentity.name)’s hooks from \(name)?", isPresented: $confirmRemoval) {
+            Button("Remove hooks", role: .destructive) { model.onRemoveAgent?(provider) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("\(name)’s other settings and your saved results stay. New sessions from this profile won’t be checked.")
+        }
+    }
+
+    private var header: some View {
+        let status = route.status
+        return HStack(alignment: .top, spacing: 14) {
+            AgentGlyph(provider: provider)
+                .frame(width: 20, height: 20)
+                .foregroundStyle(Palette.ink)
+                .frame(width: 40, height: 40)
+                .background(Palette.chip, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(name).font(.system(size: 15, weight: .semibold))
+                    if let version = saved?.version, !version.isEmpty {
+                        Text(version).font(Palette.mono).foregroundStyle(Palette.tertiary)
+                    }
+                }
+                HStack(spacing: 6) {
+                    StatusDot(color: status.dot, outlined: status.outlined)
+                    Text(status.text)
+                    if busy { ProgressView().controlSize(.small) }
+                }
+                .font(.system(size: 12)).foregroundStyle(status.color)
+                .frame(minHeight: 16)
+                if let detail {
+                    Text(detail).font(.system(size: 12.5)).foregroundStyle(Palette.secondary).lineSpacing(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 2)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            // While the setup has unsaved edits, the next step is applying them.
+            if let action, !edited {
+                Button(action.label, action: action.perform)
+                    .buttonStyle(FilledButtonStyle(height: 28))
                     .fixedSize()
-                    .disabled(model.isDemo)
-                    .accessibilityIdentifier("settings.guided-setup")
-            }
-            .padding(.horizontal, 2)
-            Text("An owned registration can serve CLI and T3 in the same authorized home. Codex collection is shown for that shared profile because its events do not identify the current app or CLI. Partial Codex desktop support can be enabled in Configure. Registration verification and host-specific acceptance are separate. Claude desktop collection remains unavailable.")
-                .font(.system(size: 12)).foregroundStyle(Palette.tertiary).padding(.horizontal, 2)
-            Text("Codex beta limits: automatic side-chat collection, encrypted instructions sent to subagents, and general hook-injected context are not covered. Readable subagent replies and tool results can still be analyzed. Missing content remains visible in Coverage.")
-                .font(.system(size: 12)).foregroundStyle(Palette.tertiary).padding(.horizontal, 2)
-                .accessibilityIdentifier("settings.codex-beta-limits")
-            ForEach(model.routes) { route in
-                ForEach(route.hostRoutes) { host in
-                    Text("\(route.provider.displayName) \(host.name): \(host.summary)")
-                        .font(.system(size: 12)).foregroundStyle(Palette.tertiary).padding(.horizontal, 2)
-                        .help(host.acceptanceSummary)
-                }
+                    .disabled(disabled)
+                    .accessibilityIdentifier("settings.\(provider.rawValue).action")
             }
         }
-        .sheet(item: Binding(get: { configuring.map(ConfigureTarget.init) }, set: { configuring = $0?.provider })) { target in
-            ConfigureAgentSheet(model: model, provider: target.provider)
+        .padding(16)
+        .card()
+    }
+
+    private var pendingChanges: some View {
+        HStack(spacing: 12) {
+            Text(installed ? "Applying updates \(AppIdentity.name)’s hooks. You may be asked to test again."
+                           : "Connecting adds \(AppIdentity.name)’s hooks to this profile, then asks for a short test.")
+                .font(.system(size: 12)).foregroundStyle(Palette.secondary).lineSpacing(2)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            Button("Discard") { draft = saved ?? AgentProfileDraft(provider: provider) }
+                .buttonStyle(OutlineButtonStyle(height: 28))
+                .fixedSize()
+            Button(installed ? "Apply" : "Connect") { install(draft) }
+                .buttonStyle(FilledButtonStyle(height: 28))
+                .fixedSize()
+                .disabled(disabled || !draft.canInstall)
+                .accessibilityIdentifier("settings.\(provider.rawValue).install")
         }
+        .padding(12)
+        .background(Palette.quiet, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
     private var detectButton: some View {
@@ -265,6 +404,133 @@ private struct AgentSettings: View {
                 .accessibilityIdentifier("settings.detect-agents")
         }
     }
+
+    private func install(_ profile: AgentProfileDraft) {
+        model.agentProfiles[provider] = profile
+        model.onInstallAgent?(provider, profile)
+    }
+}
+
+extension AgentProfileDraft {
+    /// Whether both choose the same executable, profile folder, and collection routes.
+    func sameSetup(as other: AgentProfileDraft?) -> Bool {
+        let other = other ?? AgentProfileDraft(provider: provider)
+        return executablePath == other.executablePath && homePath == other.homePath && authorizedHosts == other.authorizedHosts
+    }
+
+    /// Installing reads the executable's version itself, so a newly chosen executable needs none yet.
+    var canInstall: Bool {
+        !executablePath.isEmpty && !homePath.isEmpty && !authorizedHosts.isEmpty && hasValidHostAuthorization
+    }
+}
+
+/// The executable and profile folder, as rows of a settings card.
+struct AgentSetupFields: View {
+    @Binding var draft: AgentProfileDraft
+    /// Installed hooks belong to their profile folder, so choosing another one needs them removed first.
+    let installed: Bool
+
+    var body: some View {
+        let name = draft.provider.displayName
+        let command = draft.provider == .codex ? "codex" : "claude"
+        PathRow(title: "Executable", detail: "The \(name) command \(AppIdentity.name) checks and uses for the test.",
+                placeholder: "~/.local/bin/\(command)", folder: false, path: $draft.executablePath)
+            .accessibilityIdentifier("settings.\(draft.provider.rawValue).executable")
+        PathRow(title: "Profile folder",
+                detail: installed ? "Where \(name) keeps its sessions and settings. Remove the hooks to choose another folder."
+                                  : "Where \(name) keeps its sessions and settings.",
+                placeholder: draft.provider == .codex ? "~/.codex" : "~/.claude", folder: true, path: $draft.homePath,
+                locked: installed, divider: true)
+            .accessibilityIdentifier("settings.\(draft.provider.rawValue).home")
+    }
+}
+
+/// Which apps' sessions are collected from the profile.
+struct AgentCollectionFields: View {
+    @Binding var draft: AgentProfileDraft
+    /// Hooks registered for the desktop app need its support on; turning it off needs them removed first.
+    let locked: Bool
+
+    private var desktopDetail: String {
+        let limits = draft.provider == .claudeCode
+            ? "Partial support. Reads saved local Code conversations from the Claude app. Side questions, Chat, Cowork and remote Code aren’t included."
+            : "Partial support. Reads saved local conversations from the Codex app. Side chats and encrypted subagent input aren’t collected."
+        return locked ? limits + " Remove the hooks to turn this off." : limits
+    }
+
+    var body: some View {
+        let shared = draft.authorizedHosts.contains(.standaloneCLI) || draft.authorizedHosts.contains(.t3)
+        SettingRow(title: "Command line and T3",
+                   detail: "Both use this profile, so their sessions can’t be told apart.") {
+            Text(shared ? "Included" : "Not included").font(.system(size: 12)).foregroundStyle(Palette.tertiary).fixedSize()
+        }
+        SettingRow(title: "Desktop app", detail: desktopDetail, divider: true) {
+            Toggle("Desktop app", isOn: Binding(
+                get: { draft.authorizedHosts.contains(.desktopCode) },
+                set: { enabled in
+                    if enabled { draft.authorizedHosts.insert(.desktopCode) }
+                    else { draft.authorizedHosts.remove(.desktopCode) }
+                }))
+                .toggleStyle(DesignSwitchStyle())
+                .labelsHidden()
+                .disabled(locked)
+                .accessibilityIdentifier("settings.\(draft.provider.rawValue).desktop-partial")
+        }
+    }
+}
+
+/// A path with its explanation, edited in place or chosen in a file panel.
+private struct PathRow: View {
+    let title: String
+    let detail: String
+    let placeholder: String
+    let folder: Bool
+    @Binding var path: String
+    var locked = false
+    var divider = false
+
+    /// Paths under the home folder read as ~/…; typed ones are stored in full, as installation requires.
+    private var shown: Binding<String> {
+        Binding(get: { path.isEmpty ? "" : AgentConfigurationLine.abbreviated(path) },
+                set: { path = $0.isEmpty ? "" : NSString(string: $0).expandingTildeInPath })
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title).font(.system(size: 13, weight: .medium))
+            Text(detail).font(.system(size: 12)).foregroundStyle(Palette.tertiary).lineSpacing(2)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                TextField(title, text: shown, prompt: Text(placeholder))
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12, design: .monospaced))
+                    .labelsHidden()
+                    .padding(.horizontal, 10)
+                    .frame(height: 28)
+                    .background(Palette.well, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                Button("Choose", action: choose)
+                    .buttonStyle(OutlineButtonStyle(height: 28))
+                    .fixedSize()
+            }
+            .disabled(locked)
+            .padding(.top, 8)
+        }
+        .padding(.horizontal, 16).padding(.vertical, 14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay(alignment: .top) { if divider { Rectangle().fill(Palette.hairline).frame(height: 1) } }
+    }
+
+    private func choose() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = !folder
+        panel.canChooseDirectories = folder
+        panel.allowsMultipleSelection = false
+        // Agent profiles are hidden folders such as ~/.codex.
+        panel.showsHiddenFiles = true
+        panel.prompt = "Choose"
+        if !path.isEmpty { panel.directoryURL = URL(fileURLWithPath: path).deletingLastPathComponent() }
+        if panel.runModal() == .OK, let url = panel.url { path = url.path }
+    }
 }
 
 struct ConfigureTarget: Identifiable {
@@ -272,100 +538,11 @@ struct ConfigureTarget: Identifiable {
     var id: AgentProvider { provider }
 }
 
-private struct AgentRow: View {
-    let model: AppModel
-    let route: AgentRoute
-    let divider: Bool
-    let configure: () -> Void
-
-    private var busy: Bool { model.agentSetupBusy.contains(route.provider) }
-    private var disabled: Bool { !model.storageReady || model.isDemo || busy }
-
-    private var configuration: String {
-        AgentConfigurationLine(route: route).text ?? "Searched ~/.local/bin, /opt/homebrew/bin, /usr/local/bin"
-    }
-
-    private var detail: String {
-        if route.waitingForEvent {
-            return "Hooks added. Run the test session below; \(AppIdentity.name) confirms as soon as its prompt arrives."
-        }
-        if let message = model.agentSetupMessages[route.provider] { return message }
-        return switch route.state {
-        case .notDetected, .notChecked: "Not found in the usual locations."
-        case .detected: "Found on this Mac. Not connected yet."
-        case .installedUnverified: "Hooks are added, but no test prompt has arrived yet, so monitoring isn’t proven."
-        case .connected: "Hooks verified. Recent activity and coverage are shown separately."
-        case .unsupported: route.profile?.unsupportedMessage ?? "This collection route has not been established."
-        case .unavailable: "\(AppIdentity.name)’s hooks need repair."
-        }
-    }
-
-    private var action: (label: String, primary: Bool, perform: () -> Void)? {
-        switch route.state {
-        case .installedUnverified where !route.waitingForEvent:
-            return ("Test connection", true, { model.onVerifyAgent?(route.provider) })
-        case .detected:
-            guard let profile = route.profile, profile.isComplete else { return ("Connect…", true, configure) }
-            return ("Connect", true, { model.onInstallAgent?(route.provider, profile) })
-        case .unsupported: return ("Configure…", false, configure)
-        case .unavailable: return ("Repair", false, { model.onRepairAgent?(route.provider) })
-        case .notDetected, .notChecked: return ("Locate…", false, configure)
-        case .connected, .installedUnverified: return nil
-        }
-    }
-
-    var body: some View {
-        let status = route.status
-        HStack(alignment: .top, spacing: 14) {
-            AgentMonogram(route: route)
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 10) {
-                    Text(route.name).font(.system(size: 13.5, weight: .semibold))
-                    HStack(spacing: 6) {
-                        StatusDot(color: status.dot, outlined: status.outlined)
-                        Text(status.text)
-                    }
-                    .font(.system(size: 12)).foregroundStyle(status.color)
-                    if busy { ProgressView().controlSize(.small) }
-                }
-                .frame(minHeight: 20)
-                Text(detail).font(.system(size: 12.5)).foregroundStyle(Palette.secondary).lineSpacing(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text(configuration).font(.system(size: 11, design: .monospaced)).foregroundStyle(Palette.quaternary)
-                    .textSelection(.enabled)
-                if route.waitingForEvent {
-                    DeliveryCheckSteps(model: model, route: route).padding(.top, 8)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            HStack(spacing: 4) {
-                if let action {
-                    Button(action.label, action: action.perform)
-                        .buttonStyle(action.primary ? AnyButtonStyle(FilledButtonStyle(height: 28)) : AnyButtonStyle(OutlineButtonStyle(height: 28)))
-                        .accessibilityIdentifier("settings.\(route.provider.rawValue).action")
-                }
-                Button("Configure…", action: configure)
-                    .buttonStyle(QuietButtonStyle(foreground: Palette.secondary, horizontalPadding: 10))
-                    .accessibilityIdentifier("settings.\(route.provider.rawValue).configure")
-            }
-            .disabled(disabled)
-        }
-        .padding(16)
-        .overlay(alignment: .top) { if divider { Rectangle().fill(Color(hex: 0xe3e8e5, dark: 0x2e312f)).frame(height: 1) } }
-    }
-}
-
-struct AnyButtonStyle: ButtonStyle {
-    private let make: (Configuration) -> AnyView
-    init<Style: ButtonStyle>(_ style: Style) { make = { AnyView(style.makeBody(configuration: $0)) } }
-    func makeBody(configuration: Configuration) -> some View { make(configuration) }
-}
-
+/// The setup assistant's way to choose an agent's executable and profile; Settings edits them in place.
 struct ConfigureAgentSheet: View {
     let model: AppModel
     let provider: AgentProvider
     @State private var draft: AgentProfileDraft
-    @State private var confirmRemoval = false
     @Environment(\.dismiss) private var dismiss
 
     init(model: AppModel, provider: AgentProvider) {
@@ -375,75 +552,37 @@ struct ConfigureAgentSheet: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Configure \(provider.displayName)").font(.system(size: 14, weight: .semibold))
-            Text("Choose the executable and profile you want analyzed. An executable alone doesn’t establish a working connection.")
-                .font(.system(size: 12)).foregroundStyle(Palette.secondary).fixedSize(horizontal: false, vertical: true)
-            Form {
-                TextField("Executable", text: $draft.executablePath)
-                    .accessibilityIdentifier("settings.\(provider.rawValue).executable")
-                TextField("Profile directory", text: $draft.homePath)
-                    .accessibilityIdentifier("settings.\(provider.rawValue).home")
-                TextField("Last observed version", text: $draft.version)
-                    .accessibilityIdentifier("settings.\(provider.rawValue).version")
-                Text("Authorized collection routes: \(draft.collectionInterfaces.map(\.hostLabel).joined(separator: " and ")). They share this profile and registration. Sessions cannot be filtered reliably by the app or CLI that produced them.")
-                    .font(.system(size: 12)).foregroundStyle(Palette.secondary)
-                Toggle("Enable desktop support (partial)", isOn: Binding(
-                    get: { draft.authorizedHosts.contains(.desktopCode) },
-                    set: { enabled in
-                        if enabled { draft.authorizedHosts.insert(.desktopCode) }
-                        else { draft.authorizedHosts.remove(.desktopCode) }
-                    }))
-                    .disabled(model.agentProfiles[provider]?.requiresDesktopDeliveryRoute == true)
-                    .accessibilityIdentifier("settings.\(provider.rawValue).desktop-partial")
-                Text(provider == .claudeCode
-                    ? "Reads saved local Desktop Code conversations and readable native children in this profile. Desktop side questions are unsupported. Chat, Cowork and remote Code are not included. Full Desktop acceptance remains unverified."
-                    : "Reads saved local desktop conversations in this profile. Automatic side-chat collection and encrypted subagent input remain unavailable. This does not establish full desktop acceptance.")
-                    .font(.system(size: 12)).foregroundStyle(Palette.secondary)
-                if model.agentProfiles[provider]?.requiresDesktopDeliveryRoute == true {
-                    Text("Remove this registration's hooks before changing its configured transport.")
-                        .font(.system(size: 12)).foregroundStyle(Palette.secondary)
-                }
+        let saved = model.agentProfiles[provider]
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Set up \(provider.displayName)").font(.system(size: 15, weight: .semibold))
+                Text("Choose the \(provider.displayName) whose sessions \(AppIdentity.name) should check.")
+                    .font(.system(size: 12.5)).foregroundStyle(Palette.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .formStyle(.grouped)
-            .scrollDisabled(true)
-            .frame(height: 350)
-            if let message = model.agentSetupMessages[provider] {
-                Text(message).font(.system(size: 12)).foregroundStyle(Palette.secondary).fixedSize(horizontal: false, vertical: true)
+            VStack(spacing: 0) { AgentSetupFields(draft: $draft, installed: saved?.installed == true) }.card()
+            VStack(spacing: 0) {
+                AgentCollectionFields(draft: $draft, locked: saved?.requiresDesktopDeliveryRoute == true)
             }
+            .card()
             HStack(spacing: 8) {
-                if draft.installed {
-                    Button("Remove hooks…", role: .destructive) { confirmRemoval = true }
-                        .buttonStyle(QuietButtonStyle(foreground: Palette.red))
-                        .accessibilityIdentifier("settings.\(provider.rawValue).remove")
-                }
                 Spacer()
                 Button("Cancel") { dismiss() }
-                    .buttonStyle(OutlineButtonStyle(height: 26))
+                    .buttonStyle(OutlineButtonStyle(height: 28))
                     .keyboardShortcut(.cancelAction)
-                Button(draft.installed ? "Reinstall hooks" : "Install hooks") {
+                Button(saved?.installed == true ? "Apply" : "Connect") {
                     model.agentProfiles[provider] = draft
                     model.onInstallAgent?(provider, draft)
                     dismiss()
                 }
-                .buttonStyle(FilledButtonStyle(height: 26))
+                .buttonStyle(FilledButtonStyle(height: 28))
                 .keyboardShortcut(.defaultAction)
-                .disabled(!draft.isComplete || !draft.hasValidHostAuthorization || draft.authorizedHosts.isEmpty
-                    || !model.storageReady || model.isDemo)
+                .disabled(!draft.canInstall || !model.storageReady || model.isDemo)
                 .accessibilityIdentifier("settings.\(provider.rawValue).install")
             }
         }
         .padding(22)
-        .frame(width: 480)
+        .frame(width: 520)
         .focusVisible()
-        .confirmationDialog("Remove \(AppIdentity.name) hooks?", isPresented: $confirmRemoval) {
-            Button("Remove \(AppIdentity.name) hooks", role: .destructive) {
-                model.onRemoveAgent?(provider)
-                dismiss()
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Removes only \(AppIdentity.name)’s own hooks from this \(provider.displayName) profile. Existing agent settings and retained inventory stay. New content from this profile won’t be collected.")
-        }
     }
 }

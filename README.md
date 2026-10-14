@@ -49,7 +49,7 @@ whose content you want analyzed. Review provider hook and folder-trust prompts
 normally. Finding an executable or verifying delivery does not prove complete
 content coverage.
 
-Settings → General → Run setup again reopens the assistant. Settings → Agents
+Settings → General → Run setup again reopens the assistant. Each agent's Settings page
 also offers manual profile selection and hook repair/removal. Enable Claude
 Desktop support explicitly to include saved local Code conversations. Launch at
 login is off by default; notifications require macOS permission.

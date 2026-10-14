@@ -196,7 +196,7 @@ struct CoverageView: View {
                 }
                 .accessibilityHidden(true)
                 Spacer()
-                Button("Manage agents") { model.route = .settings(.agents) }
+                Button("Manage agents") { model.route = .settings(model.agentsPage) }
                     .buttonStyle(QuietButtonStyle(foreground: Palette.link, height: 26))
                     .fontWeight(.medium)
                     .padding(.trailing, -8)

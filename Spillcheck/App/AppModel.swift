@@ -157,11 +157,15 @@ enum OnboardingStep: Int, CaseIterable, Comparable {
     static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
 }
 
-enum SettingsPage: String, CaseIterable {
-    case general, agents
-    var title: String { self == .general ? "General" : "Agents" }
-    /// Both connected agents are terminal tools.
-    var symbol: String { self == .general ? "slider.horizontal.3" : "terminal" }
+/// General preferences, or one agent's connection and setup.
+enum SettingsPage: Hashable {
+    case general, agent(AgentProvider)
+    var title: String {
+        switch self {
+        case .general: "General"
+        case .agent(let provider): provider.displayName
+        }
+    }
 }
 
 enum InventorySort: String {
@@ -304,7 +308,6 @@ struct AgentRoute: Identifiable {
 
     var id: AgentProvider { provider }
     var name: String { provider.displayName }
-    var monogram: String { provider == .codex ? "CX" : "CC" }
     var collecting: Bool { monitoringActive && state == .connected && hostRoutes.contains(where: \.collecting) }
     var shownInCoverage: Bool { state != .notDetected && state != .notChecked }
     /// Found on an eligible route with a complete profile, so hooks can be added now.
@@ -689,6 +692,11 @@ final class AppModel {
 
     /// A remembered connection proof is separate from recent collection and analyzed coverage.
     var monitoringProven: Bool { routes.contains(where: \.collecting) }
+    /// The agent page opened from elsewhere: the first found agent that isn't collecting, else the first found.
+    var agentsPage: SettingsPage {
+        let found = routes.filter(\.shownInCoverage)
+        return .agent((found.first { !$0.collecting } ?? found.first)?.provider ?? .codex)
+    }
 
     var hasAnalyzedContent: Bool { (activity?.messageCount ?? 0) > 0 }
 

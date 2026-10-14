@@ -291,11 +291,11 @@ actor AgentSetupController {
                 states[provider] = prompts[provider] == nil
                     && (raw == "connected" || remembered && raw == "installedUnverified") ? .connected : .installedUnverified
                 if prompts[provider] == nil && remembered && raw == "installedUnverified" {
-                    messages[provider] = "Owned registration retains encrypted verification. Recent activity and content coverage are shown separately."
+                    messages[provider] = "Verified by an earlier test."
                 }
                 if raw == "needsRepair" {
                     states[provider] = .unavailable
-                    messages[provider] = "\(AppIdentity.name)’s hooks changed or are missing. Repair them, then run the test session again."
+                    messages[provider] = "\(AppIdentity.name)’s hooks changed or are missing. Repair them, then test again."
                     prompts.removeValue(forKey: provider)
                     if var invalidated = profiles[provider], invalidated.connectionProof != nil {
                         invalidated.connectionProof = nil

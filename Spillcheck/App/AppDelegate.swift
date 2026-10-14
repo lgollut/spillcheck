@@ -102,7 +102,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         switch value("--demo-route") {
         case "coverage": model.route = .coverage
         case "general": model.route = .settings(.general)
-        case "agents": model.route = .settings(.agents)
+        case "agents": model.route = .settings(model.agentsPage)
         default: break
         }
         if let query = value("--demo-search") { model.searchText = query }

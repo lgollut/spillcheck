@@ -18,17 +18,17 @@ struct DeliveryCheckSteps: View {
             VStack(alignment: .leading, spacing: 14) {
                 if viaCodexDesktop {
                     step(1, "Send the test prompt from Codex desktop",
-                         "Start a fresh Local conversation in the official Codex app using this profile, then send this prompt. This checks shared delivery, not complete desktop coverage.") {
+                         "Start a new Local conversation in the Codex app and send this prompt. This checks delivery, not full desktop coverage.") {
                         promptBox(command.prompt)
                     }
                 } else if viaT3 {
                     step(1, "Send the test prompt from T3",
-                         "In T3, start a new \(agent) conversation and send this prompt.") {
+                         "Start a new \(agent) conversation in T3 and send this prompt.") {
                         promptBox(command.prompt)
                     }
                 } else {
                     step(1, "Start a test session",
-                         "This command opens a new \(agent) session that sends the test prompt.") {
+                         "Opens a new \(agent) session that sends a test prompt.") {
                         VStack(alignment: .leading, spacing: 8) {
                             CommandBox(text: command.line)
                                 .accessibilityIdentifier("setup.\(route.provider.rawValue).command")
@@ -37,13 +37,15 @@ struct DeliveryCheckSteps: View {
                                     Label("Open in Terminal", systemImage: "terminal").labelStyle(TightLabelStyle())
                                 }
                                 .buttonStyle(FilledButtonStyle(height: 28))
+                                .fixedSize()
                                 .disabled(model.isDemo)
                                 .accessibilityIdentifier("setup.\(route.provider.rawValue).open-terminal")
                                 CopyButton(text: command.line, label: "Copy command")
                                     .accessibilityIdentifier("setup.\(route.provider.rawValue).copy")
                                 Spacer(minLength: 0)
-                                Button(showPrompt ? "Hide prompt" : "Use another session…") { showPrompt.toggle() }
+                                Button(showPrompt ? "Hide prompt" : "Use another session") { showPrompt.toggle() }
                                     .buttonStyle(QuietButtonStyle(foreground: Palette.link, height: 24))
+                                    .fixedSize()
                             }
                             if showPrompt {
                                 Text("Paste this prompt into a new \(agent) session that uses \(route.profile.map { AgentConfigurationLine.abbreviated($0.homePath) } ?? "this profile"):")
@@ -55,28 +57,24 @@ struct DeliveryCheckSteps: View {
                     }
                 }
                 if route.provider == .codex {
-                    step(2, "Trust \(AppIdentity.name)’s hooks",
-                         "Codex shows “Hooks need review” for the \(CodexHookConfiguration.events.count) hooks \(AppIdentity.name) added. Choose **Trust all and continue**. Each hook passes session events to \(AppIdentity.name) on this Mac.") {
+                    step(2, "Trust the hooks",
+                         "When Codex lists \(CodexHookConfiguration.events.count) hooks to review, choose **Trust all and continue**. They only send session events to \(AppIdentity.name) on this Mac.") {
                         EmptyView()
                     }
                 } else {
-                    step(2, "Approve any startup prompts",
-                         "If Claude Code asks you to review hooks or to trust the folder, approve them. The hooks pass session events to \(AppIdentity.name) on this Mac.") {
+                    step(2, "Approve startup prompts",
+                         "If Claude Code asks to review hooks or trust the folder, approve them. The hooks only send session events to \(AppIdentity.name) on this Mac.") {
                         EmptyView()
                     }
                 }
-                step(3, "Wait for the reply",
-                     "The agent replies “Connected” and does nothing else. This page updates as soon as the prompt arrives.") {
-                    HStack(spacing: 7) {
-                        ProgressView().controlSize(.small)
-                        Text("Waiting for the test prompt…").foregroundStyle(Palette.amberText)
-                    }
-                    .font(.system(size: 12))
+                step(3, "Wait for “Connected”", waiting: true,
+                     "The agent replies with that one word. This page updates on its own.") {
+                    EmptyView()
                 }
                 if slow {
                     Text(route.provider == .codex
-                         ? "Nothing yet? If you chose “Continue without trusting”, review and trust the hooks, then send the prompt from a fresh session using this profile."
-                         : "Nothing yet? Make sure the prompt was sent from a new session that uses this profile, then run the command again.")
+                         ? "Nothing yet? If you chose “Continue without trusting”, trust the hooks, then send the prompt again from a new session."
+                         : "Nothing yet? Send the prompt again from a new session that uses this profile.")
                         .font(.system(size: 12)).foregroundStyle(Palette.secondary).lineSpacing(2)
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(10)
@@ -92,7 +90,7 @@ struct DeliveryCheckSteps: View {
         }
     }
 
-    private func step<Extra: View>(_ number: Int, _ title: String, _ detail: LocalizedStringKey,
+    private func step<Extra: View>(_ number: Int, _ title: String, waiting: Bool = false, _ detail: LocalizedStringKey,
                                    @ViewBuilder extra: () -> Extra) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Text("\(number)")
@@ -101,7 +99,11 @@ struct DeliveryCheckSteps: View {
                 .background(Palette.chip, in: Circle())
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 6) {
-                Text(title).font(.system(size: 13, weight: .semibold))
+                HStack(spacing: 8) {
+                    Text(title).font(.system(size: 13, weight: .semibold))
+                    if waiting { ProgressView().controlSize(.small).accessibilityLabel("Waiting for the test prompt") }
+                }
+                .frame(minHeight: 20)
                 Text(detail).font(.system(size: 12.5)).foregroundStyle(Palette.secondary).lineSpacing(2)
                     .fixedSize(horizontal: false, vertical: true)
                 extra()
@@ -148,6 +150,7 @@ struct CopyButton: View {
                 .labelStyle(TightLabelStyle())
         }
         .buttonStyle(OutlineButtonStyle(height: 28))
+        .fixedSize()
         .task(id: copied) {
             guard copied else { return }
             try? await Task.sleep(for: .seconds(1.6))
@@ -157,18 +160,6 @@ struct CopyButton: View {
 }
 
 // MARK: - Shared agent presentation
-
-struct AgentMonogram: View {
-    let route: AgentRoute
-
-    var body: some View {
-        Text(route.monogram)
-            .font(.system(size: 11, weight: .bold)).tracking(0.2).foregroundStyle(Palette.ink2)
-            .frame(width: 32, height: 32)
-            .background(Color(hex: 0xeceeed, dark: 0x292c2a), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .accessibilityHidden(true)
-    }
-}
 
 /// The selected executable, version, and profile on one line, or nil before anything was found.
 struct AgentConfigurationLine {

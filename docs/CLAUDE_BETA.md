@@ -8,10 +8,10 @@ as verified. [Beta readiness](BETA_READINESS.md) tracks the remaining work.
 
 ## Setup
 
-1. In Settings, choose **Configure…** for Claude Code and select the executable
-   and profile directory to analyze.
-2. To include saved local Desktop Code conversations, turn on **Enable desktop
-   support (partial)**. Existing authorizations do not expand automatically;
+1. In Settings, select **Claude Code** under Agents and choose the executable
+   and profile folder to analyze.
+2. To include saved local Desktop Code conversations, turn on **Desktop app**
+   and choose **Apply**. Existing authorizations do not expand automatically;
    opt-in preserves the profile, registration and connection proof.
 3. Follow the connection check using a fresh session. Review provider hook and
    folder-trust prompts normally. This establishes delivery for that profile,

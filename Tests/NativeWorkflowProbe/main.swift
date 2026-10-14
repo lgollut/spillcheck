@@ -205,10 +205,50 @@ private struct NativeWorkflowProbe {
             try require(value.controller.content.excerpts[value.occurrenceID]?.clipped == true, "excerpt")
             try require(value.controller.content.sourceMetadata[value.occurrenceID]?.title == "synthetic title", "source")
             try require(value.key.authorizations == 1, "viewing-session-reuse")
+            value.controller.hide()
+            try require(value.controller.state == .masked && value.controller.content.value == nil
+                && value.controller.content.excerpts.isEmpty && value.session.revealed.isEmpty
+                && value.controller.isAuthorized, "hide-keeps-session-unlocked")
+            await value.controller.reveal(try value.selection())
+            try require(value.controller.content.value == "SYNTHETIC-NATIVE-VIEWING-Ä-🔐" && value.key.authorizations == 1,
+                "reveal-after-hide-without-prompt")
+            value.controller.select(valueID: UUID())
+            try require(value.controller.content.value == nil && value.session.revealed.isEmpty
+                && value.controller.isAuthorized, "selection-change-keeps-session-unlocked")
+            value.controller.select(valueID: value.valueID)
+            await value.controller.reveal(try value.selection())
+            try require(value.controller.content.value == "SYNTHETIC-NATIVE-VIEWING-Ä-🔐" && value.key.authorizations == 1,
+                "reveal-after-selection-change-without-prompt")
+            checks.append("hide-and-selection-change-keep-session-unlocked")
             value.controller.invalidate(.windowClose)
             try require(value.controller.content.value == nil && value.controller.content.excerpts.isEmpty
-                && value.controller.content.sourceMetadata.isEmpty && value.session.revealed.isEmpty, "immediate-mask")
+                && value.controller.content.sourceMetadata.isEmpty && value.session.revealed.isEmpty
+                && !value.controller.isAuthorized, "immediate-mask")
             checks.append("authenticated-exact-fields-and-window-mask")
+            await value.controller.reveal(try value.selection())
+            try require(value.controller.content.value == "SYNTHETIC-NATIVE-VIEWING-Ä-🔐" && value.key.authorizations == 2,
+                "lock-requires-authentication-again")
+            checks.append("lock-requires-authentication-again")
+
+            let unlocked = try await ViewingFixture()
+            try await unlocked.controller.unlock()
+            try require(unlocked.controller.isAuthorized && unlocked.key.authorizations == 1 && !unlocked.controller.unlocking
+                && unlocked.controller.state == .masked && unlocked.controller.content.value == nil
+                && unlocked.session.revealed.isEmpty, "unlock-reveals-nothing")
+            await unlocked.controller.reveal(try unlocked.selection())
+            try require(unlocked.controller.content.value == "SYNTHETIC-NATIVE-VIEWING-Ä-🔐" && unlocked.key.authorizations == 1,
+                "reveal-after-unlock-without-prompt")
+            checks.append("unlock-then-reveal-without-prompt")
+
+            let cancelledUnlock = try await ViewingFixture()
+            cancelledUnlock.key.cancellation = true
+            do {
+                try await cancelledUnlock.controller.unlock()
+                throw ProbeFailure.failed("cancelled-unlock-succeeded")
+            } catch ViewingAuthorizationError.cancelled {}
+            try require(!cancelledUnlock.controller.isAuthorized && !cancelledUnlock.controller.unlocking
+                && cancelledUnlock.controller.state == .masked, "cancelled-unlock")
+            checks.append("cancelled-unlock-stays-locked")
 
             let cancelled = try await ViewingFixture()
             cancelled.key.cancellation = true
@@ -237,9 +277,13 @@ private struct NativeWorkflowProbe {
             let oldTask = Task { await changed.controller.reveal(oldSelection) }
             try await until { changed.key.gate != nil }
             changed.controller.select(valueID: UUID())
+            var lateChanges = 0
+            changed.controller.onChange = { lateChanges += 1 }
             changed.key.release()
             await oldTask.value
-            try require(changed.controller.state == .masked && changed.controller.content.value == nil, "changed-selection")
+            // The completed authentication unlocks the session but reveals nothing for the new selection.
+            try require(changed.controller.state == .masked && changed.controller.content.value == nil
+                && changed.session.revealed.isEmpty && changed.controller.isAuthorized && lateChanges > 0, "changed-selection")
             checks.append("late-authentication-after-selection-change")
 
             let intraEntry = try await ViewingFixture()
@@ -250,7 +294,7 @@ private struct NativeWorkflowProbe {
             var occurrenceSelectionChanges = 0
             selectionModel.onOccurrenceSelectionChanged = { _ in
                 occurrenceSelectionChanges += 1
-                intraEntry.controller.invalidate(.userMask)
+                intraEntry.controller.hide()
             }
             selectionModel.selectedOccurrenceID = intraEntry.occurrenceID
             let initialSelectionChanges = occurrenceSelectionChanges
@@ -263,14 +307,14 @@ private struct NativeWorkflowProbe {
             selectionModel.revealedExcerpts[intraEntry.occurrenceID] = RetainedExcerpt(text: "synthetic cached A", clipped: false)
             selectionModel.revealedSourceMetadata[intraEntry.occurrenceID] = RetainedSourceContext(sessionIdentifier: "synthetic")
             selectionModel.terminalResumeCommand = "synthetic previous command"
-            selectionModel.viewingAuthorized = true
+            selectionModel.contentRevealed = true
             selectionModel.viewingMessage = "synthetic previous message"
             selectionModel.actionMessage = "synthetic previous action"
             selectionModel.selectedOccurrenceID = secondOccurrence
             try require(selectionModel.selectedEntryID == .value(intraEntry.valueID)
                 && occurrenceSelectionChanges == initialSelectionChanges + 1 && selectionModel.revealedContent.isEmpty
                 && selectionModel.revealedExcerpts.isEmpty && selectionModel.revealedSourceMetadata.isEmpty
-                && selectionModel.terminalResumeCommand == nil && !selectionModel.viewingAuthorized
+                && selectionModel.terminalResumeCommand == nil && !selectionModel.contentRevealed
                 // Action messages are timed toasts, independent of retained occurrence content.
                 && selectionModel.viewingMessage == nil && selectionModel.actionMessage == "synthetic previous action",
                 "same-entry-selection-masks-immediately")
@@ -284,13 +328,14 @@ private struct NativeWorkflowProbe {
             await intraEntry.controller.reveal(secondContext)
             selectionModel.revealedExcerpts = intraEntry.controller.content.excerpts
             selectionModel.revealedSourceMetadata = intraEntry.controller.content.sourceMetadata
-            selectionModel.viewingAuthorized = intraEntry.controller.isAuthorized
+            selectionModel.contentRevealed = intraEntry.controller.isAuthorized
             selectionModel.terminalResumeCommand = "synthetic command B"
             selectionModel.selectedOccurrenceID = secondOccurrence
-            try require(occurrenceSelectionChanges == initialSelectionChanges + 1 && selectionModel.viewingAuthorized
+            try require(occurrenceSelectionChanges == initialSelectionChanges + 1 && selectionModel.contentRevealed
                 && selectionModel.revealedExcerpts[secondOccurrence]?.text == "synthetic context B"
                 && selectionModel.revealedSourceMetadata[secondOccurrence]?.title == "synthetic title B"
-                && selectionModel.terminalResumeCommand == "synthetic command B",
+                && selectionModel.terminalResumeCommand == "synthetic command B"
+                && intraEntry.key.authorizations == 1,
                 "same-occurrence-selection-keeps-current-content")
             checks.append("intra-entry-occurrence-selection-rejects-late-authentication")
             checks.append("unchanged-occurrence-selection-keeps-current-content")

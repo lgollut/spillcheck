@@ -156,7 +156,7 @@ A detail view allows the exact value to be revealed after macOS authentication a
 
 An obsolete reappearance after content deletion has no retained value or excerpt to reveal. Its detail view shows the source reference, timestamp, and obsolete label and offers source opening when available. If the source disappears, no context fallback exists for that metadata-only occurrence.
 
-A viewing session expires after five minutes of inactivity and locks when the window closes, the Mac sleeps, or the macOS session locks. An action immediately masks values. Before authentication, the value and raw excerpts stay masked. Canceled or failed authentication reveals no protected content. A dedicated copy function may be added later. It is not required for the MVP workflow.
+A viewing session starts with one authentication. While it lasts, revealing another value needs no further authentication. It expires after five minutes of inactivity and locks when the window closes, the Mac sleeps, or the macOS session locks. One action hides the shown values without locking, and another locks the session immediately. Before authentication, the value and raw excerpts stay masked. Canceled or failed authentication reveals no protected content. A dedicated copy function may be added later. It is not required for the MVP workflow.
 
 Detections that could not be located must be presented as such, without inventing a value. Conversation opening methods need validation for each agent and interface. A path to a transcript file is not equivalent to a direct link in the agent's application.
 

@@ -339,6 +339,99 @@ struct ProtectionTests {
         await viewing.deauthorize()
     }
 
+    @Test @MainActor func unlockAuthorizesOnceWithoutDecrypting() async throws {
+        let (crypto, viewing, key, _) = try fixture()
+        let context = binding(.value)
+        let payload = try await crypto.sealInventory(Data("synthetic".utf8), binding: context)
+        try await viewing.unlock(localizedReason: "Synthetic test")
+        #expect(viewing.isAuthorized)
+        #expect(viewing.revealed.isEmpty)
+        #expect(viewing.snapshot.expiresAt != nil)
+        try await viewing.unlock(localizedReason: "Synthetic test")
+        #expect(try await viewing.reveal(payload, binding: context, localizedReason: "Synthetic test") == Data("synthetic".utf8))
+        #expect(key.authorizations == 1)
+        await viewing.deauthorize()
+        key.authorizationError = .cancelled
+        await #expect(throws: ViewingAuthorizationError.cancelled) {
+            try await viewing.unlock(localizedReason: "Synthetic test")
+        }
+        #expect(!viewing.isAuthorized)
+        #expect(!key.isAuthorized)
+    }
+
+    @Test @MainActor func concealDropsPlaintextAndKeepsTheSessionUnlocked() async throws {
+        let (crypto, viewing, key, _) = try fixture()
+        let context = binding(.value)
+        let payload = try await crypto.sealInventory(Data("synthetic".utf8), binding: context)
+        _ = try await viewing.reveal(payload, binding: context, localizedReason: "Synthetic test")
+        let generation = viewing.snapshot.generation
+        viewing.conceal()
+        #expect(viewing.revealed.isEmpty)
+        #expect(viewing.isAuthorized)
+        #expect(viewing.snapshot.generation == generation)
+        _ = try await viewing.reveal(payload, binding: context, localizedReason: "Synthetic test")
+        #expect(key.authorizations == 1)
+        #expect(key.deauthorizations == 0)
+        await viewing.deauthorize()
+    }
+
+    @Test @MainActor func concealDuringARevealDiscardsItsPlaintextOnly() async throws {
+        for duringAuthorization in [true, false] {
+            let (crypto, viewing, key, _) = try fixture()
+            let context = binding(.value)
+            let payload = try await crypto.sealInventory(Data("synthetic".utf8), binding: context)
+            if !duringAuthorization { try await viewing.unlock(localizedReason: "Synthetic test") }
+            key.holdAuthorization = duringAuthorization
+            key.holdDecryption = !duringAuthorization
+            let task = Task { try await viewing.reveal(payload, binding: context, localizedReason: "Synthetic test") }
+            while duringAuthorization ? key.authorizationGate == nil : key.decryptionGate == nil { await Task.yield() }
+            viewing.conceal()
+            key.authorizationGate?.resume()
+            key.authorizationGate = nil
+            key.decryptionGate?.resume()
+            key.decryptionGate = nil
+            await #expect(throws: ViewingAuthorizationError.invalidated) { try await task.value }
+            // An authentication that completes after hiding still unlocks; it just shows nothing.
+            #expect(viewing.revealed.isEmpty)
+            #expect(viewing.isAuthorized)
+            #expect(key.authorizations == 1)
+            #expect(key.deauthorizations == 0)
+            await viewing.deauthorize()
+        }
+    }
+
+    @Test @MainActor func requestsWaitForTheOperationInFlightInsteadOfPromptingAgain() async throws {
+        for cancelFirst in [false, true] {
+            let (crypto, viewing, key, _) = try fixture()
+            let first = binding(.value), second = binding(.excerpt)
+            let firstPayload = try await crypto.sealInventory(Data("synthetic-first".utf8), binding: first)
+            let secondPayload = try await crypto.sealInventory(Data("synthetic-second".utf8), binding: second)
+            key.holdAuthorization = true
+            if cancelFirst { key.authorizationError = .cancelled }
+            let firstTask = Task { try await viewing.reveal(firstPayload, binding: first, localizedReason: "Synthetic test") }
+            while key.authorizationGate == nil { await Task.yield() }
+            key.holdAuthorization = false
+            key.authorizationError = nil
+            let secondTask = Task { try await viewing.reveal(secondPayload, binding: second, localizedReason: "Synthetic test") }
+            for _ in 0..<10 { await Task.yield() }
+            key.authorizationGate?.resume()
+            key.authorizationGate = nil
+            if cancelFirst {
+                await #expect(throws: ViewingAuthorizationError.cancelled) { try await firstTask.value }
+                // A cancelled prompt fails the waiting request rather than opening a second one.
+                await #expect(throws: ViewingAuthorizationError.invalidated) { try await secondTask.value }
+                #expect(!viewing.isAuthorized)
+                #expect(viewing.revealed.isEmpty)
+            } else {
+                #expect(try await firstTask.value == Data("synthetic-first".utf8))
+                #expect(try await secondTask.value == Data("synthetic-second".utf8))
+                #expect(viewing.isAuthorized)
+            }
+            #expect(key.authorizations == 1)
+            await viewing.deauthorize()
+        }
+    }
+
     @Test @MainActor func staleAuthorizationAfterWindowCloseCannotReveal() async throws {
         let (crypto, viewing, key, _) = try fixture()
         let context = binding(.value)

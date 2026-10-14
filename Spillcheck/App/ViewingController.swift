@@ -21,10 +21,14 @@ enum InventoryViewingState: Equatable {
     }
 }
 
+/// Unlocking authorizes the viewing session once. Revealing shows one selection's content,
+/// and hiding it, or selecting something else, leaves the session unlocked.
 @MainActor @Observable
 final class ViewingController {
     private(set) var content = RevealedInventoryContent()
     private(set) var state = InventoryViewingState.masked
+    /// An unlock without a reveal is waiting for authentication.
+    private(set) var unlocking = false
     @ObservationIgnored var onChange: (@MainActor () -> Void)?
     @ObservationIgnored private let session: InventoryViewingSession
     @ObservationIgnored private let loadPayload: @MainActor (ProtectedPayloadReference) async throws -> ProtectedPayload?
@@ -44,12 +48,33 @@ final class ViewingController {
     func select(valueID: UUID?) {
         guard guardState.selectedValueID != valueID else { return }
         guardState.select(valueID: valueID)
-        invalidate(.userMask)
+        hide()
     }
 
+    /// Hides revealed content and drops any reveal still in flight. The session stays unlocked.
+    func hide() {
+        guardState.invalidate()
+        session.conceal()
+        content = RevealedInventoryContent()
+        state = .masked
+        onChange?()
+    }
+
+    /// Locks the session, so the next reveal asks for authentication again.
     func invalidate(_ reason: ViewingInvalidationReason = .userMask) {
         didInvalidate()
         session.invalidate(reason: reason)
+    }
+
+    func unlock() async throws {
+        guard !unlocking, state != .authenticating, !session.isAuthorized else { return }
+        unlocking = true
+        onChange?()
+        defer {
+            unlocking = false
+            onChange?()
+        }
+        try await session.unlock(localizedReason: "unlock protected content")
     }
 
     /// Called by the session's existing lifecycle callback, without recursively invalidating it.
@@ -62,7 +87,7 @@ final class ViewingController {
     }
 
     func reveal(_ selection: InventoryRevealSelection) async {
-        guard state != .authenticating else { return }
+        guard state != .authenticating, !unlocking else { return }
         let ticket: InventoryRevealGuard.Ticket
         do { ticket = try guardState.begin(selection) } catch { return }
         state = .authenticating
@@ -98,8 +123,12 @@ final class ViewingController {
             state = .revealed
             onChange?()
         } catch {
-            // A stale request cannot clear a newer selection or overwrite its state.
-            guard guardState.accepts(ticket) else { return }
+            // A stale request cannot clear a newer selection or overwrite its state,
+            // but its authentication may have unlocked the session.
+            guard guardState.accepts(ticket) else {
+                onChange?()
+                return
+            }
             invalidate(.authorizationFailure)
             state = (error as? ViewingAuthorizationError) == .cancelled ? .cancelled : .unavailable
             onChange?()

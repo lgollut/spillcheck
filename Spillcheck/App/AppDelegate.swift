@@ -218,7 +218,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     #endif
 
     func windowWillClose(_ notification: Notification) {
-        runtime.mask(.windowClose)
+        runtime.lock(.windowClose)
         model.windowVisible = false
         record("window-closed-process-retained")
     }
@@ -358,7 +358,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         #endif
         guard !shutdownStarted else { return .terminateLater }
         shutdownStarted = true
-        runtime.mask(.windowClose)
+        runtime.lock(.windowClose)
         Task {
             await runtime.shutdown()
             sender.reply(toApplicationShouldTerminate: true)

@@ -173,7 +173,7 @@ struct InventoryDetailView: View {
     }
 
     private var revealedValue: String? {
-        guard model.viewingAuthorized, let valueID = entry.valueID else { return nil }
+        guard model.contentRevealed, let valueID = entry.valueID else { return nil }
         return model.revealedContent[valueID]
     }
 
@@ -212,12 +212,14 @@ struct InventoryDetailView: View {
             }
             .font(.system(size: 12)).foregroundStyle(Palette.secondary)
         } else if canReveal {
-            let revealed = model.viewingAuthorized && (revealedValue != nil || summary.unlocated)
+            let revealed = model.contentRevealed && (revealedValue != nil || summary.unlocated)
+            // The ellipsis marks the authentication prompt a locked reveal opens first.
+            let prompt = model.viewingUnlocked ? "" : "…"
             Button {
-                if revealed { model.maskNow() } else { model.onReveal?(entry.id, model.selectedOccurrenceID) }
+                if revealed { model.hideNow() } else { model.onReveal?(entry.id, model.selectedOccurrenceID) }
             } label: {
-                Label(revealed ? "Hide" : (model.revealIssue != nil ? "Try again" : (summary.unlocated ? "Reveal source…" : "Reveal…")),
-                      systemImage: revealed ? "lock.open.fill" : "lock.fill")
+                Label(revealed ? "Hide" : (model.revealIssue != nil ? "Try again" : (summary.unlocated ? "Reveal source" : "Reveal") + prompt),
+                      systemImage: revealed ? "eye.slash" : "eye")
                     .labelStyle(TightLabelStyle())
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(Palette.secondary)
@@ -225,8 +227,9 @@ struct InventoryDetailView: View {
             .buttonStyle(QuietButtonStyle(height: 26))
             .padding(.trailing, -6)
             .disabled(disabled)
-            .help(revealed ? "Masks after 5 min idle, on close, or when the Mac sleeps" : "Touch ID or password")
-            .accessibilityIdentifier(revealed ? "inventory.detail.mask" : "inventory.reveal-value")
+            .help(revealed ? "Hide again. The app stays unlocked."
+                : model.viewingUnlocked ? "Unlocked, so no prompt" : "Touch ID or password, then the app stays unlocked")
+            .accessibilityIdentifier(revealed ? "inventory.detail.hide" : "inventory.reveal-value")
         }
     }
 
@@ -444,8 +447,8 @@ private struct OccurrenceDetail: View {
     let disabled: Bool
     @Binding var sheet: DetailSheet?
 
-    private var excerpt: RetainedExcerpt? { model.viewingAuthorized ? model.revealedExcerpts[occurrence.id] : nil }
-    private var source: RetainedSourceContext? { model.viewingAuthorized ? model.revealedSourceMetadata[occurrence.id] : nil }
+    private var excerpt: RetainedExcerpt? { model.contentRevealed ? model.revealedExcerpts[occurrence.id] : nil }
+    private var source: RetainedSourceContext? { model.contentRevealed ? model.revealedSourceMetadata[occurrence.id] : nil }
 
     // Reads top to bottom: what was seen, the facts about it, then what you can do with it.
     var body: some View {
@@ -964,7 +967,7 @@ private struct ValueActionSheet: View {
     }
 
     private var resumeCommandText: String? {
-        guard let occurrence = resumeOccurrence, model.viewingAuthorized,
+        guard let occurrence = resumeOccurrence, model.contentRevealed,
               model.revealedSourceMetadata[occurrence.id] != nil else { return nil }
         return model.terminalResumeCommand
     }
@@ -1041,7 +1044,7 @@ private struct ValueActionSheet: View {
 
     @ViewBuilder
     private func resumeCommand(_ occurrence: InventoryOccurrencePresentation) -> some View {
-        let revealed = model.viewingAuthorized && model.revealedSourceMetadata[occurrence.id] != nil
+        let revealed = model.contentRevealed && model.revealedSourceMetadata[occurrence.id] != nil
         VStack(alignment: .leading, spacing: 10) {
             Group {
                 if revealed, let command = model.terminalResumeCommand {
@@ -1061,7 +1064,7 @@ private struct ValueActionSheet: View {
                     Text(model.viewingBusy ? "Waiting for Touch ID…" : "The conversation ID is protected.")
                         .font(.system(size: 12)).foregroundStyle(Palette.secondary)
                     Spacer()
-                    Button("Unlock to show…") { model.onReveal?(summary.entry.id, occurrence.id) }
+                    Button(model.viewingUnlocked ? "Show" : "Unlock to show…") { model.onReveal?(summary.entry.id, occurrence.id) }
                         .buttonStyle(OutlineButtonStyle(height: 24))
                         .disabled(model.viewingBusy || model.isDemo || !model.storageReady)
                 }
@@ -1074,7 +1077,7 @@ private struct ValueActionSheet: View {
     }
 
     private func requestCommand(_ occurrence: InventoryOccurrencePresentation) {
-        guard model.viewingAuthorized, model.revealedSourceMetadata[occurrence.id] != nil, model.terminalResumeCommand == nil else { return }
+        guard model.contentRevealed, model.revealedSourceMetadata[occurrence.id] != nil, model.terminalResumeCommand == nil else { return }
         model.onTerminalResume?(occurrence.id)
     }
 }

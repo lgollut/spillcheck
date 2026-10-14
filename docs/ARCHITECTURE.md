@@ -73,8 +73,11 @@ create a replacement vault. Raw values, excerpts, titles and paths stay encrypte
 at rest; diagnostics and searchable summaries use controlled metadata.
 
 `InventoryViewingWorkflow.swift` and the app's `ViewingController.swift` manage
-reveals. The viewing session expires after five minutes of inactivity and ends
-on masking, window closure, sleep or macOS session lock. Closing a window keeps
+reveals. One authentication unlocks a viewing session, and revealing needs no
+further prompt while it lasts. Hiding content or changing the selection clears
+what was shown without ending the session. The session expires after five
+minutes of inactivity and ends on locking, window closure, sleep or macOS
+session lock. Closing a window keeps
 monitoring active; pause suspends collection, processing and alerts; quit stops
 owned workers. Monitoring necessarily handles newly captured plaintext in memory.
 

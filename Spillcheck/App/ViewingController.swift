@@ -21,12 +21,15 @@ enum InventoryViewingState: Equatable {
     }
 }
 
-/// Unlocking authorizes the viewing session once. Revealing shows one selection's content,
-/// and hiding it, or selecting something else, leaves the session unlocked.
+/// Unlocking authorizes the viewing session once. Revealing decrypts one selection's content, and
+/// the exact value shows only once asked for. Hiding it, or selecting something else, leaves the
+/// session unlocked.
 @MainActor @Observable
 final class ViewingController {
     private(set) var content = RevealedInventoryContent()
     private(set) var state = InventoryViewingState.masked
+    /// The exact value is on screen, not only decrypted to hide it within its context.
+    private(set) var valueShown = false
     /// An unlock without a reveal is waiting for authentication.
     private(set) var unlocking = false
     @ObservationIgnored var onChange: (@MainActor () -> Void)?
@@ -35,6 +38,8 @@ final class ViewingController {
     @ObservationIgnored private let selectionIsCurrent: @MainActor (InventoryRevealSelection) async -> Bool
     @ObservationIgnored private var guardState = InventoryRevealGuard()
     @ObservationIgnored private var currentRequest: InventoryRevealGuard.Ticket?
+    /// A request still in flight was asked to show the value, so a newer one for the same value does too.
+    @ObservationIgnored private var valueRequested = false
 
     init(session: InventoryViewingSession,
          loadPayload: @escaping @MainActor (ProtectedPayloadReference) async throws -> ProtectedPayload?,
@@ -59,6 +64,26 @@ final class ViewingController {
         session.conceal()
         content = RevealedInventoryContent()
         state = .masked
+        valueShown = false
+        valueRequested = false
+        onChange?()
+    }
+
+    /// Shows the already decrypted value. Returns false when it must be revealed first.
+    func showValue() -> Bool {
+        guard state == .revealed, content.value != nil, session.isAuthorized else { return false }
+        if !valueShown {
+            valueShown = true
+            onChange?()
+        }
+        return true
+    }
+
+    /// Hides the value and keeps its context on screen.
+    func hideValue() {
+        valueRequested = false
+        guard valueShown else { return }
+        valueShown = false
         onChange?()
     }
 
@@ -85,19 +110,27 @@ final class ViewingController {
             && currentRequest.map { guardState.accepts($0) } == true
         if !requestWillReportFailure { guardState.invalidate() }
         content = RevealedInventoryContent()
+        valueShown = false
+        if !requestWillReportFailure { valueRequested = false }
         if !requestWillReportFailure { state = .masked }
         onChange?()
     }
 
     /// A newer reveal supersedes one still in flight. Adding another appearance's context to revealed
-    /// content keeps that content on screen meanwhile.
-    func reveal(_ selection: InventoryRevealSelection) async {
+    /// content keeps that content on screen meanwhile. The value shows once a request asks for it.
+    func reveal(_ selection: InventoryRevealSelection, showingValue: Bool = false) async {
         guard !unlocking else { return }
         let extending = state == .revealed
         let ticket: InventoryRevealGuard.Ticket
         do { ticket = try guardState.begin(selection) } catch { return }
         currentRequest = ticket
-        defer { if currentRequest == ticket { currentRequest = nil } }
+        valueRequested = valueRequested || showingValue
+        defer {
+            if currentRequest == ticket {
+                currentRequest = nil
+                valueRequested = false
+            }
+        }
         if !extending {
             state = .authenticating
             onChange?()
@@ -131,6 +164,7 @@ final class ViewingController {
             guard guardState.accepts(ticket), session.isAuthorized else { throw ViewingAuthorizationError.invalidated }
             content = next
             state = .revealed
+            if valueRequested { valueShown = true }
             onChange?()
         } catch {
             // A stale request cannot clear a newer selection or overwrite its state,

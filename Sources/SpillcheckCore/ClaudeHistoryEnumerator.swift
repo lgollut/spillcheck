@@ -4,7 +4,11 @@ import Foundation
 struct ClaudeDirectoryPosition: Codable, Sendable {
     let path: String
     let depth: Int
+    /// Kept so cursors queued by earlier builds still decode. A `telldir` value is only valid for
+    /// the stream that returned it, so a reopened directory can't resume from it.
     var cookie: Int = 0
+    /// Entries `readdir` already returned. A reopened directory resumes by skipping them.
+    var entriesRead: Int? = nil
     var signature: ClaudeFileSignature?
 }
 
@@ -123,7 +127,10 @@ extension ClaudeAdapter: SourceHistoricalCaptureProducer {
                     request.directories += page.directories
                     gaps += page.gaps.map { $0.contextualized(scope: scope, operation: .historicalRead, observedAt: observedAt) }
                     if !page.gaps.isEmpty { request.partial = true }
-                    if let cookie = page.cookie { directory.cookie = cookie; directory.signature = page.signature; request.directories.append(directory) }
+                    if let entriesRead = page.entriesRead {
+                        directory.entriesRead = entriesRead; directory.cookie = 0; directory.signature = page.signature
+                        request.directories.append(directory)
+                    }
                 } catch {
                     gaps.append(gap(.sourceUnavailable)); request.partial = true
                 }
@@ -192,15 +199,19 @@ extension ClaudeAdapter: SourceHistoricalCaptureProducer {
 
 private struct ClaudeDiscoveryPage {
     let files: [String], directories: [ClaudeDirectoryPosition], gaps: [CoverageGap]
-    let cookie: Int?, signature: ClaudeFileSignature, inspected: Int
+    let entriesRead: Int?, signature: ClaudeFileSignature, inspected: Int
 }
 
-/// Enumeration is metadata-only, bounded and resumable. Directory cookies are not a guarantee
-/// across mutations; a changed directory explicitly marks partial coverage and the next audit
-/// starts a new traversal. No file mtime is used to exclude source content.
+/// Enumeration is metadata-only, bounded and resumable. A reopened directory skips the entries
+/// earlier pages read, which holds only while it is unchanged; a changed directory explicitly
+/// marks partial coverage and the next audit starts a new traversal. Skipped entries are only
+/// read, never inspected, so they don't count against the page budget; a directory of n entries
+/// costs about n²/256 reads to drain, which stays small for transcript folders. No file mtime is
+/// used to exclude source content.
 private func claudeDiscoverPage(_ position: ClaudeDirectoryPosition, allowedRoots: [URL],
                                 maximumEntries: Int) throws -> ClaudeDiscoveryPage {
-    guard position.depth >= 0, position.depth <= 4, position.cookie >= 0,
+    let skip = position.entriesRead ?? 0
+    guard position.depth >= 0, position.depth <= 4, position.cookie >= 0, skip >= 0,
           !position.path.split(separator: "/").contains(where: { $0 == "." || $0 == ".." }),
           allowedRoots.contains(where: { position.path == $0.path || position.path.hasPrefix($0.path + "/") }) else {
         throw ClaudeCollectionError.unsafeTranscriptPath
@@ -213,12 +224,19 @@ private func claudeDiscoverPage(_ position: ClaudeDirectoryPosition, allowedRoot
     let signature = ClaudeFileSignature(info)
     var gaps: [CoverageGap] = []
     if let old = position.signature, old != signature { gaps.append(.init(reason: .sourceChanged)) }
-    if position.cookie != 0 { seekdir(stream, position.cookie) }
+    for _ in 0..<skip {
+        try Task.checkCancellation()
+        guard readdir(stream) != nil else {
+            // Fewer entries than earlier pages read means the directory changed, whatever its signature says.
+            if !gaps.contains(where: { $0.reason == .sourceChanged }) { gaps.append(.init(reason: .sourceChanged)) }
+            return .init(files: [], directories: [], gaps: gaps, entriesRead: nil, signature: signature, inspected: 0)
+        }
+    }
     var files: [String] = [], directories: [ClaudeDirectoryPosition] = [], inspected = 0
     while inspected < maximumEntries {
         try Task.checkCancellation()
         guard let entry = readdir(stream) else {
-            return .init(files: files, directories: directories, gaps: gaps, cookie: nil, signature: signature, inspected: inspected)
+            return .init(files: files, directories: directories, gaps: gaps, entriesRead: nil, signature: signature, inspected: inspected)
         }
         inspected += 1
         let name = withUnsafePointer(to: &entry.pointee.d_name) {
@@ -237,7 +255,7 @@ private func claudeDiscoverPage(_ position: ClaudeDirectoryPosition, allowedRoot
         } else if (item.st_mode & S_IFMT) == S_IFLNK { gaps.append(.init(reason: .sourceUnavailable)) }
     }
     return .init(files: files, directories: directories, gaps: gaps,
-        cookie: telldir(stream), signature: signature, inspected: inspected)
+        entriesRead: skip + inspected, signature: signature, inspected: inspected)
 }
 
 func claudeOpenDirectory(_ path: String) throws -> Int32 {

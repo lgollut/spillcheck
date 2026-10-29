@@ -685,6 +685,52 @@ struct ClaudeHistoryTests {
         #expect(refused.coverageGaps.contains { $0.reason == .sourceUnavailable })
     }
 
+    @Test func directoryLargerThanOneDiscoveryPageResumesAfterItsReadEntries() async throws {
+        let directory = try historyDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let folder = directory.appendingPathComponent("subagents")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        for index in 0..<300 {
+            try historyRow("paged-\(index)", text: "PAGED").write(to: folder.appendingPathComponent("agent-\(index).jsonl"))
+        }
+        let cache = ClaudeTestCheckpoints(), crypto = try BackgroundCryptography.ephemeralForTesting()
+        let adapter = try ClaudeAdapter(profileID: "test", agentVersion: "2.1.293", allowedTranscriptRoots: [directory],
+            checkpointLookup: { await cache.get($0) })
+        var packet: CapturePacket? = try await adapter.initialHistoricalCapture(audit: historyAudit())
+        var final: CollectionBatch?, seen = Set<SourceIdentity>(), passes = 0
+        while let current = packet, passes < 12 {
+            let batch = try await adapter.normalize(current, capturedAt: Date(), cryptography: crypto)
+            await cache.commit(batch); seen.formUnion(batch.sources.map(\.record.metadata.identity))
+            final = batch; packet = batch.continuation; passes += 1
+        }
+        // Reopening a directory must not restart it: every page reaches new entries until it is drained.
+        #expect(packet == nil && seen.count == 300 && passes <= 3)
+        #expect(final?.historicalProgress?.hasUnreadContent == false)
+    }
+
+    @Test func earlierBuildCursorRestartsItsFolderAndAShorterFolderIsReported() async throws {
+        let directory = try historyDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        for index in 0..<3 { try historyRow("cursor-\(index)", text: "CURSOR").write(to: directory.appendingPathComponent("s\(index).jsonl")) }
+        let crypto = try BackgroundCryptography.ephemeralForTesting()
+        let adapter = try ClaudeAdapter(profileID: "test", agentVersion: "2.1.293", allowedTranscriptRoots: [directory])
+        let initial = try await adapter.initialHistoricalCapture(audit: historyAudit())
+        // Earlier builds saved a telldir() cookie and no entry count.
+        var legacy = try #require(JSONSerialization.jsonObject(with: initial.eventJSON) as? [String: Any])
+        var folders = try #require(legacy["directories"] as? [[String: Any]])
+        folders[0]["cookie"] = 123_456; folders[0].removeValue(forKey: "entriesRead")
+        legacy["directories"] = folders
+        let decoded = try JSONDecoder().decode(ClaudeHistoryRequest.self, from: JSONSerialization.data(withJSONObject: legacy))
+        let restarted = try await adapter.normalize(adapter.historyPacket(decoded, interface: .standaloneCLI),
+            capturedAt: Date(), cryptography: crypto)
+        #expect(restarted.sources.count == 3 && restarted.continuation == nil)
+        // A saved position past the folder's end means entries disappeared, even with an unchanged signature.
+        var short = try JSONDecoder().decode(ClaudeHistoryRequest.self, from: initial.eventJSON)
+        short.directories[0].entriesRead = 50
+        let reported = try await adapter.normalize(adapter.historyPacket(short, interface: .standaloneCLI),
+            capturedAt: Date(), cryptography: crypto)
+        #expect(reported.sources.isEmpty && reported.coverageGaps.contains { $0.reason == .sourceChanged })
+        #expect(reported.historicalProgress?.hasUnreadContent == true)
+    }
+
     @Test func relocationExplicitRootReplaysIdentityAndDeletedSourceIsUnavailable() async throws {
         let first = try historyDirectory(), second = try historyDirectory()
         defer { try? FileManager.default.removeItem(at: first); try? FileManager.default.removeItem(at: second) }

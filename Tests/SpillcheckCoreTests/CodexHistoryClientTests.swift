@@ -68,6 +68,14 @@ struct CodexHistoryClientTests {
             await client.close()
         }
     }
+    @Test func threadDiscoveryListsThreadsRecordedByAppServerClients() async throws {
+        // T3 Code, the Codex terminal UI and Codex Desktop record their threads with source "vscode".
+        let (client, directory) = try fixture("source-filter")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let page = try await client.listThreads(cursor: nil)
+        #expect(page.data.map { $0["source"].string } == ["vscode"])
+        await client.close()
+    }
     @Test func actualReaderVersionIsObservedAndOperationsAreAssessedSeparately() async throws {
         let (client, directory) = try fixture("new-version", configuredVersion: "0.1.0")
         defer { try? FileManager.default.removeItem(at: directory) }

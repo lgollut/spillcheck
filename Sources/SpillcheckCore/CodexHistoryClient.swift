@@ -206,12 +206,14 @@ public actor CodexAppServerHistoryClient: CodexHistoryReading {
     public func listThreads(cursor: String?, limit: Int = 64, archived: Bool = false) async throws -> CodexHistoryPage {
         try await listThreads(cursor: cursor, limit: limit, archived: archived, budget: configuredBudget())
     }
+    /// App-server clients such as T3 Code, the Codex terminal UI and Codex Desktop record their
+    /// threads with source "vscode"; without it, discovery misses every thread they started.
     public func listThreads(cursor: String?, limit: Int, archived: Bool, budget: CodexRPCBudget) async throws -> CodexHistoryPage {
         try validatePage(cursor: cursor, limit: limit)
         return try page("thread/list", .object([
             "cursor": cursor.map(CodexJSON.string) ?? .null, "limit": .number(Double(limit)),
             "archived": .bool(archived), "sortKey": .string("updated_at"), "sortDirection": .string("desc"),
-            "useStateDbOnly": .bool(true), "sourceKinds": .array(["cli", "exec", "appServer", "subAgent",
+            "useStateDbOnly": .bool(true), "sourceKinds": .array(["cli", "vscode", "exec", "appServer", "subAgent",
                 "subAgentReview", "subAgentCompact", "subAgentThreadSpawn", "subAgentOther"].map(CodexJSON.string))]), budget: budget)
     }
     public func listTurns(threadID: String, cursor: String?, limit: Int = 64,

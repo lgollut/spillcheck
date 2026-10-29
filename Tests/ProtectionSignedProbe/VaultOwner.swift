@@ -107,7 +107,7 @@ private struct VaultOwner {
               let reportPath = argument("--report"), let leaseText = argument("--lease-seconds"),
               let lease = Double(leaseText), lease >= 60, lease <= 7200,
               let group = Bundle.main.object(forInfoDictionaryKey: "SpillcheckKeychainAccessGroup") as? String,
-              group == "KBLA5ALX62.com.leakret.app", Bundle.main.bundleIdentifier == "com.leakret.app",
+              group == "KBLA5ALX62.com.spillcheck.app", Bundle.main.bundleIdentifier == "com.spillcheck.app",
               let target = Bundle.main.object(forInfoDictionaryKey: "SpillcheckVaultOwnerTargetApp") as? String,
               let targetHash = Bundle.main.object(forInfoDictionaryKey: "SpillcheckVaultOwnerTargetSHA256") as? String,
               let targetCodeHash = Bundle.main.object(forInfoDictionaryKey: "SpillcheckVaultOwnerTargetCDHash") as? String else { exit(64) }

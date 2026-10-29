@@ -136,6 +136,27 @@ struct ClaudeMonitorTests {
         #expect(batch.sources.first?.context?.transcriptPath == claudeConfiguredURL(child).path)
     }
 
+    @Test func workflowAgentChildIsPolledAndRead() async throws {
+        let directory = try claudeSetupDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let parent = directory.appendingPathComponent("parent.jsonl")
+        // Workflow agents write to <session>/subagents/workflows/<run>/, not <session>/subagents/.
+        let run = directory.appendingPathComponent("parent/subagents/workflows/wf_run")
+        try FileManager.default.createDirectory(at: run, withIntermediateDirectories: true)
+        let content = try JSONSerialization.data(withJSONObject: ["type": "user", "uuid": "workflow-prompt",
+            "sessionId": "parent", "version": "2.1.293", "timestamp": "2026-10-07T20:00:00Z",
+            "message": ["role": "user", "content": "FAKE_WORKFLOW_PROMPT"]]) + Data([10])
+        try content.write(to: run.appendingPathComponent("agent-worker.jsonl"))
+        let sink = ClaudeMonitorSink()
+        let monitor = try ClaudeActiveTranscriptMonitor(profileID: "test", sources: [.init(sessionID: "parent", transcriptURL: parent)],
+            enqueue: { packet, _ in try await sink.accept(packet) }, onGap: { await sink.recordGap($0) })
+        #expect(try await monitor.pollOnce() == 1)
+        let adapter = try ClaudeAdapter(profileID: "test", agentVersion: "2.1.293", allowedTranscriptRoots: [directory])
+        let packet = try #require(await sink.recorded().first)
+        let batch = try await adapter.normalize(packet, capturedAt: Date(), cryptography: .ephemeralForTesting())
+        #expect(batch.coverageGaps.isEmpty)
+        #expect(batch.sources.map(\.record.metadata.identity.itemID) == ["prompt:workflow-prompt:block:0"])
+    }
+
     @Test(arguments: ["parent", "distinct-child"])
     func selectedChildPollingUsesPersistedNativeIdentity(childSession: String) async throws {
         let directory = try claudeSetupDirectory(); defer { try? FileManager.default.removeItem(at: directory) }

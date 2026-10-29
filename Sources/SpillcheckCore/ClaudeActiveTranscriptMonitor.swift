@@ -128,38 +128,44 @@ public actor ClaudeActiveTranscriptMonitor {
     private func selectedSources() -> (sources: [SelectedSource], exhaustedSources: [ClaudeActiveSource]) {
         var result = sources.map { SelectedSource(source: $0, parent: nil) }, exhaustedSources: [ClaudeActiveSource] = []
         // Claude 2.1.293 native Agent sidechains are in the selected conversation's own
-        // <session>/subagents directory. This is bounded conversation-local discovery, not
-        // enumeration of the profile's histories or T3's unrelated provider sessions.
+        // <session>/subagents directory, and workflow agents in its subagents/workflows/<run>
+        // directories. This is bounded conversation-local discovery, not enumeration of the
+        // profile's histories or T3's unrelated provider sessions.
         for parent in sources {
             let project = claudeConfiguredURL(parent.transcriptURL.deletingLastPathComponent())
-            let directory = project.appendingPathComponent(parent.transcriptURL.deletingPathExtension().lastPathComponent).appendingPathComponent("subagents")
-            var fd = open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC)
-            if fd >= 0 {
-                for part in directory.path.split(separator:"/") {
-                    let next=String(part).withCString { openat(fd,$0,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC) }
-                    close(fd); fd=next
-                    if fd < 0 { break }
+            let subagents = project.appendingPathComponent(parent.transcriptURL.deletingPathExtension().lastPathComponent).appendingPathComponent("subagents")
+            var children = 0, exhausted = false, runs: [URL] = []
+            // Collects agent transcripts, or with `listingRuns` only the workflow run folders.
+            func scan(_ directory: URL, listingRuns: Bool = false) {
+                guard !exhausted, let fd = try? claudeOpenDirectory(directory.path) else { return }
+                guard let stream = fdopendir(fd) else { close(fd); return }
+                defer { closedir(stream) }
+                var inspected = 0
+                while let entry = readdir(stream) {
+                    inspected += 1
+                    if inspected > 128 || children >= 32 { exhausted = true; return }
+                    let name = withUnsafePointer(to: &entry.pointee.d_name) {
+                        $0.withMemoryRebound(to: CChar.self, capacity: Int(entry.pointee.d_namlen) + 1) { String(cString: $0) }
+                    }
+                    if listingRuns {
+                        guard ClaudeToolHookSelection.isSafeIdentifier(name) else { continue }
+                    } else {
+                        guard name.hasPrefix("agent-"), name.hasSuffix(".jsonl"), !name.contains("/") else { continue }
+                    }
+                    var info = stat()
+                    guard fstatat(fd, name, &info, AT_SYMLINK_NOFOLLOW) == 0, info.st_uid == getuid(),
+                          (info.st_mode & S_IFMT) == (listingRuns ? S_IFDIR : S_IFREG) else { continue }
+                    if listingRuns { runs.append(directory.appendingPathComponent(name)); continue }
+                    if let child = try? ClaudeActiveSource(sessionID: parent.sessionID,
+                        transcriptURL: directory.appendingPathComponent(name), interface: parent.interface) {
+                        result.append(.init(source: child, parent: parent)); children += 1
+                    }
                 }
             }
-            guard fd >= 0 else { continue }
-            guard let stream = fdopendir(fd) else { close(fd); continue }
-            defer { closedir(stream) }
-            var inspected = 0, children = 0
-            while let entry = readdir(stream) {
-                inspected += 1
-                if inspected > 128 || children >= 32 { exhaustedSources.append(parent); break }
-                let name = withUnsafePointer(to: &entry.pointee.d_name) {
-                    $0.withMemoryRebound(to: CChar.self, capacity: Int(entry.pointee.d_namlen) + 1) { String(cString: $0) }
-                }
-                guard name.hasPrefix("agent-"), name.hasSuffix(".jsonl"), !name.contains("/") else { continue }
-                var info = stat()
-                guard fstatat(fd, name, &info, AT_SYMLINK_NOFOLLOW) == 0,
-                      (info.st_mode & S_IFMT) == S_IFREG, info.st_uid == getuid() else { continue }
-                if let child = try? ClaudeActiveSource(sessionID: parent.sessionID,
-                    transcriptURL: directory.appendingPathComponent(name), interface: parent.interface) {
-                    result.append(.init(source: child, parent: parent)); children += 1
-                }
-            }
+            scan(subagents)
+            scan(subagents.appendingPathComponent("workflows"), listingRuns: true)
+            for run in runs { scan(run) }
+            if exhausted { exhaustedSources.append(parent) }
         }
         return (result, exhaustedSources)
     }

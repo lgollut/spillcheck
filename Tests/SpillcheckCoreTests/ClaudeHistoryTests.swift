@@ -707,6 +707,26 @@ struct ClaudeHistoryTests {
         #expect(final?.historicalProgress?.hasUnreadContent == false)
     }
 
+    @Test func workflowAgentTranscriptsBelowTheSessionFolderAreRead() async throws {
+        let directory = try historyDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        // Claude Code writes workflow agents to <project>/<session>/subagents/workflows/<run>/.
+        let run = directory.appendingPathComponent("project/old-session/subagents/workflows/wf_run")
+        try FileManager.default.createDirectory(at: run, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try historyRow("workflow-agent", text: "WORKFLOW").write(to: run.appendingPathComponent("agent-worker.jsonl"))
+        let cache = ClaudeTestCheckpoints(), crypto = try BackgroundCryptography.ephemeralForTesting()
+        let adapter = try ClaudeAdapter(profileID: "test", agentVersion: "2.1.293", allowedTranscriptRoots: [directory],
+            checkpointLookup: { await cache.get($0) })
+        var packet: CapturePacket? = try await adapter.initialHistoricalCapture(audit: historyAudit())
+        var final: CollectionBatch?, items = Set<String>(), passes = 0
+        while let current = packet, passes < 6 {
+            let batch = try await adapter.normalize(current, capturedAt: Date(), cryptography: crypto)
+            await cache.commit(batch); items.formUnion(batch.sources.map(\.record.metadata.identity.itemID))
+            final = batch; packet = batch.continuation; passes += 1
+        }
+        #expect(packet == nil && items == ["prompt:workflow-agent:block:0"])
+        #expect(final?.historicalProgress?.hasUnreadContent == false)
+    }
+
     @Test func relocationExplicitRootReplaysIdentityAndDeletedSourceIsUnavailable() async throws {
         let first = try historyDirectory(), second = try historyDirectory()
         defer { try? FileManager.default.removeItem(at: first); try? FileManager.default.removeItem(at: second) }

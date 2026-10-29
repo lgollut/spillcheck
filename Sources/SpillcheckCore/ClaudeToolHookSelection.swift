@@ -7,20 +7,27 @@ enum ClaudeToolHookSelection {
 
     static func childPath(parentPath: String, agentID: String, declaredChildPath: String? = nil) throws -> String {
         guard parentPath.hasPrefix("/"), parentPath.utf8.count <= 4096,
-              !parentPath.utf8.contains(0),
-              (1...128).contains(agentID.utf8.count),
-              agentID.utf8.allSatisfy({ (48...57).contains($0) || (65...90).contains($0)
-                  || (97...122).contains($0) || $0 == 45 || $0 == 95 }) else {
+              !parentPath.utf8.contains(0), isSafeIdentifier(agentID) else {
             throw ClaudeCollectionError.unsafeTranscriptPath
         }
         let parent = URL(fileURLWithPath: parentPath)
         guard parent.pathExtension == "jsonl" else { throw ClaudeCollectionError.unsafeTranscriptPath }
-        let child = parent.deletingPathExtension().appendingPathComponent("subagents")
-            .appendingPathComponent("agent-\(agentID).jsonl").path
-        guard declaredChildPath == nil || declaredChildPath == child else {
+        let subagents = parent.deletingPathExtension().appendingPathComponent("subagents")
+        let child = subagents.appendingPathComponent("agent-\(agentID).jsonl").path
+        guard let declaredChildPath, declaredChildPath != child else { return child }
+        // Workflow agents write one run folder lower: subagents/workflows/<run>/agent-<id>.jsonl.
+        let declared = URL(fileURLWithPath: declaredChildPath), run = declared.deletingLastPathComponent()
+        guard declared.lastPathComponent == "agent-\(agentID).jsonl",
+              run.deletingLastPathComponent().path == subagents.appendingPathComponent("workflows").path,
+              isSafeIdentifier(run.lastPathComponent) else {
             throw ClaudeCollectionError.unsafeTranscriptPath
         }
-        return child
+        return declaredChildPath
+    }
+
+    static func isSafeIdentifier(_ value: String) -> Bool {
+        (1...128).contains(value.utf8.count) && value.utf8.allSatisfy({ (48...57).contains($0) || (65...90).contains($0)
+            || (97...122).contains($0) || $0 == 45 || $0 == 95 })
     }
 
     static func selectedPollChildPath(parentPath: String, declaredChildPath: String) throws -> String {

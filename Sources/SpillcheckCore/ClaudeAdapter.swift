@@ -171,8 +171,10 @@ public struct ClaudeAdapter: CaptureNormalizer, Sendable {
                 // parent association without requiring the parent's file to remain readable.
                 guard let parentURL = try? transcriptURL(path: mainPath),
                       let childURL = try? transcriptURL(path: child),
-                      childURL.deletingLastPathComponent().path == parentURL.deletingPathExtension().appendingPathComponent("subagents").path,
-                      childURL.lastPathComponent.hasPrefix("agent-") else {
+                      childURL.lastPathComponent.hasPrefix("agent-"),
+                      childURL.deletingLastPathComponent().path == parentURL.deletingPathExtension().appendingPathComponent("subagents").path
+                        || (try? ClaudeToolHookSelection.selectedPollChildPath(parentPath: parentURL.path,
+                            declaredChildPath: childURL.path)) != nil else {
                     return CollectionBatch(sources: [], coverageGaps: [gap(.unresolvedCorrelation)])
                 }
                 paths = [child]

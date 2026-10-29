@@ -61,8 +61,14 @@ struct ClaudeCaptureRouteTests {
         let child = URL(fileURLWithPath: "/fake/parent/subagents/agent-worker.jsonl")
         let selected = try route.context(for: claudeRoutePacket(event, extra: ["agent_transcript_path": child.path]), trigger: .activePoll)
         #expect(selected.retry?.sourceURL == child && selected.retry?.session == nil)
+        let workflowChild = URL(fileURLWithPath: "/fake/parent/subagents/workflows/wf_run/agent-worker.jsonl")
+        let workflow = try route.context(for: claudeRoutePacket(event, extra: ["agent_transcript_path": workflowChild.path]), trigger: .activePoll)
+        #expect(workflow.retry?.sourceURL == workflowChild && workflow.retry?.session == nil)
         let invalidHints: [Any] = ["/fake/other/subagents/agent-worker.jsonl", "/fake/parent/subagents/other.jsonl",
-            "/fake/parent/subagents/nested/agent-worker.jsonl", "/fake/parent.jsonl", "relative.jsonl", "", NSNull()]
+            "/fake/parent/subagents/nested/agent-worker.jsonl", "/fake/parent/subagents/workflows/agent-worker.jsonl",
+            "/fake/parent/subagents/workflows/wf_run/deeper/agent-worker.jsonl",
+            "/fake/parent/subagents/workflows/../agent-worker.jsonl", "/fake/other/subagents/workflows/wf_run/agent-worker.jsonl",
+            "/fake/parent.jsonl", "relative.jsonl", "", NSNull()]
         for invalid in invalidHints {
             #expect(try route.context(for: claudeRoutePacket(event, extra: ["agent_transcript_path": invalid]), trigger: .activePoll).retry == nil)
         }

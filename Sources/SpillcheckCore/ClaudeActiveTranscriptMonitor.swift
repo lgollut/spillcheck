@@ -134,19 +134,24 @@ public actor ClaudeActiveTranscriptMonitor {
         for parent in sources {
             let project = claudeConfiguredURL(parent.transcriptURL.deletingLastPathComponent())
             let subagents = project.appendingPathComponent(parent.transcriptURL.deletingPathExtension().lastPathComponent).appendingPathComponent("subagents")
-            var children = 0, exhausted = false, runs: [URL] = []
+            // Every child is listed before any is polled, so the 32 most recently written ones are
+            // polled whichever folder holds them and a finished run can't crowd out a live one.
+            // The rest are reported as exhausted; their modification time only orders polling.
+            var candidates: [(url: URL, modified: timespec)] = [], runs: [URL] = []
+            var inspected = 0, exhausted = false
             // Collects agent transcripts, or with `listingRuns` only the workflow run folders.
             func scan(_ directory: URL, listingRuns: Bool = false) {
                 guard !exhausted, let fd = try? claudeOpenDirectory(directory.path) else { return }
                 guard let stream = fdopendir(fd) else { close(fd); return }
                 defer { closedir(stream) }
-                var inspected = 0
+                var listed = 0
                 while let entry = readdir(stream) {
-                    inspected += 1
-                    if inspected > 128 || children >= 32 { exhausted = true; return }
                     let name = withUnsafePointer(to: &entry.pointee.d_name) {
                         $0.withMemoryRebound(to: CChar.self, capacity: Int(entry.pointee.d_namlen) + 1) { String(cString: $0) }
                     }
+                    guard name != ".", name != ".." else { continue }
+                    listed += 1; inspected += 1
+                    if listed > 128 || inspected > 512 { exhausted = true; return }
                     if listingRuns {
                         guard ClaudeToolHookSelection.isSafeIdentifier(name) else { continue }
                     } else {
@@ -155,16 +160,20 @@ public actor ClaudeActiveTranscriptMonitor {
                     var info = stat()
                     guard fstatat(fd, name, &info, AT_SYMLINK_NOFOLLOW) == 0, info.st_uid == getuid(),
                           (info.st_mode & S_IFMT) == (listingRuns ? S_IFDIR : S_IFREG) else { continue }
-                    if listingRuns { runs.append(directory.appendingPathComponent(name)); continue }
-                    if let child = try? ClaudeActiveSource(sessionID: parent.sessionID,
-                        transcriptURL: directory.appendingPathComponent(name), interface: parent.interface) {
-                        result.append(.init(source: child, parent: parent)); children += 1
-                    }
+                    if listingRuns { runs.append(directory.appendingPathComponent(name)) }
+                    else { candidates.append((directory.appendingPathComponent(name), info.st_mtimespec)) }
                 }
             }
             scan(subagents)
             scan(subagents.appendingPathComponent("workflows"), listingRuns: true)
             for run in runs { scan(run) }
+            candidates.sort { ($0.modified.tv_sec, $0.modified.tv_nsec) > ($1.modified.tv_sec, $1.modified.tv_nsec) }
+            if candidates.count > 32 { exhausted = true }
+            for candidate in candidates.prefix(32) {
+                if let child = try? ClaudeActiveSource(sessionID: parent.sessionID, transcriptURL: candidate.url, interface: parent.interface) {
+                    result.append(.init(source: child, parent: parent))
+                }
+            }
             if exhausted { exhaustedSources.append(parent) }
         }
         return (result, exhaustedSources)

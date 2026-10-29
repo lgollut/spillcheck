@@ -68,6 +68,8 @@ struct ClaudeCaptureRouteTests {
             "/fake/parent/subagents/nested/agent-worker.jsonl", "/fake/parent/subagents/workflows/agent-worker.jsonl",
             "/fake/parent/subagents/workflows/wf_run/deeper/agent-worker.jsonl",
             "/fake/parent/subagents/workflows/../agent-worker.jsonl", "/fake/other/subagents/workflows/wf_run/agent-worker.jsonl",
+            "/fake/parent/subagents/workflows//wf_run/agent-worker.jsonl", "/fake/parent/subagents/workflows/wf_run//agent-worker.jsonl",
+            "/fake/parent/subagents/workflows/wf_run/agent-worker.jsonl/",
             "/fake/parent.jsonl", "relative.jsonl", "", NSNull()]
         for invalid in invalidHints {
             #expect(try route.context(for: claudeRoutePacket(event, extra: ["agent_transcript_path": invalid]), trigger: .activePoll).retry == nil)

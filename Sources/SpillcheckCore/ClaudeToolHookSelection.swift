@@ -15,14 +15,15 @@ enum ClaudeToolHookSelection {
         let subagents = parent.deletingPathExtension().appendingPathComponent("subagents")
         let child = subagents.appendingPathComponent("agent-\(agentID).jsonl").path
         guard let declaredChildPath, declaredChildPath != child else { return child }
-        // Workflow agents write one run folder lower: subagents/workflows/<run>/agent-<id>.jsonl.
-        let declared = URL(fileURLWithPath: declaredChildPath), run = declared.deletingLastPathComponent()
-        guard declared.lastPathComponent == "agent-\(agentID).jsonl",
-              run.deletingLastPathComponent().path == subagents.appendingPathComponent("workflows").path,
-              isSafeIdentifier(run.lastPathComponent) else {
+        // Workflow agents write two folders lower: subagents/workflows/<run>/agent-<id>.jsonl. Only
+        // that exact spelling is accepted, so each child keeps a single checkpoint identity.
+        let run = URL(fileURLWithPath: declaredChildPath).deletingLastPathComponent().lastPathComponent
+        let workflowChild = subagents.appendingPathComponent("workflows").appendingPathComponent(run)
+            .appendingPathComponent("agent-\(agentID).jsonl").path
+        guard isSafeIdentifier(run), declaredChildPath == workflowChild else {
             throw ClaudeCollectionError.unsafeTranscriptPath
         }
-        return declaredChildPath
+        return workflowChild
     }
 
     static func isSafeIdentifier(_ value: String) -> Bool {

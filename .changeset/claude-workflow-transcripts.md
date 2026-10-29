@@ -2,4 +2,4 @@
 "spillcheck": patch
 ---
 
-Spillcheck now checks the transcripts of agents that Claude Code runs inside workflows. They're stored one folder deeper than other subagents, so catch-up and live reads both skipped them; on a busy Mac that was most of the recent Claude history.
+Spillcheck now checks the transcripts of agents that Claude Code runs inside workflows. They're stored two folders deeper than other subagents, in `subagents/workflows/<run>/`, so catch-up and live reads both skipped them. When a session has more than 32 subagents, live reads now follow the most recently active ones.

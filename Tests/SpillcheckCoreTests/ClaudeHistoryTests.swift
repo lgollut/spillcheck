@@ -727,6 +727,30 @@ struct ClaudeHistoryTests {
         #expect(final?.historicalProgress?.hasUnreadContent == false)
     }
 
+    @Test func earlierBuildCursorRestartsItsFolderAndAShorterFolderIsReported() async throws {
+        let directory = try historyDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        for index in 0..<3 { try historyRow("cursor-\(index)", text: "CURSOR").write(to: directory.appendingPathComponent("s\(index).jsonl")) }
+        let crypto = try BackgroundCryptography.ephemeralForTesting()
+        let adapter = try ClaudeAdapter(profileID: "test", agentVersion: "2.1.293", allowedTranscriptRoots: [directory])
+        let initial = try await adapter.initialHistoricalCapture(audit: historyAudit())
+        // Earlier builds saved a telldir() cookie and no entry count.
+        var legacy = try #require(JSONSerialization.jsonObject(with: initial.eventJSON) as? [String: Any])
+        var folders = try #require(legacy["directories"] as? [[String: Any]])
+        folders[0]["cookie"] = 123_456; folders[0].removeValue(forKey: "entriesRead")
+        legacy["directories"] = folders
+        let decoded = try JSONDecoder().decode(ClaudeHistoryRequest.self, from: JSONSerialization.data(withJSONObject: legacy))
+        let restarted = try await adapter.normalize(adapter.historyPacket(decoded, interface: .standaloneCLI),
+            capturedAt: Date(), cryptography: crypto)
+        #expect(restarted.sources.count == 3 && restarted.continuation == nil)
+        // A saved position past the folder's end means entries disappeared, even with an unchanged signature.
+        var short = try JSONDecoder().decode(ClaudeHistoryRequest.self, from: initial.eventJSON)
+        short.directories[0].entriesRead = 50
+        let reported = try await adapter.normalize(adapter.historyPacket(short, interface: .standaloneCLI),
+            capturedAt: Date(), cryptography: crypto)
+        #expect(reported.sources.isEmpty && reported.coverageGaps.contains { $0.reason == .sourceChanged })
+        #expect(reported.historicalProgress?.hasUnreadContent == true)
+    }
+
     @Test func relocationExplicitRootReplaysIdentityAndDeletedSourceIsUnavailable() async throws {
         let first = try historyDirectory(), second = try historyDirectory()
         defer { try? FileManager.default.removeItem(at: first); try? FileManager.default.removeItem(at: second) }

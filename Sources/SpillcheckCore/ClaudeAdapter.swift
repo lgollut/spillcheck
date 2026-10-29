@@ -46,7 +46,7 @@ public struct ClaudeAdapter: CaptureNormalizer, Sendable {
     public static let validatedAgentVersion = "2.1.293"
     public static let adapterVersion = "2"
     /// Cursor interpretation changes independently of native identities and canonical content.
-    public static let parserContractVersion = "claude-transcript-11"
+    public static let parserContractVersion = "claude-transcript-12"
     /// Location of a whole-source availability warning, not an upstream item. A readable source
     /// settles only that warning, never another whole-source gap on the same file.
     static let sourceAvailabilityItemID = "claude-source-availability"
@@ -58,7 +58,31 @@ public struct ClaudeAdapter: CaptureNormalizer, Sendable {
         "date", "deferred_tools_delta", "deferred_tools_record", "environment", "instructions",
         "mcp_instructions_delta", "model", "nested_memory", "prompt_snapshot", "read_truncation_notice",
         "remote_session_change", "session_context", "silent_turn_reminder", "skill_listing",
-        "thinking_drop", "total_tokens_reminder",
+        "thinking_drop", "total_tokens_reminder", "ultra_effort_enter", "ultra_effort_exit",
+    ]
+    /// Records Claude Code 2.1.306+ writes beside messages, recognized only with their observed
+    /// fields (required, then optional). None adds content the transcript lacks: a request names
+    /// its blobs by hash, a request shape is the system prompt and tool definitions (harness
+    /// configuration, like the context attachments), and a workflow journal's result repeats the
+    /// agent's final response from its sibling transcript, either its structured_output attachment
+    /// or its last assistant text. Any other field remains a visible gap.
+    static let observedRecordShapes: [String: (required: Set<String>, optional: Set<String>)] = [
+        "api-request": (["type", "sessionId", "id", "timestamp", "version", "querySource", "shapeHash", "params",
+                         "keep", "tail", "cacheControl", "requestDigest"], ["agentId", "base"]),
+        "api-request-shape": (["type", "sessionId", "shapeHash", "timestamp", "version", "shape"], ["agentId"]),
+        "pr-link": (["type", "sessionId", "timestamp", "prNumber", "prRepository", "prUrl"], []),
+        "tools-used": (["type", "sessionId", "tools"], []),
+        "isolation-latch": (["type", "sessionId", "side"], []),
+        "launched": (["type"], []),
+        "started": (["type", "agentId", "key", "label", "phase"], []),
+        "result": (["type", "agentId", "key", "result"], ["toolsUsed"]),
+        "failed": (["type", "agentId", "key"], []),
+    ]
+    /// A request blob repeats, by hash, one message a request sent. Its prompts, responses and tool
+    /// results are the transcript's own rows; its other text is injected context. Only the
+    /// observed roles and block kinds are recognized.
+    static let requestBlobBlockKinds: Set<String> = [
+        "text", "tool_use", "tool_result", "thinking", "redacted_thinking", "image", "tool_addition", "tool_removal",
     ]
     public let profileID: String
     public let agentVersion: String
@@ -346,6 +370,20 @@ public struct ClaudeAdapter: CaptureNormalizer, Sendable {
             // outside this audit must not create a recent omission merely because it was read now.
             if case .historical(let audit) = provenance, let rowTime, !audit.includes(contentTime: rowTime) { continue }
             let producerVersion = row["version"].nonemptyString ?? CollectionCompatibility.unknownProducerVersion
+            func collect(itemID: String, contentType: ContentType, basis: CanonicalizationBasis,
+                         sessionID: String, date: Date, segments: [SourceSegment]) async throws {
+                let identity = try SourceIdentity(session: .init(provider: .claudeCode, profileID: profileID, sessionID: sessionID), itemID: itemID)
+                let origin = try SourceOrigin(adapterID: "claude-code", adapterVersion: Self.adapterVersion,
+                    agentVersion: producerVersion, interface: interface, provenance: provenance, canonicalization: basis)
+                let metadata = try SourceRecordMetadata(identity: identity, contentType: contentType,
+                    contentTime: date, observedAt: observedAt, locator: locator, origin: origin)
+                let revision = try await cryptography.revision(canonicalBytes: canonicalBytes(segments))
+                let record = try SourceRecord(metadata: metadata, revision: revision, segments: segments)
+                let sourceContext = RetainedSourceContext(sessionIdentifier: sessionID,
+                    title: context?.title, projectPath: context?.projectPath ?? row["cwd"].string,
+                    transcriptPath: context?.transcriptPath, openingCapability: context?.openingCapability ?? .unverified)
+                sources.append(CollectedSource(record: record, context: sourceContext))
+            }
             guard let type = row["type"].string else { addGap(.malformedSource); continue }
             sourceKind = type == "user" ? .claudeUserMessage : type == "assistant" ? .claudeAssistantMessage
                 : type == "attachment" ? .claudeAttachment : .claudeUnknownRecord
@@ -381,6 +419,33 @@ public struct ClaudeAdapter: CaptureNormalizer, Sendable {
                     fullyRecognized = true
                     continue
                 }
+                if Self.isObservedRecordShape(row, type: type) {
+                    fullyRecognized = true
+                    continue
+                }
+                // An agent's final answer under an output schema, including every workflow
+                // agent's result. It is that agent's final model response.
+                if type == "attachment", row["attachment"]["type"].string == "structured_output" {
+                    rowContentType = .finalResponse
+                    guard case .object(let fields) = row["attachment"],
+                          Set(fields.keys) == ["type", "toolUseID", "data"], case .object = row["attachment"]["data"] else {
+                        addGap(.unsupportedContent, required: true); continue
+                    }
+                    guard let sessionID = row["sessionId"].nonemptyString, row["uuid"].nonemptyString != nil,
+                          let toolUseID = row["attachment"]["toolUseID"].nonemptyString,
+                          canonicalSession == nil || canonicalSession == sessionID else {
+                        addGap(.unresolvedCorrelation, required: true); continue
+                    }
+                    guard let date = rowTime else { addGap(.missingTimestamp, required: true); continue }
+                    if case .historical(let audit) = provenance, !audit.includes(contentTime: date) { continue }
+                    fullyRecognized = true
+                    let segments = try textSegments(row["attachment"]["data"], pointer: "/attachment/data", contentBlocks: false)
+                    if !segments.isEmpty {
+                        try await collect(itemID: "structured-output:\(toolUseID)", contentType: .finalResponse,
+                            basis: .exclusiveAuthority, sessionID: sessionID, date: date, segments: segments)
+                    }
+                    continue
+                }
                 if type == "attachment" {
                     // Attachment payloads sit under "attachment", so the subtype decides.
                     if Self.contextAttachmentTypes.contains(row["attachment"]["type"].string ?? "")
@@ -394,6 +459,10 @@ public struct ClaudeAdapter: CaptureNormalizer, Sendable {
                 }
             }
             guard ["user", "assistant"].contains(type) || queuedPrompt != nil else {
+                if type == "api-request-blob", Self.isObservedRequestBlob(row) {
+                    fullyRecognized = true
+                    continue
+                }
                 if !["file-history-snapshot", "progress", "system", "queue-operation", "summary"].contains(type) {
                     addGap(.unsupportedContent)
                 }
@@ -467,17 +536,8 @@ public struct ClaudeAdapter: CaptureNormalizer, Sendable {
                 default: addGap(.unsupportedContent, required: true, diagnostic: .unknownBlockKind); continue
                 }
                 guard !segments.isEmpty else { continue }
-                let identity = try SourceIdentity(session: .init(provider: .claudeCode, profileID: profileID, sessionID: sessionID), itemID: itemID)
-                let origin = try SourceOrigin(adapterID: "claude-code", adapterVersion: Self.adapterVersion,
-                    agentVersion: producerVersion, interface: interface, provenance: provenance, canonicalization: basis)
-                let metadata = try SourceRecordMetadata(identity: identity, contentType: contentType,
-                    contentTime: date, observedAt: observedAt, locator: locator, origin: origin)
-                let revision = try await cryptography.revision(canonicalBytes: canonicalBytes(segments))
-                let record = try SourceRecord(metadata: metadata, revision: revision, segments: segments)
-                let sourceContext = RetainedSourceContext(sessionIdentifier: sessionID,
-                    title: context?.title, projectPath: context?.projectPath ?? row["cwd"].string,
-                    transcriptPath: context?.transcriptPath, openingCapability: context?.openingCapability ?? .unverified)
-                sources.append(CollectedSource(record: record, context: sourceContext))
+                try await collect(itemID: itemID, contentType: contentType, basis: basis,
+                    sessionID: sessionID, date: date, segments: segments)
             }
         }
         if data.count > limits.maximumBytes {
@@ -489,6 +549,27 @@ public struct ClaudeAdapter: CaptureNormalizer, Sendable {
             revision: revision, byteOffset: UInt64(offset), lastContentTime: sources.map(\.record.metadata.contentTime).max(), gaps: Array(Set(gaps)))
         return CollectionBatch(sources: sources, coverageGaps: Array(Set(gaps)), checkpoint: checkpoint,
             recoveredReferences: recoveredReferences)
+    }
+
+    private static func isObservedRecordShape(_ row: ClaudeJSON, type: String) -> Bool {
+        guard let shape = observedRecordShapes[type], case .object(let fields) = row else { return false }
+        let keys = Set(fields.keys)
+        guard shape.required.isSubset(of: keys), keys.isSubset(of: shape.required.union(shape.optional)),
+              !keys.contains("sessionId") || row["sessionId"].nonemptyString != nil else { return false }
+        // A request references its messages only by blob hash.
+        if type == "api-request" { return row["tail"].array?.allSatisfy({ $0.string != nil }) == true }
+        return true
+    }
+
+    private static func isObservedRequestBlob(_ row: ClaudeJSON) -> Bool {
+        guard case .object(let fields) = row,
+              Set(fields.keys).isSubset(of: ["type", "sessionId", "hash", "message", "agentId"]),
+              row["sessionId"].nonemptyString != nil, row["hash"].nonemptyString != nil,
+              case .object(let message) = row["message"],
+              Set(message.keys).isSubset(of: ["role", "content", "output_config"]),
+              ["user", "assistant", "system"].contains(row["message"]["role"].string ?? "") else { return false }
+        if row["message"]["content"].string != nil { return true }
+        return row["message"]["content"].array?.allSatisfy({ requestBlobBlockKinds.contains($0["type"].string ?? "") }) == true
     }
 
     /// A prompt submitted while a turn is running is persisted as a queued-command attachment,
@@ -715,17 +796,21 @@ private struct ClaudeTranscriptRead { let data: Data; let incomplete: Bool; let 
 
 /// Lossless string leaves. Only known binary and tool-reference blocks are excluded;
 /// arbitrary structured `data`/`id` strings can contain credentials and must remain scannable.
-private func textSegments(_ value: ClaudeJSON, pointer: String) throws -> [SourceSegment] {
+/// A schema-defined payload such as a structured output has no content blocks, so with
+/// `contentBlocks: false` every string leaf is kept, including a field that happens to be "type".
+private func textSegments(_ value: ClaudeJSON, pointer: String, contentBlocks: Bool = true) throws -> [SourceSegment] {
     switch value {
     case .string(let text): return text.isEmpty ? [] : [try .init(id: pointer, utf8: Data(text.utf8))]
-    case .array(let values): return try values.enumerated().flatMap { try textSegments($0.element, pointer: "\(pointer)/\($0.offset)") }
+    case .array(let values):
+        return try values.enumerated().flatMap { try textSegments($0.element, pointer: "\(pointer)/\($0.offset)", contentBlocks: contentBlocks) }
     case .object(let values):
-        if ["image", "image_url", "audio", "tool_reference"].contains(value["type"].string ?? "") { return [] }
+        if contentBlocks, ["image", "image_url", "audio", "tool_reference"].contains(value["type"].string ?? "") { return [] }
         // The type tag is structural. All other string leaves inside an already recognized
         // tool-result payload remain content, including additive fields beside its text.
         return try values.keys.sorted().flatMap { key throws -> [SourceSegment] in
-            if key == "type", ["text", "input_text", "output_text"].contains(value["type"].string ?? "") { return [] }
-            return try textSegments(values[key]!, pointer: pointer + "/" + key.replacingOccurrences(of: "~", with: "~0").replacingOccurrences(of: "/", with: "~1"))
+            if contentBlocks, key == "type", ["text", "input_text", "output_text"].contains(value["type"].string ?? "") { return [] }
+            return try textSegments(values[key]!, pointer: pointer + "/" + key.replacingOccurrences(of: "~", with: "~0").replacingOccurrences(of: "/", with: "~1"),
+                                    contentBlocks: contentBlocks)
         }
     default: return []
     }

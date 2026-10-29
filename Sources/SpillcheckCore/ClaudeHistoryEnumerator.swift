@@ -204,8 +204,10 @@ private struct ClaudeDiscoveryPage {
 
 /// Enumeration is metadata-only, bounded and resumable. A reopened directory skips the entries
 /// earlier pages read, which holds only while it is unchanged; a changed directory explicitly
-/// marks partial coverage and the next audit starts a new traversal. No file mtime is used to
-/// exclude source content.
+/// marks partial coverage and the next audit starts a new traversal. Skipped entries are only
+/// read, never inspected, so they don't count against the page budget; a directory of n entries
+/// costs about n²/256 reads to drain, which stays small for transcript folders. No file mtime is
+/// used to exclude source content.
 private func claudeDiscoverPage(_ position: ClaudeDirectoryPosition, allowedRoots: [URL],
                                 maximumEntries: Int) throws -> ClaudeDiscoveryPage {
     let skip = position.entriesRead ?? 0
@@ -225,6 +227,8 @@ private func claudeDiscoverPage(_ position: ClaudeDirectoryPosition, allowedRoot
     for _ in 0..<skip {
         try Task.checkCancellation()
         guard readdir(stream) != nil else {
+            // Fewer entries than earlier pages read means the directory changed, whatever its signature says.
+            if !gaps.contains(where: { $0.reason == .sourceChanged }) { gaps.append(.init(reason: .sourceChanged)) }
             return .init(files: [], directories: [], gaps: gaps, entriesRead: nil, signature: signature, inspected: 0)
         }
     }

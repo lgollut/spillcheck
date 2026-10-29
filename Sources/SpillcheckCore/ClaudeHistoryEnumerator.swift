@@ -202,6 +202,10 @@ private struct ClaudeDiscoveryPage {
     let entriesRead: Int?, signature: ClaudeFileSignature, inspected: Int
 }
 
+/// The deepest transcripts are workflow agents at <project>/<session>/subagents/workflows/<run>/,
+/// five folders below a projects root. Anything deeper is reported instead of traversed.
+private let claudeMaximumDiscoveryDepth = 5
+
 /// Enumeration is metadata-only, bounded and resumable. A reopened directory skips the entries
 /// earlier pages read, which holds only while it is unchanged; a changed directory explicitly
 /// marks partial coverage and the next audit starts a new traversal. Skipped entries are only
@@ -211,7 +215,7 @@ private struct ClaudeDiscoveryPage {
 private func claudeDiscoverPage(_ position: ClaudeDirectoryPosition, allowedRoots: [URL],
                                 maximumEntries: Int) throws -> ClaudeDiscoveryPage {
     let skip = position.entriesRead ?? 0
-    guard position.depth >= 0, position.depth <= 4, position.cookie >= 0, skip >= 0,
+    guard position.depth >= 0, position.depth <= claudeMaximumDiscoveryDepth, position.cookie >= 0, skip >= 0,
           !position.path.split(separator: "/").contains(where: { $0 == "." || $0 == ".." }),
           allowedRoots.contains(where: { position.path == $0.path || position.path.hasPrefix($0.path + "/") }) else {
         throw ClaudeCollectionError.unsafeTranscriptPath
@@ -247,7 +251,7 @@ private func claudeDiscoverPage(_ position: ClaudeDirectoryPosition, allowedRoot
         guard fstatat(fd, name, &item, AT_SYMLINK_NOFOLLOW) == 0, item.st_uid == getuid() else { continue }
         let path = URL(fileURLWithPath: position.path).appendingPathComponent(name).path
         if (item.st_mode & S_IFMT) == S_IFDIR {
-            if position.depth < 4 { directories.append(.init(path: path, depth: position.depth + 1)) }
+            if position.depth < claudeMaximumDiscoveryDepth { directories.append(.init(path: path, depth: position.depth + 1)) }
             else { gaps.append(.init(reason: .budgetExhausted)) }
         } else if (item.st_mode & S_IFMT) == S_IFREG {
             if name.hasSuffix(".jsonl") { files.append(path) }

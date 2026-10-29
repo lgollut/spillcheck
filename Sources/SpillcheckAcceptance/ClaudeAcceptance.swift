@@ -46,9 +46,13 @@ actor ClaudeLiveEvidence {
         guard path.path == raw, path.path.hasPrefix(sourceRoot.path + "/"), path.pathExtension == "jsonl" else { return nil }
         let parent: URL
         let role: String
-        if path.deletingLastPathComponent().lastPathComponent == "subagents",
-           path.lastPathComponent.hasPrefix("agent-"), path.lastPathComponent.count > "agent-.jsonl".count {
-            parent = path.deletingLastPathComponent().deletingLastPathComponent().appendingPathExtension("jsonl")
+        // Native children sit in <session>/subagents/, workflow agents two folders lower in workflows/<run>/.
+        let folder = path.deletingLastPathComponent(), runs = folder.deletingLastPathComponent()
+        let subagents: URL? = folder.lastPathComponent == "subagents" ? folder
+            : runs.lastPathComponent == "workflows" && runs.deletingLastPathComponent().lastPathComponent == "subagents"
+                ? runs.deletingLastPathComponent() : nil
+        if let subagents, path.lastPathComponent.hasPrefix("agent-"), path.lastPathComponent.count > "agent-.jsonl".count {
+            parent = subagents.deletingLastPathComponent().appendingPathExtension("jsonl")
             role = "child"
         } else {
             guard path.deletingPathExtension().lastPathComponent == source.record.metadata.identity.session.sessionID else { return nil }

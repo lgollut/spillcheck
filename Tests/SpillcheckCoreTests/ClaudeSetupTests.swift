@@ -136,6 +136,52 @@ struct ClaudeMonitorTests {
         #expect(batch.sources.first?.context?.transcriptPath == claudeConfiguredURL(child).path)
     }
 
+    @Test func workflowAgentChildIsPolledAndRead() async throws {
+        let directory = try claudeSetupDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let parent = directory.appendingPathComponent("parent.jsonl")
+        // Workflow agents write to <session>/subagents/workflows/<run>/, not <session>/subagents/.
+        let run = directory.appendingPathComponent("parent/subagents/workflows/wf_run")
+        try FileManager.default.createDirectory(at: run, withIntermediateDirectories: true)
+        let content = try JSONSerialization.data(withJSONObject: ["type": "user", "uuid": "workflow-prompt",
+            "sessionId": "parent", "version": "2.1.293", "timestamp": "2026-10-07T20:00:00Z",
+            "message": ["role": "user", "content": "FAKE_WORKFLOW_PROMPT"]]) + Data([10])
+        try content.write(to: run.appendingPathComponent("agent-worker.jsonl"))
+        let sink = ClaudeMonitorSink()
+        let monitor = try ClaudeActiveTranscriptMonitor(profileID: "test", sources: [.init(sessionID: "parent", transcriptURL: parent)],
+            enqueue: { packet, _ in try await sink.accept(packet) }, onGap: { await sink.recordGap($0) })
+        #expect(try await monitor.pollOnce() == 1)
+        let adapter = try ClaudeAdapter(profileID: "test", agentVersion: "2.1.293", allowedTranscriptRoots: [directory])
+        let packet = try #require(await sink.recorded().first)
+        let batch = try await adapter.normalize(packet, capturedAt: Date(), cryptography: .ephemeralForTesting())
+        #expect(batch.coverageGaps.isEmpty)
+        #expect(batch.sources.map(\.record.metadata.identity.itemID) == ["prompt:workflow-prompt:block:0"])
+    }
+
+    @Test func newestChildrenArePolledWhenFinishedAgentsFillTheChildBudget() async throws {
+        let directory = try claudeSetupDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let parent = directory.appendingPathComponent("parent.jsonl")
+        let subagents = directory.appendingPathComponent("parent/subagents")
+        func agent(_ folder: URL, _ name: String, modified: Date) throws {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let file = folder.appendingPathComponent("agent-\(name).jsonl")
+            try Data("{}\n".utf8).write(to: file)
+            try FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: file.path)
+        }
+        // subagents/ is listed before any workflow run, so finished agents there come first.
+        for index in 0..<40 { try agent(subagents, "finished-\(index)", modified: Date(timeIntervalSinceNow: -3600)) }
+        try agent(subagents.appendingPathComponent("workflows/wf_live"), "wf_live-0", modified: Date())
+        let sink = ClaudeMonitorSink()
+        let monitor = try ClaudeActiveTranscriptMonitor(profileID: "test", sources: [.init(sessionID: "parent", transcriptURL: parent)],
+            enqueue: { packet, _ in try await sink.accept(packet) }, onGap: { await sink.recordGap($0) })
+        _ = try await monitor.pollOnce()
+        let polled = await sink.recorded().compactMap {
+            (try? JSONSerialization.jsonObject(with: $0.eventJSON) as? [String: Any])?["agent_transcript_path"] as? String
+        }
+        // The live run is polled although readdir may list the finished run first; the rest is reported.
+        #expect(polled.count == 32 && polled.contains { $0.hasSuffix("/wf_live/agent-wf_live-0.jsonl") })
+        #expect(await sink.observedGaps().contains { $0.reason == .budgetExhausted })
+    }
+
     @Test(arguments: ["parent", "distinct-child"])
     func selectedChildPollingUsesPersistedNativeIdentity(childSession: String) async throws {
         let directory = try claudeSetupDirectory(); defer { try? FileManager.default.removeItem(at: directory) }

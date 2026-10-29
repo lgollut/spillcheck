@@ -203,8 +203,10 @@ struct CodexNativeChildInputTests {
         let initialAdapter = try codexTestAdapter(history: history)
         let initial = try await initialAdapter.normalize(codexPacket(thread: "child"), capturedAt: childNow, cryptography: crypto)
         let requirement = try #require(childRequirement(initial).first)
+        // The pipeline runs on the wall clock, so the processed item must be inside its lookback.
         await history.configure("child", thread: try childThread(["forkedFromId": "parent"]), pages: [.init(data: [
-            try codexItem("inherited", type: "userMessage", body: ["content": [["type": "text", "text": "FAKE_NATIVE_PARENT_ONLY"]]])])])
+            try codexItem("inherited", type: "userMessage", timestamp: processingTime.timeIntervalSince1970 * 1000,
+                          body: ["content": [["type": "text", "text": "FAKE_NATIVE_PARENT_ONLY"]]])])])
         let detector = ChildInputDetector()
         for restart in [false, true] {
             let store = try await ProtectedStore.open(at: directory, cryptography: crypto)

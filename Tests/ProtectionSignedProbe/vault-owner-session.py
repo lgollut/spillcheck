@@ -14,7 +14,7 @@ import time
 import uuid
 
 ROOT = Path(__file__).resolve().parents[2]
-GROUP = "KBLA5ALX62.com.leakret.app"
+GROUP = "KBLA5ALX62.com.spillcheck.app"
 SANDBOX_MODE = "network-denied-trusted-scanner-bootstrap"
 
 
@@ -54,7 +54,7 @@ def build(args):
     if code_hash is None or len(code_hash) != 40 or any(char not in "0123456789abcdef" for char in code_hash):
         raise RuntimeError("Expected the installed app's code directory hash")
     info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
-    if info.get("CFBundleIdentifier") != "com.leakret.app" or info.get("SpillcheckKeychainAccessGroup") != GROUP:
+    if info.get("CFBundleIdentifier") != "com.spillcheck.app" or info.get("SpillcheckKeychainAccessGroup") != GROUP:
         raise RuntimeError("Expected Spillcheck's provisioned application identity")
     products = args.products_path.resolve(strict=True)
     output = args.output_directory.resolve()

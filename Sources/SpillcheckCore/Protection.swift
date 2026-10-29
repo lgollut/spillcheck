@@ -289,7 +289,8 @@ private func openAES(_ payload: ProtectedPayload, key: SymmetricKey) throws -> D
 }
 
 public struct ProtectionConfiguration: Sendable {
-    /// The original namespace is part of the installed app's provisioned Keychain identity.
+    /// The access group follows the bundle identifier. The prefix keeps the original namespace in
+    /// Keychain service and right names, so it must not follow bundle-identifier changes.
     public let accessGroup: String
     public let identifierPrefix: String
 

@@ -93,7 +93,9 @@ class ReleasePolicyContracts(unittest.TestCase):
                 invalid[key] = True
                 self.reject(policy.validate_entitlements, invalid, app=True)
         for changes in [{"keychain-access-groups": [policy.ACCESS_GROUP, "other.group"]},
-                        {"com.apple.application-identifier": "ABCDE12345.com.leakret.app"},
+                        {"com.apple.application-identifier": "ABCDE12345." + policy.BUNDLE_ID},
+                        {"com.apple.application-identifier": policy.TEAM_ID + ".com.leakret.app"},
+                        {"keychain-access-groups": [policy.TEAM_ID + ".com.leakret.app"]},
                         {"com.apple.developer.team-identifier": "ABCDE12345"},
                         {"com.apple.security.network.client": True}]:
             self.reject(policy.validate_entitlements, dict(app_entitlements(), **changes), app=True)

@@ -72,6 +72,125 @@ struct ClaudeAdapterTests {
         #expect(visible.recoveredReferences.isEmpty)
     }
 
+    /// Records Claude Code 2.1.306+ writes beside messages, in the exact shapes observed in genuine transcripts.
+    private static var observedRequestAndJournalRecords: [[String: Any]] { [
+        ["type": "api-request", "sessionId": "session", "id": "req-2", "timestamp": "2026-10-29T10:00:00Z",
+         "version": "2.1.312", "querySource": "sdk", "shapeHash": "shape-1", "params": ["max_tokens": 1],
+         "keep": 1, "tail": [String(repeating: "a", count: 64)], "cacheControl": [], "requestDigest": "digest",
+         "base": "req-1", "agentId": "agent"],
+        ["type": "api-request-shape", "sessionId": "session", "shapeHash": "shape-1", "timestamp": "2026-10-29T10:00:00Z",
+         "version": "2.1.312", "shape": ["system": [["type": "text", "text": "FAKE_SYSTEM"]],
+                                         "tools": [["name": "Read", "description": "FAKE_TOOL", "input_schema": [:]]]]],
+        ["type": "api-request-blob", "sessionId": "session", "hash": String(repeating: "b", count: 64), "agentId": "agent",
+         "message": ["role": "system", "content": [["type": "text", "text": "FAKE_REMINDER"],
+                                                   ["type": "tool_addition", "tools": ["Read"]]]]],
+        ["type": "api-request-blob", "sessionId": "session", "hash": String(repeating: "c", count: 64),
+         "message": ["role": "assistant", "content": [["type": "thinking", "thinking": "FAKE"],
+                                                      ["type": "tool_use", "id": "toolu", "name": "Read", "input": [:]]]]],
+        ["type": "api-request-blob", "sessionId": "session", "hash": String(repeating: "d", count: 64),
+         "message": ["role": "user", "content": "FAKE_PROMPT_COPY"]],
+        ["type": "pr-link", "sessionId": "session", "timestamp": "2026-10-29T10:00:00Z", "prNumber": 1,
+         "prRepository": "owner/repo", "prUrl": "https://example.invalid/pull/1"],
+        ["type": "tools-used", "sessionId": "session", "tools": ["Read"]],
+        ["type": "isolation-latch", "sessionId": "session", "side": "main"],
+        ["type": "launched"],
+        ["type": "started", "agentId": "agent", "key": "key", "label": "label", "phase": "Phase"],
+        ["type": "result", "agentId": "agent", "key": "key", "result": ["summary": "FAKE_RESULT_COPY"], "toolsUsed": ["Read"]],
+        ["type": "failed", "agentId": "agent", "key": "key"],
+    ] }
+
+    @Test func observedRequestLogsAndWorkflowJournalsAreRecognizedWithoutAnalysis() async throws {
+        let crypto = try BackgroundCryptography.ephemeralForTesting()
+        let adapter = try ClaudeAdapter(profileID: "test", agentVersion: "2.1.312", allowedTranscriptRoots: [])
+        let document = UUID(), prompt = try claudeRow(content: "required prompt")
+        let original = try await adapter.importTranscript(prompt, documentID: document,
+            interface: .standaloneCLI, observedAt: Date(), cryptography: crypto)
+        var data = Data()
+        for record in Self.observedRequestAndJournalRecords { data += try JSONSerialization.data(withJSONObject: record) + Data([10]) }
+        // Effort-mode reminders arrive beside them as harness context attachments.
+        for reminder in [["type": "ultra_effort_enter", "reminderType": "ultra"], ["type": "ultra_effort_exit"]] {
+            data += try JSONSerialization.data(withJSONObject: ["type": "attachment", "sessionId": "session", "attachment": reminder]) + Data([10])
+        }
+        let batch = try await adapter.importTranscript(data + prompt, documentID: document,
+            interface: .standaloneCLI, observedAt: Date(), cryptography: crypto)
+        #expect(batch.coverageGaps.isEmpty)
+        #expect(batch.recoveredReferences.count == Self.observedRequestAndJournalRecords.count + 3)
+        #expect(batch.sources.map(\.record.metadata.identity) == original.sources.map(\.record.metadata.identity))
+        #expect(batch.sources.map(\.record.segments) == original.sources.map(\.record.segments))
+    }
+
+    @Test func changedRequestLogsAndWorkflowJournalsRemainVisibleAsGaps() async throws {
+        let crypto = try BackgroundCryptography.ephemeralForTesting()
+        let adapter = try ClaudeAdapter(profileID: "test", agentVersion: "2.1.312", allowedTranscriptRoots: [])
+        var changes: [[String: Any]] = []
+        for record in Self.observedRequestAndJournalRecords {
+            var added = record; added["unknownPayload"] = "required text"; changes.append(added)
+            if let key = record.keys.first(where: { $0 != "type" && $0 != "agentId" && $0 != "base" && $0 != "toolsUsed" }) {
+                var removed = record; removed.removeValue(forKey: key); changes.append(removed)
+            }
+        }
+        changes.append(["type": "api-request-blob", "sessionId": "session", "hash": "e",
+                        "message": ["role": "user", "content": [["type": "future_block", "payload": "required text"]]]])
+        var inlineTail = Self.observedRequestAndJournalRecords[0]; inlineTail["tail"] = [["role": "user", "content": "required text"]]
+        changes.append(inlineTail)
+        changes.append(["type": "api-request-blob", "sessionId": "session", "hash": "f",
+                        "message": ["role": "developer", "content": "required text"]])
+        for changed in changes {
+            let data = try JSONSerialization.data(withJSONObject: changed) + Data([10])
+            let batch = try await adapter.importTranscript(data, documentID: UUID(),
+                interface: .t3, observedAt: Date(), cryptography: crypto)
+            #expect(batch.sources.isEmpty && batch.recoveredReferences.isEmpty)
+            #expect(batch.coverageGaps.count == 1, "\(changed.keys.sorted())")
+        }
+    }
+
+    @Test func structuredOutputAttachmentIsAnalyzedAsTheAgentsFinalResponse() async throws {
+        let crypto = try BackgroundCryptography.ephemeralForTesting()
+        let adapter = try ClaudeAdapter(profileID: "test", agentVersion: "2.1.312", allowedTranscriptRoots: [])
+        let data = try JSONSerialization.data(withJSONObject: ["type": "attachment", "uuid": "result-row",
+            "sessionId": "session", "timestamp": "2026-10-29T10:00:00Z", "version": "2.1.312",
+            "attachment": ["type": "structured_output", "toolUseID": "toolu_final",
+                           "data": ["summary": "FAKE_STRUCTURED_SUMMARY", "findings": ["FAKE_STRUCTURED_FINDING"],
+                                    // A schema may use "type" for its own fields; it is not a media marker here.
+                                    "evidence": [["type": "image", "description": "FAKE_TYPED_FIELD"]]]]]) + Data([10])
+        let batch = try await adapter.importTranscript(data, documentID: UUID(), interface: .t3,
+            observedAt: Date(), cryptography: crypto)
+        #expect(batch.coverageGaps.isEmpty)
+        let source = try #require(batch.sources.first)
+        #expect(batch.sources.count == 1 && source.record.metadata.contentType == .finalResponse)
+        #expect(source.record.metadata.identity.itemID == "structured-output:toolu_final")
+        #expect(source.record.metadata.identity.session.sessionID == "session")
+        #expect(claudeText(source).contains("FAKE_STRUCTURED_SUMMARY") && claudeText(source).contains("FAKE_STRUCTURED_FINDING"))
+        #expect(claudeText(source).contains("FAKE_TYPED_FIELD"))
+    }
+
+    @Test func changedOrOutOfWindowStructuredOutputIsNeverSilentlyAnalyzed() async throws {
+        let crypto = try BackgroundCryptography.ephemeralForTesting()
+        let adapter = try ClaudeAdapter(profileID: "test", agentVersion: "2.1.312", allowedTranscriptRoots: [])
+        let row: [String: Any] = ["type": "attachment", "uuid": "result-row", "sessionId": "session",
+            "timestamp": "2026-10-29T10:00:00Z", "version": "2.1.312",
+            "attachment": ["type": "structured_output", "toolUseID": "toolu_final", "data": ["summary": "FAKE_SUMMARY"]]]
+        func attachment(_ change: (inout [String: Any]) -> Void) -> [String: Any] {
+            var copy = row, value = row["attachment"] as! [String: Any]
+            change(&value); copy["attachment"] = value; return copy
+        }
+        var untimed = row; untimed.removeValue(forKey: "timestamp")
+        let changed: [[String: Any]] = [untimed,
+            attachment { $0["extra"] = "required text" }, attachment { $0["data"] = "required text" },
+            attachment { $0.removeValue(forKey: "toolUseID") }]
+        for change in changed {
+            let batch = try await adapter.importTranscript(JSONSerialization.data(withJSONObject: change) + Data([10]),
+                documentID: UUID(), interface: .t3, observedAt: Date(), cryptography: crypto)
+            #expect(batch.sources.isEmpty && batch.recoveredReferences.isEmpty)
+            #expect(batch.coverageGaps.count == 1 && batch.coverageGaps.allSatisfy { $0.isRequiredFormatFailure == true })
+        }
+        // An audit reads only content inside its window, and a result outside it is not an omission.
+        let audit = try HistoricalAuditContext(reason: .resume, endingAt: ISO8601DateFormatter().date(from: "2026-10-08T00:00:00Z")!)
+        let outside = try await adapter.importTranscript(JSONSerialization.data(withJSONObject: row) + Data([10]),
+            documentID: UUID(), interface: .t3, observedAt: Date(), provenance: .historical(audit), cryptography: crypto)
+        #expect(outside.sources.isEmpty && outside.coverageGaps.isEmpty)
+    }
+
     @Test func observedNormalModeControlsRecoverWithoutContent() async throws {
         let crypto = try BackgroundCryptography.ephemeralForTesting()
         let adapter = try ClaudeAdapter(profileID: "test", agentVersion: "2.1.296", allowedTranscriptRoots: [])

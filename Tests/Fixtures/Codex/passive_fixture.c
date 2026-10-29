@@ -63,6 +63,12 @@ int main(int argc, char **argv) {
             for (int i = 0; i < 16384; i++) putchar('x');
             puts("\"}}"); fflush(stdout); continue;
         }
+        if (strcmp(mode, "source-filter") == 0 && strstr(line, "\"thread/list\"")) {
+            /* Like the app-server, list only threads whose source the request names. */
+            printf("{\"id\":%d,\"result\":{\"data\":[%s],\"nextCursor\":null,\"backwardsCursor\":null}}\n", serial,
+                strstr(line, "\"vscode\"") ? "{\"id\":\"app-client-thread\",\"source\":\"vscode\"}" : "");
+            fflush(stdout); continue;
+        }
         if (!strstr(line, "\"thread/read\"")) {
             printf("{\"id\":%d,\"result\":{\"data\":[],\"nextCursor\":null,\"backwardsCursor\":null,\"extraEnvelope\":true}}\n", serial);
             fflush(stdout); continue;

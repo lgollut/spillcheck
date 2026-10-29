@@ -407,7 +407,7 @@
 					"@executable_path/../Frameworks",
 				);
 				OTHER_CODE_SIGN_FLAGS = "--timestamp";
-				PRODUCT_BUNDLE_IDENTIFIER = com.leakret.app;
+				PRODUCT_BUNDLE_IDENTIFIER = com.spillcheck.app;
 				SDKROOT = macosx;
 			};
 			name = Release;
@@ -586,7 +586,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.leakret.app;
+				PRODUCT_BUNDLE_IDENTIFIER = com.spillcheck.app;
 				SDKROOT = macosx;
 			};
 			name = Debug;

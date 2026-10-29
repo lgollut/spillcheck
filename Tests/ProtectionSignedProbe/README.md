@@ -13,7 +13,7 @@ Package the binary in a native app bundle with entitlements that authorize the s
 
 | Key | Value |
 | --- | --- |
-| `SpillcheckKeychainAccessGroup` | Fully qualified owned group, such as `TEAM_ID.com.leakret.app` |
+| `SpillcheckKeychainAccessGroup` | Fully qualified owned group, such as `TEAM_ID.com.spillcheck.app` |
 | `SpillcheckProbeDirectory` | Absolute path to an isolated disposable directory |
 | `SpillcheckProbeReportPath` | Absolute path for the safe JSON report |
 
@@ -27,7 +27,7 @@ For noninteractive checks, invoke the signed executable with explicit arguments:
 
 ```sh
 SIGNED_PROBE_APP/Contents/MacOS/ProtectionSignedProbe \
-  --access-group TEAM_ID.com.leakret.app \
+  --access-group TEAM_ID.com.spillcheck.app \
   --directory /absolute/path/to/disposable/probe-data
 ```
 

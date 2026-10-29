@@ -50,8 +50,9 @@ targets:
         link: false
     settings:
       base:
-        # Preserve the installed app's identity, Keychain access, notifications, and login registration.
-        PRODUCT_BUNDLE_IDENTIFIER: com.leakret.app
+        # Owns the vault's Keychain access, notifications, and login registration. Changing it
+        # separates installed copies from their vaults; keep the entitlements and Info.plist group in step.
+        PRODUCT_BUNDLE_IDENTIFIER: com.spillcheck.app
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_FILE: Spillcheck/Info.plist
         GENERATE_INFOPLIST_FILE: NO

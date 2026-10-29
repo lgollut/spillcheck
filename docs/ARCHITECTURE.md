@@ -89,9 +89,16 @@ marker until explicit forgetting. See [ADR 0004](adr/0004-remember-obsolete-valu
 
 ## Installed-data compatibility
 
-The product name is Spillcheck, but `com.leakret.app` remains the provisioned
-bundle identity and production key-service prefix. Preserve its Keychain access
-group and macOS registrations when changing display names or signing settings.
+The bundle identifier `com.spillcheck.app` sets the Keychain access group that
+holds the vault keys. macOS also keys notification permission, the login item and
+preferences to it. Changing it separates every installed copy from its vault, so
+treat it as storage, not branding. Vaults created by earlier `com.leakret.app`
+builds, including any moved from `Application Support/Leakret`, open only with a
+build signed under that identity.
+
+The key-service prefix `com.leakret.app` is a separate storage name. It appears
+in every Keychain service name and in each vault manifest's inventory right
+identifier, and does not follow the bundle identifier.
 
 `AppStorageLocation.swift` moves the whole owned `Application Support/Leakret`
 directory to `Application Support/Spillcheck` before opening it, including SQLite

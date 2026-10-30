@@ -145,8 +145,55 @@ private func inspectPipelineFiles(in directory: URL) throws {
     }
 }
 
+private actor PipelineClaimLog {
+    var ids: [String] = []
+    func record(_ id: String) { ids.append(id) }
+}
+
+/// History captures take two seconds to read; live captures are immediate. Both yield no sources.
+private struct PipelineTimedNormalizer: CaptureNormalizer {
+    let log: PipelineClaimLog
+    func normalize(_ packet: CapturePacket, capturedAt: Date,
+                   cryptography: BackgroundCryptography) async throws -> CollectionBatch {
+        let id = try JSONDecoder().decode(PipelineCaptureID.self, from: packet.eventJSON).id
+        await log.record(id)
+        if id.hasPrefix("history") { try await Task.sleep(for: .seconds(2)) }
+        return CollectionBatch(sources: [], checkpoints: [])
+    }
+}
+
 @Suite("Detection pipeline with real encrypted persistence", .timeLimit(.minutes(1)))
 struct DetectionPipelineTests {
+    @Test func slowHistoryPassesLeaveLiveCapturesAsMuchWorkerTimeAsTheyTake() async throws {
+        let fixture = try await PipelineFixture()
+        defer { fixture.remove() }
+        let now = Date()
+        let permit = try #require(await fixture.store.processingPermit())
+        let audit = try HistoricalAuditContext(reason: .resume, endingAt: now)
+        let ids = ["history-1", "history-2"] + (0..<12).map { "live-\($0)" }
+        for (index, id) in ids.enumerated() {
+            let packet = try CapturePacket(metadata: CaptureMetadata(agent: .claudeCode),
+                eventJSON: JSONEncoder().encode(PipelineCaptureID(id: id)))
+            let captured = now.addingTimeInterval(Double(index) / 1000)
+            _ = try await fixture.store.enqueue(packet.body, capturedAt: captured, permit: permit, at: captured,
+                historicalAudit: id.hasPrefix("history") ? audit : nil)
+        }
+        let log = PipelineClaimLog()
+        let pipeline = DetectionPipeline(store: fixture.store, cryptography: fixture.crypto,
+            normalizer: PipelineTimedNormalizer(log: log), detector: PipelineDetector(),
+            detectorVersion: pipelineDetectorVersion, liveSince: now.addingTimeInterval(-60))
+        for _ in ids {
+            #expect(try await pipeline.processNext(at: now.addingTimeInterval(1)) == .processed)
+        }
+        // Four live captures go first, as before. After the two-second history pass, the eight
+        // remaining live captures need far less time, so all of them run before history.
+        let order = await log.ids
+        #expect(order.count == ids.count)
+        #expect(order.firstIndex(of: "history-1") == 4)
+        #expect(order.last == "history-2")
+        try await fixture.store.close()
+    }
+
     @Test func allContentTypesGroupExactValuesAlertOncePerSessionAndReplayQuietly() async throws {
         let fixture = try await PipelineFixture()
         defer { fixture.remove() }

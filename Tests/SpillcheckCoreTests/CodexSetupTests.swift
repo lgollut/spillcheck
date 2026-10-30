@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import SpillcheckCore
+@_spi(Testing) @testable import SpillcheckCore
 
 func codexSetupDirectory() throws -> URL {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent("spillcheck-codex-setup-\(UUID())").resolvingSymlinksInPath()
@@ -150,6 +150,57 @@ struct CodexMonitorTests {
         try await monitor.addSource(source, at: start.addingTimeInterval(3_700))
         #expect(try await monitor.pollOnce(at: start.addingTimeInterval(3_700)) == 1)
         #expect(await sink.count() == 4)
+        await monitor.stop()
+    }
+
+    @Test func rereadItemsLetAnIdleThreadSlowDownAndNewItemsSpeedItUp() async throws {
+        let history = CodexTestHistory(), checkpoints = CodexCheckpoints(), crypto = try BackgroundCryptography.ephemeralForTesting()
+        let start = Date(timeIntervalSince1970: 1_791_434_400)
+        await history.configure("parent", thread: try codexThread(updatedAt: 1_791_434_000),
+            pages: [.init(data: [try codexItem("answer", timestamp: start.timeIntervalSince1970 * 1000)])])
+        let adapter = try codexTestAdapter(history: history, checkpoints: { await checkpoints.get($0) })
+        let sink = CodexMonitorSink()
+        let monitor = try CodexActiveHistoryMonitor(profileID: "test", sources: []) { packet, _ in try await sink.accept(packet) }
+        try await monitor.addSource(.init(threadID: "parent", interface: .t3, authority: .publicNativeItems), at: start)
+        // Each poll is read and observed as the pipeline would. A poll rereads the thread's tail.
+        func run(_ seconds: ClosedRange<Int>) async throws -> (polls: Int, rereads: Int) {
+            var polls = 0, rereads = 0
+            for second in seconds {
+                let now = start.addingTimeInterval(Double(second))
+                guard try await monitor.pollOnce(at: now) == 1 else { continue }
+                polls += 1
+                let batch = try await adapter.normalize(#require(await sink.packets.last), capturedAt: now, cryptography: crypto)
+                await checkpoints.save(batch.checkpoints)
+                if batch.sources.contains(where: { $0.record.metadata.identity.itemID == "answer" }) { rereads += 1 }
+                await monitor.observe(batch, authority: .publicNativeItems, at: now)
+            }
+            return (polls, rereads)
+        }
+        let idle = try await run(0...399)
+        #expect(idle.rereads == idle.polls)
+        // Every second for two minutes after the last item, then every five seconds.
+        #expect(idle.polls == 120 + 56)
+        await history.configure("parent", thread: try codexThread(updatedAt: 1_791_434_000),
+            pages: [.init(data: [try codexItem("answer", timestamp: start.timeIntervalSince1970 * 1000),
+                                 try codexItem("later", timestamp: (start.timeIntervalSince1970 + 400) * 1000)])])
+        #expect(try await run(400...409).polls == 10)
+        await monitor.stop()
+    }
+
+    @Test func itemsFromAnEarlierRunDoNotRestartPolling() async throws {
+        let history = CodexTestHistory(), crypto = try BackgroundCryptography.ephemeralForTesting()
+        let now = Date(timeIntervalSince1970: 1_791_434_400)
+        await history.configure("parent", thread: try codexThread(updatedAt: 1_791_434_000),
+            pages: [.init(data: [try codexItem("answer", timestamp: (now.timeIntervalSince1970 - 7_200) * 1000)])])
+        let adapter = try codexTestAdapter(history: history)
+        let batch = try await adapter.normalize(codexPacket(thread: "parent"), capturedAt: now, cryptography: crypto)
+        #expect(!batch.sources.isEmpty)
+        let sink = CodexMonitorSink()
+        let monitor = try CodexActiveHistoryMonitor(profileID: "test", sources: []) { packet, _ in try await sink.accept(packet) }
+        // A poll queued before a restart is processed later. Its items are two hours old.
+        await monitor.observe(batch, authority: .publicNativeItems, at: now)
+        #expect(try await monitor.pollOnce(at: now) == 0)
+        #expect(try await monitor.pollOnce(at: now.addingTimeInterval(30)) == 0)
         await monitor.stop()
     }
 

@@ -211,7 +211,8 @@ struct CollectionWorkMigrationTests {
         #expect(try legacyRows(fixture.directory) == before)
         try readDatabase(fixture.directory) { db throws -> Void in
             #expect(try String.fetchAll(db, sql: "SELECT identifier FROM grdb_migrations ORDER BY identifier")
-                == Self.predecessorMigrations + [Self.currentMigration, "v7-codex-hook-content-slots", "v8-certified-source-recovery"])
+                == Self.predecessorMigrations + [Self.currentMigration, "v7-codex-hook-content-slots", "v8-certified-source-recovery",
+                    "v9-indexed-queue-maintenance"])
             #expect(try db.tableExists("collection_work"))
             #expect(try db.tableExists("successful_collection_reads"))
         }

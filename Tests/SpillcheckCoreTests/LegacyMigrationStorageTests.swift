@@ -16,7 +16,7 @@ struct LegacyMigrationStorageTests {
         let revision = await store.stateRevision()
         let before = try await store.legacyMigrationRowsForTesting()
         let after = try await store.legacyMigrationRowsForTesting()
-        #expect(before.migrations.count == 8 && before.migrations.last == "v8-certified-source-recovery")
+        #expect(before.migrations.count == 9 && before.migrations.last == "v9-indexed-queue-maintenance")
         let afterRevision = await store.stateRevision()
         #expect(before.rows == after.rows && afterRevision == revision)
         let rowBytes = try #require(before.rows["captures"]?.first)

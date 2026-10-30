@@ -18,6 +18,9 @@ public struct ClaudeActiveSource: Sendable {
 /// Lightweight polling for interfaces where hook registration has not been measured. No payload
 /// reads occur here. Queue admission owns monitoring permits; the observer marks a change only after
 /// the enqueue callback returns successfully. Normalization performs the bounded, safe content read.
+/// A selected conversation is checked on every pass while it changes, and less often as it stays
+/// unchanged; selecting it again, as each hook for its session does, makes it current again. It is
+/// never dropped, because a conversation without hooks has only this monitor.
 public actor ClaudeActiveTranscriptMonitor {
     public typealias Enqueue = @Sendable (CapturePacket, Date) async throws -> Void
     public typealias GapHandler = @Sendable (CoverageGap) async -> Void
@@ -26,6 +29,9 @@ public actor ClaudeActiveTranscriptMonitor {
     private let enqueue: Enqueue
     private let onGap: GapHandler
     private var signatures: [String: Signature] = [:]
+    /// Keyed by the selected conversation's transcript path; its native children count toward it.
+    private var lastChange: [String: Date] = [:]
+    private var nextCheck: [String: Date] = [:]
     private var task: Task<Void, Never>?
     private var generation: UUID = UUID()
     private struct Signature: Equatable, Sendable {
@@ -40,13 +46,27 @@ public actor ClaudeActiveTranscriptMonitor {
                 onGap: @escaping GapHandler = { _ in }) throws {
         guard !profileID.isEmpty else { throw ClaudeCollectionError.invalidConfiguration }
         self.profileID = profileID; self.sources = sources; self.enqueue = enqueue; self.onGap = onGap
+        let now = Date()
+        for source in sources { lastChange[source.transcriptURL.path] = now }
+    }
+
+    /// Seconds between checks of a conversation unchanged for `idle` seconds.
+    public static func checkDelay(idle: TimeInterval) -> TimeInterval {
+        switch idle {
+        case ..<120: 0
+        case ..<600: 2
+        case ..<3600: 10
+        default: 30
+        }
     }
 
     @discardableResult public func pollOnce(at date: Date = Date()) async throws -> Int {
         let permit = generation
         var count = 0
         var failure: (any Error)?
-        let selected = selectedSources()
+        let due = sources.filter { (nextCheck[$0.transcriptURL.path] ?? .distantPast) <= date }
+        var changed: Set<String> = []
+        let selected = selectedSources(of: due)
         for source in selected.exhaustedSources {
             await onGap(gap(.budgetExhausted, source: source, at: date))
         }
@@ -65,6 +85,7 @@ public actor ClaudeActiveTranscriptMonitor {
             let signature = Signature(device: UInt64(info.st_dev), inode: info.st_ino, size: info.st_size,
                 modifiedSeconds: Int64(info.st_mtimespec.tv_sec), modifiedNanos: Int64(info.st_mtimespec.tv_nsec))
             guard signatures[key] != signature else { continue }
+            changed.insert((selection.parent ?? source).transcriptURL.path)
             var event: [String: String] = ["hook_event_name": "SpillcheckTranscriptPoll", "session_id": source.sessionID,
                                           "transcript_path": source.transcriptURL.path]
             if let parent = selection.parent {
@@ -85,6 +106,11 @@ public actor ClaudeActiveTranscriptMonitor {
             }
             guard permit == generation, !Task.isCancelled else { return count }
             signatures[key] = signature; count += 1
+        }
+        for parent in due {
+            let key = parent.transcriptURL.path
+            if changed.contains(key) { lastChange[key] = date }
+            nextCheck[key] = date.addingTimeInterval(Self.checkDelay(idle: date.timeIntervalSince(lastChange[key] ?? date)))
         }
         if let failure { throw failure }
         return count
@@ -107,9 +133,13 @@ public actor ClaudeActiveTranscriptMonitor {
         pending?.cancel()
         await pending?.value
     }
-    public func add(source: ClaudeActiveSource) {
-        guard !sources.contains(where: { $0.transcriptURL == source.transcriptURL && $0.sessionID == source.sessionID }) else { return }
-        sources.append(source)
+    public func add(source: ClaudeActiveSource, at date: Date = Date()) {
+        if !sources.contains(where: { $0.transcriptURL == source.transcriptURL && $0.sessionID == source.sessionID }) {
+            sources.append(source)
+        }
+        let key = source.transcriptURL.path
+        lastChange[key] = max(lastChange[key] ?? date, date)
+        nextCheck[key] = date
     }
     private func gap(_ reason: CoverageGapReason, source: ClaudeActiveSource,
                      parent: ClaudeActiveSource? = nil, at date: Date) -> CoverageGap {
@@ -125,12 +155,12 @@ public actor ClaudeActiveTranscriptMonitor {
             diagnosticCode: reason.defaultDiagnosticCode, observedAt: date)
     }
 
-    private func selectedSources() -> (sources: [SelectedSource], exhaustedSources: [ClaudeActiveSource]) {
-        var result = sources.map { SelectedSource(source: $0, parent: nil) }, exhaustedSources: [ClaudeActiveSource] = []
+    private func selectedSources(of due: [ClaudeActiveSource]) -> (sources: [SelectedSource], exhaustedSources: [ClaudeActiveSource]) {
+        var result = due.map { SelectedSource(source: $0, parent: nil) }, exhaustedSources: [ClaudeActiveSource] = []
         // Claude 2.1.293 native Agent sidechains are in the selected conversation's own
         // <session>/subagents directory. This is bounded conversation-local discovery, not
         // enumeration of the profile's histories or T3's unrelated provider sessions.
-        for parent in sources {
+        for parent in due {
             let project = claudeConfiguredURL(parent.transcriptURL.deletingLastPathComponent())
             let directory = project.appendingPathComponent(parent.transcriptURL.deletingPathExtension().lastPathComponent).appendingPathComponent("subagents")
             var fd = open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC)

@@ -229,6 +229,48 @@ struct ClaudeMonitorTests {
         #expect(status.1 == 0)
     }
 
+    @Test func unchangedTranscriptIsCheckedLessOftenUntilItIsSelectedAgain() async throws {
+        let directory = try claudeSetupDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        // Each check of a missing transcript reports one availability gap, so gaps count checks.
+        let source = try ClaudeActiveSource(sessionID: "idle", transcriptURL: directory.appendingPathComponent("missing.jsonl"))
+        let sink = ClaudeMonitorSink()
+        let monitor = try ClaudeActiveTranscriptMonitor(profileID: "test", sources: [],
+            enqueue: { packet, _ in try await sink.accept(packet) }, onGap: { await sink.recordGap($0) })
+        let start = Date()
+        await monitor.add(source: source, at: start)
+        for tick in 0..<(4 * 3600) { _ = try await monitor.pollOnce(at: start.addingTimeInterval(Double(tick) / 4)) }
+        let checks = await sink.observedGaps().count
+        // Every pass for two minutes, then every 2 s until ten minutes, then every 10 s.
+        #expect(checks == 4 * 120 + 480 / 2 + 3000 / 10)
+        // Selecting the source again, as a hook for its session does, checks it on the next pass.
+        let later = start.addingTimeInterval(3600)
+        await monitor.add(source: source, at: later)
+        _ = try await monitor.pollOnce(at: later)
+        #expect(await sink.observedGaps().count == checks + 1)
+    }
+
+    @Test func changedTranscriptIsCheckedOnEveryPassAgain() async throws {
+        let directory = try claudeSetupDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("source.jsonl"); try Data("{}\n".utf8).write(to: file)
+        let sink = ClaudeMonitorSink()
+        let start = Date()
+        let monitor = try ClaudeActiveTranscriptMonitor(profileID: "test", sources: [],
+            enqueue: { packet, _ in try await sink.accept(packet) })
+        await monitor.add(source: try .init(sessionID: "s", transcriptURL: file), at: start)
+        #expect(try await monitor.pollOnce(at: start) == 1)
+        // After an idle hour the transcript is checked every 30 s, so a change waits for that check.
+        var time = start
+        for tick in 1...(4 * 3600) { time = start.addingTimeInterval(Double(tick) / 4); _ = try await monitor.pollOnce(at: time) }
+        try Data("{}\n{}\n".utf8).write(to: file)
+        var found = 0, waited = 0.0
+        while found == 0, waited < 31 { waited += 0.25; found = try await monitor.pollOnce(at: time.addingTimeInterval(waited)) }
+        #expect(found == 1)
+        // Once it changed, the next change is read on the very next pass.
+        try Data("{}\n{}\n{}\n".utf8).write(to: file)
+        #expect(try await monitor.pollOnce(at: time.addingTimeInterval(waited + 0.25)) == 1)
+        #expect(await sink.count() == 3)
+    }
+
     @Test func failedSourceIsReportedWithoutSkippingLaterSourcesInThePass() async throws {
         let directory = try claudeSetupDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
         let first = directory.appendingPathComponent("first.jsonl"), second = directory.appendingPathComponent("second.jsonl")

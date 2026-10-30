@@ -238,12 +238,15 @@ struct ClaudeMonitorTests {
             enqueue: { packet, _ in try await sink.accept(packet) }, onGap: { await sink.recordGap($0) })
         let start = Date()
         await monitor.add(source: source, at: start)
-        for tick in 0..<(4 * 3600) { _ = try await monitor.pollOnce(at: start.addingTimeInterval(Double(tick) / 4)) }
+        for tick in 0..<(4 * 7185) { _ = try await monitor.pollOnce(at: start.addingTimeInterval(Double(tick) / 4)) }
         let checks = await sink.observedGaps().count
-        // Every pass for two minutes, then every 2 s until ten minutes, then every 10 s.
-        #expect(checks == 4 * 120 + 480 / 2 + 3000 / 10)
+        // Every pass for two minutes, every 2 s until ten minutes, every 10 s until an hour, then
+        // every 30 s: the last check was at 7,170 s and the next is due at 7,200 s.
+        #expect(checks == 4 * 120 + 480 / 2 + 3000 / 10 + 3600 / 30)
+        let later = start.addingTimeInterval(7185)
+        _ = try await monitor.pollOnce(at: later)
+        #expect(await sink.observedGaps().count == checks)
         // Selecting the source again, as a hook for its session does, checks it on the next pass.
-        let later = start.addingTimeInterval(3600)
         await monitor.add(source: source, at: later)
         _ = try await monitor.pollOnce(at: later)
         #expect(await sink.observedGaps().count == checks + 1)

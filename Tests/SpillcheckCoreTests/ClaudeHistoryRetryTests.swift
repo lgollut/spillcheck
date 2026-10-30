@@ -8,8 +8,59 @@ private struct ClaudeHistoryRetryDetector: SecretDetector {
     }
 }
 
+private struct ClaudeHistorySlowDetector: SecretDetector {
+    func scan(_ source: SourceRecord) async throws -> DetectorOutput {
+        try await Task.sleep(for: .milliseconds(50))
+        return .init(detectorVersion: "claude-history-retry-fixture", findings: [], unlocated: [])
+    }
+}
+
 @Suite("Claude profile history recovery")
 struct ClaudeHistoryRetryTests {
+    @Test func passLongerThanItsBudgetFinishesWhileEachAttemptCommitsNewSources() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("spillcheck-claude-slow-history-\(UUID())").resolvingSymlinksInPath()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sourceDirectory = root.appendingPathComponent("sources")
+        try FileManager.default.createDirectory(at: sourceDirectory, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700])
+        let sources = claudeConfiguredURL(sourceDirectory)
+        // The store schedules retries from the wall clock, so the fixture lives in the present.
+        let start = Date()
+        let written = ISO8601DateFormatter().string(from: start.addingTimeInterval(-60))
+        let rows = try (0..<40).map { index in
+            try JSONSerialization.data(withJSONObject: ["type": "user", "uuid": "row-\(index)", "sessionId": "session",
+                "timestamp": written, "version": "2.1.293", "message": ["role": "user", "content": "prompt \(index)"]],
+                options: [.sortedKeys]) + Data([10])
+        }
+        try Data(rows.joined()).write(to: sources.appendingPathComponent("session.jsonl"))
+        let crypto = try BackgroundCryptography.ephemeralForTesting()
+        let store = try await ProtectedStore.open(at: root.appendingPathComponent("store"), cryptography: crypto)
+        let adapter = try ClaudeAdapter(profileID: "slow-fixture", agentVersion: "2.1.296",
+            allowedTranscriptRoots: [sources], checkpointLookup: { try await store.checkpoint(documentID: $0) })
+        let audit = try HistoricalAuditContext(reason: .resume, endingAt: start)
+        let permit = try #require(await store.processingPermit())
+        _ = try await store.enqueue(adapter.initialHistoricalCapture(audit: audit).body, capturedAt: start,
+            permit: permit, at: start, historicalAudit: audit)
+        // Scanning all 40 prompts takes about 2 s; one attempt may run 0.4 s.
+        let pipeline = DetectionPipeline(store: store, cryptography: crypto, normalizer: adapter,
+            detector: ClaudeHistorySlowDetector(), detectorVersion: "claude-history-retry-fixture",
+            liveSince: start, processingBudget: .milliseconds(400))
+        var outcomes: [PipelineOutcome] = []
+        for attempt in 1...30 {
+            if try await store.queueStatistics().count == 0 { break }
+            outcomes.append(try await pipeline.processNext(at: start.addingTimeInterval(Double(attempt) * 120)))
+        }
+        #expect(outcomes.filter { $0 == .retryScheduled }.count > 3)
+        #expect(try await store.queueStatistics().count == 0)
+        #expect(await store.snapshot().analysisReceipts.count == 40)
+        let final = try #require(try await store.historicalProgress().first)
+        #expect(!final.progress.hasUnreadContent && final.completedAt != nil)
+        #expect(try await store.coverageReport(endingAt: start.addingTimeInterval(3_600)).unresolvedOmissions.isEmpty)
+        try await store.close()
+    }
+
+
     @Test(arguments: [1, 2])
     func denseHistoryCommitsEachSliceInsteadOfRetryingAnOversizedRecoveryBatch(fileCount: Int) async throws {
         let root = FileManager.default.temporaryDirectory

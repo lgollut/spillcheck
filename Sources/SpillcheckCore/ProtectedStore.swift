@@ -727,13 +727,16 @@ public actor ProtectedStore {
         return true
     }
 
-    public func nextPending(at now: Date, permit: StoreProcessingPermit) async throws -> PendingCapture? {
+    /// Live captures come first. History gets a turn after four consecutive live claims, or when
+    /// the caller asks for it with `historyTurn`; either class is claimed when the other is empty.
+    public func nextPending(at now: Date, permit: StoreProcessingPermit,
+                            historyTurn: Bool? = nil) async throws -> PendingCapture? {
         try check(permit)
         try await expirePending(at: now, permit: permit)
         try check(permit)
         let claimID = UUID()
         let leaseEnd = now.addingTimeInterval(limits.claimDuration)
-        let priority = consecutiveLiveClaims >= 4 ? "DESC" : "ASC"
+        let priority = (historyTurn ?? (consecutiveLiveClaims >= 4)) ? "DESC" : "ASC"
         var claimedHistory = false
         do {
             let stored = try Self.write(database) { db -> StoredCapture? in
@@ -761,7 +764,8 @@ public actor ProtectedStore {
             let payload = try Self.decode(stored.encoded)
             guard payload.binding == Self.captureBinding(stored.id) else { throw StorageError.invalidPayload }
             return PendingCapture(id: stored.id, claimID: claimID, capturedAt: stored.capturedAt,
-                                  expiresAt: stored.expiresAt, retryCount: stored.retryCount, encryptedPayload: payload)
+                                  expiresAt: stored.expiresAt, retryCount: stored.retryCount, encryptedPayload: payload,
+                                  isHistorical: claimedHistory)
         } catch let error as StorageError { throw error }
         catch { throw StorageError.databaseUnavailable }
     }

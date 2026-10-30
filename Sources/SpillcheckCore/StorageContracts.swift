@@ -123,6 +123,8 @@ public struct PendingCapture: Sendable {
     public let expiresAt: Date
     public let retryCount: UInt
     public let encryptedPayload: ProtectedPayload
+    /// Recent-history work rather than a live capture.
+    public let isHistorical: Bool
 }
 
 public struct StoreQueueStatistics: Equatable, Sendable {

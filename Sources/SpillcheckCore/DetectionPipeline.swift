@@ -47,6 +47,11 @@ public actor DetectionPipeline {
     /// Sources this attempt added to the inventory. An attempt that ran out of time after adding
     /// some resumes past them, since replayed sources are skipped by their receipts.
     private var committedSources = 0
+    /// Worker time live captures may still use before history gets its next turn. A history
+    /// attempt grants live work as much time as it took, so slow catch-up passes cannot crowd out
+    /// live captures; history still waits for four live claims too.
+    private var liveTimeOwed: Duration = .zero
+    private var liveClaimsSinceHistory = 0
     private var lastCompaction = Date.distantPast
     private var failureObserver: (@Sendable (PipelineFailureDiagnostic) async -> Void)?
     private var captureCompletionObserver: (@Sendable (UUID) async -> Void)?
@@ -117,7 +122,12 @@ public actor DetectionPipeline {
     public func processNext(at now: Date = Date()) async throws -> PipelineOutcome {
         guard !processing else { throw PipelineError.alreadyProcessing }
         guard !Task.isCancelled, let permit = await store.processingPermit() else { return .idle }
-        guard let capture = try await store.nextPending(at: now, permit: permit) else { return .idle }
+        let historyTurn = liveTimeOwed <= .zero && liveClaimsSinceHistory >= 4
+        guard let capture = try await store.nextPending(at: now, permit: permit, historyTurn: historyTurn) else {
+            return .idle
+        }
+        let started = ContinuousClock.now
+        defer { account(capture, elapsed: ContinuousClock.now - started) }
         processing = true
         committedSources = 0
         await publish(processing: true)
@@ -149,6 +159,14 @@ public actor DetectionPipeline {
             try await store.retry(capture, reason: Self.reason(for: error), at: Date(), permit: permit,
                                   progressed: progressed)
             return .retryScheduled
+        }
+    }
+
+    private func account(_ capture: PendingCapture, elapsed: Duration) {
+        if capture.isHistorical {
+            liveTimeOwed = elapsed; liveClaimsSinceHistory = 0
+        } else {
+            liveTimeOwed -= elapsed; liveClaimsSinceHistory = min(4, liveClaimsSinceHistory + 1)
         }
     }
 

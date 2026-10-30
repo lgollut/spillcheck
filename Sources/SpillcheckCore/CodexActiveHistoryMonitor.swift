@@ -22,9 +22,10 @@ public struct CodexActiveSource: Sendable, Equatable {
 /// Only exact configured/admitted active sources. Public polling rereads the bounded tail so
 /// same-second metadata changes cannot hide hosted-tool or intermediate-message output.
 /// Versioned transcript polling performs stat only and reads zero unchanged payload bytes.
-/// Public polling follows activity: each hook or collected item marks its thread active, polls
-/// slow down as the thread goes quiet, and stop after an hour until the next hook. Every hook
-/// capture still reads its thread directly, so pausing an idle poll loses no content.
+/// Public polling follows activity: a hook marks its thread active when it arrives and a collected
+/// item as of its own time. Polls slow down as the thread goes quiet, and stop after an hour until
+/// the next hook. Every hook capture still reads its thread directly, so pausing an idle poll loses
+/// no content.
 public actor CodexActiveHistoryMonitor {
     public typealias Enqueue = @Sendable (CapturePacket, Date) async throws -> Void
     public typealias GapHandler = @Sendable (CoverageGap) async -> Void
@@ -70,16 +71,42 @@ public actor CodexActiveHistoryMonitor {
     /// Selecting a source also records activity for it. At capacity, the least recently active
     /// source is replaced; its thread is still read by any later hook capture.
     public func addSource(_ source: CodexActiveSource, at date: Date = Date()) async throws {
+        try await admit(source, activeAt: date, at: date)
+    }
+
+    /// Live items count as activity as of their own time, not when they were read. A poll rereads
+    /// its thread's tail, and a poll queued before a restart can be read much later, so neither
+    /// can keep a quiet thread at the fastest cadence.
+    public func observe(_ batch: CollectionBatch, authority: CodexCollectionAuthority, at date: Date = Date()) async {
+        var observed: [String: (source: CodexActiveSource, newest: Date)] = [:]
+        for collected in batch.sources {
+            let metadata = collected.record.metadata
+            guard case .live = metadata.origin.provenance else { continue }
+            let thread = metadata.identity.session.sessionID
+            if let known = observed[thread] {
+                observed[thread] = (known.source, max(known.newest, metadata.contentTime))
+            } else if let source = try? CodexActiveSource(threadID: thread, interface: metadata.origin.interface,
+                authority: authority, transcriptURL: collected.context?.transcriptPath.map { URL(fileURLWithPath: $0) }) {
+                observed[thread] = (source, metadata.contentTime)
+            }
+        }
+        for (source, newest) in observed.values { try? await admit(source, activeAt: min(newest, date), at: date) }
+    }
+
+    /// Activity no newer than a thread's last leaves its cadence alone.
+    private func admit(_ source: CodexActiveSource, activeAt activity: Date, at date: Date) async throws {
         // An unknown owner keeps the source; each poll rechecks ownership and reports a failure.
         if (try? await isHookOwned(source)) == true { return }
         if let previous = sources.first(where: { $0.threadID == source.threadID }) {
             guard previous.authority == source.authority, previous.transcriptURL == source.transcriptURL else {
                 throw CodexCollectionError.authorityConflict
             }
+            guard activity > lastActivity[source.threadID] ?? .distantPast else { return }
         } else {
             if sources.count >= 256, let stalest = sources.indices.min(by: {
                 (lastActivity[sources[$0].threadID] ?? .distantPast) < (lastActivity[sources[$1].threadID] ?? .distantPast)
             }) {
+                guard activity > lastActivity[sources[stalest].threadID] ?? .distantPast else { return }
                 let removed = sources.remove(at: stalest)
                 lastActivity.removeValue(forKey: removed.threadID); nextPoll.removeValue(forKey: removed.threadID)
                 capacityFailureReported.remove(removed.threadID)
@@ -88,7 +115,7 @@ public actor CodexActiveHistoryMonitor {
             }
             sources.append(source)
         }
-        lastActivity[source.threadID] = date
+        lastActivity[source.threadID] = activity
         nextPoll[source.threadID] = date
     }
     @discardableResult public func pollOnce(at date: Date = Date()) async throws -> Int {

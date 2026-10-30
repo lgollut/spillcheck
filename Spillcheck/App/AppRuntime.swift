@@ -91,7 +91,7 @@ private struct ObservedClaudeNormalizer: CaptureNormalizer {
 private struct ObservedCodexNormalizer: CaptureNormalizer {
     let adapter: CodexAdapter
     let onSelection: @Sendable ([CodexActiveSource]) async -> Void
-    let onObservation: @Sendable ([CodexActiveSource]) async -> Void
+    let onObservation: @Sendable (CollectionBatch, CodexCollectionAuthority) async -> Void
     let onBatch: @Sendable (CollectionBatch, CaptureMetadata) async -> Void
     func normalize(_ packet: CapturePacket, capturedAt: Date,
                    cryptography: BackgroundCryptography) async throws -> CollectionBatch {
@@ -117,20 +117,7 @@ private struct ObservedCodexNormalizer: CaptureNormalizer {
         }
         let batch = try await adapter.normalize(packet, capturedAt: capturedAt, cryptography: cryptography)
         await onBatch(batch, packet.metadata)
-        if !batch.sources.isEmpty {
-            var observed: [CodexActiveSource] = []
-            var threads = Set<String>()
-            for source in batch.sources {
-                guard case .live = source.record.metadata.origin.provenance,
-                      threads.insert(source.record.metadata.identity.session.sessionID).inserted else { continue }
-                if let selected = try? CodexActiveSource(threadID: source.record.metadata.identity.session.sessionID,
-                    interface: source.record.metadata.origin.interface, authority: adapter.authority,
-                    transcriptURL: source.context?.transcriptPath.map { URL(fileURLWithPath: $0) }) {
-                    observed.append(selected)
-                }
-            }
-            await onObservation(observed)
-        }
+        if !batch.sources.isEmpty { await onObservation(batch, adapter.authority) }
         return batch
     }
 }
@@ -2149,7 +2136,7 @@ final class AppRuntime {
                     }, checkpointLookup: { id in try await store.checkpoint(documentID: id) })
                 let normalizer = ObservedCodexNormalizer(adapter: adapter,
                     onSelection: { [weak self] sources in await self?.selectCodexSources(sources) },
-                    onObservation: { [weak self] sources in await self?.markCodexObserved(sources) },
+                    onObservation: { [weak self] batch, authority in await self?.markCodexObserved(batch, authority: authority) },
                     onBatch: { [weak self] batch, metadata in await self?.observeCollection(batch, metadata: metadata,
                         path: configuration.authority.collectionPath) })
                 let metadata = try CaptureMetadata(agent: .codex, interface: interface, profileID: configuration.profileID)
@@ -2331,9 +2318,9 @@ final class AppRuntime {
                                           operation: $0.operation, contentType: $0.contentType) })
     }
 
-    private func markCodexObserved(_ sources: [CodexActiveSource]) async {
+    private func markCodexObserved(_ batch: CollectionBatch, authority: CodexCollectionAuthority) async {
         collectionObserved = true
-        await selectCodexSources(sources)
+        await codexMonitor?.observe(batch, authority: authority)
     }
 
     private func selectCodexSources(_ sources: [CodexActiveSource]) async {

@@ -44,12 +44,13 @@ public actor DetectionPipeline {
     private var liveSince: Date
     private var worker: Task<Void, Never>?
     private var processing = false
-    /// Sources this attempt added to the inventory. An attempt that ran out of time after adding
-    /// some resumes past them, since replayed sources are skipped by their receipts.
+    /// Sources this attempt added to the inventory. Their receipts let the next attempt skip them,
+    /// so an attempt that ran out of time after adding some has advanced. Sources scanned with
+    /// coverage gaps are scanned again on every attempt and add nothing the second time.
     private var committedSources = 0
     /// Worker time live captures may still use before history gets its next turn. A history
     /// attempt grants live work as much time as it took, so slow catch-up passes cannot crowd out
-    /// live captures; history still waits for four live claims too.
+    /// live captures; history still waits for four live claims too. An idle worker owes nothing.
     private var liveTimeOwed: Duration = .zero
     private var liveClaimsSinceHistory = 0
     private var lastCompaction = Date.distantPast
@@ -124,6 +125,7 @@ public actor DetectionPipeline {
         guard !Task.isCancelled, let permit = await store.processingPermit() else { return .idle }
         let historyTurn = liveTimeOwed <= .zero && liveClaimsSinceHistory >= 4
         guard let capture = try await store.nextPending(at: now, permit: permit, historyTurn: historyTurn) else {
+            liveTimeOwed = .zero
             return .idle
         }
         let started = ContinuousClock.now

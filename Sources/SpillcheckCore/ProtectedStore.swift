@@ -523,7 +523,7 @@ public actor ProtectedStore {
                         throw StorageError.stateChanged
                     }
                 }
-                let bytes = try Int.fetchOne(db, sql: "SELECT COALESCE(SUM(byte_count), 0) FROM captures") ?? 0
+                let bytes = try Int.fetchOne(db, sql: HotQueries.queueBytes) ?? 0
                 guard encoded.count <= maxBytes, bytes <= maxBytes - encoded.count else { throw StorageError.queueSaturated }
                 try db.execute(sql: """
                     INSERT INTO captures (id, encoded, byte_count, captured_at, expires_at, retry_count, available_at, state, work_class)
@@ -557,9 +557,9 @@ public actor ProtectedStore {
 
     private static func queueStatistics(in db: Database) throws -> StoreQueueStatistics {
         let count = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM captures") ?? 0
-        let bytes = try Int.fetchOne(db, sql: "SELECT COALESCE(SUM(byte_count), 0) FROM captures") ?? 0
+        let bytes = try Int.fetchOne(db, sql: HotQueries.queueBytes) ?? 0
         let claimed = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM captures WHERE state = 1") ?? 0
-        let historical = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM captures WHERE work_class = 1") ?? 0
+        let historical = try Int.fetchOne(db, sql: HotQueries.historicalCount) ?? 0
         return StoreQueueStatistics(count: count, encryptedBytes: bytes, claimedCount: claimed, historicalCount: historical)
     }
 
@@ -647,7 +647,7 @@ public actor ProtectedStore {
         let rows: [StoredCapture]
         do {
             rows = try Self.read(database) { db in
-                try Row.fetchAll(db, sql: "SELECT id, encoded, captured_at, expires_at, retry_count FROM captures WHERE expires_at <= ? ORDER BY expires_at LIMIT ?",
+                try Row.fetchAll(db, sql: HotQueries.expiringCaptures,
                                  arguments: [now.timeIntervalSince1970, limit]).map { row in
                     guard let id = UUID(uuidString: row["id"]), let count = UInt(exactly: row["retry_count"] as Int64) else {
                         throw StorageError.corruptProtectedState
@@ -736,23 +736,23 @@ public actor ProtectedStore {
         try check(permit)
         let claimID = UUID()
         let leaseEnd = now.addingTimeInterval(limits.claimDuration)
-        let priority = (historyTurn ?? (consecutiveLiveClaims >= 4)) ? "DESC" : "ASC"
+        let historyFirst = historyTurn ?? (consecutiveLiveClaims >= 4)
         var claimedHistory = false
         do {
             let stored = try Self.write(database) { db -> StoredCapture? in
-                try db.execute(sql: "UPDATE captures SET state = 0, claim_id = NULL, lease_until = NULL WHERE state = 1 AND lease_until <= ?",
-                               arguments: [now.timeIntervalSince1970])
-                try db.execute(sql: "UPDATE collection_work SET state = ? WHERE state = ? AND id IN (SELECT id FROM captures WHERE state = 0)",
+                try db.execute(sql: HotQueries.releaseExpiredClaims, arguments: [now.timeIntervalSince1970])
+                try db.execute(sql: HotQueries.requeueReleasedWork,
                     arguments: [CollectionWorkState.queued.rawValue, CollectionWorkState.processing.rawValue])
-                guard let row = try Row.fetchOne(db, sql: """
-                    SELECT id, encoded, captured_at, expires_at, retry_count, work_class FROM captures
-                    WHERE state = 0 AND available_at <= ? AND expires_at > ?
-                    ORDER BY work_class \(priority), captured_at, id LIMIT 1
-                    """, arguments: [now.timeIntervalSince1970, now.timeIntervalSince1970]) else { return nil }
+                var claimed: Row?
+                for workClass in historyFirst ? [1, 0] : [0, 1] {
+                    claimed = try Row.fetchOne(db, sql: HotQueries.nextCapture,
+                        arguments: [workClass, now.timeIntervalSince1970, now.timeIntervalSince1970])
+                    if claimed != nil { claimedHistory = workClass == 1; break }
+                }
+                guard let row = claimed else { return nil }
                 guard let id = UUID(uuidString: row["id"]), let retryCount = UInt(exactly: row["retry_count"] as Int64) else {
                     throw StorageError.corruptProtectedState
                 }
-                claimedHistory = row["work_class"] as Int == 1
                 try db.execute(sql: "UPDATE captures SET state = 1, claim_id = ?, lease_until = ? WHERE id = ?",
                                arguments: [claimID.uuidString, leaseEnd.timeIntervalSince1970, id.uuidString])
                 try Self.updateWork(id: id, state: .processing, at: now, in: db)
@@ -1065,7 +1065,7 @@ public actor ProtectedStore {
                     """, arguments: [id.uuidString, encoded])
             }
             if let next = nextCapture {
-                let bytes = try Int.fetchOne(db, sql: "SELECT COALESCE(SUM(byte_count), 0) FROM captures WHERE id != ?",
+                let bytes = try Int.fetchOne(db, sql: HotQueries.queueBytesExcluding,
                                             arguments: [capture.id.uuidString]) ?? 0
                 guard next.bytes.count <= limits.maxQueueBytes,
                       bytes <= limits.maxQueueBytes - next.bytes.count else { throw StorageError.queueSaturated }
@@ -1101,7 +1101,7 @@ public actor ProtectedStore {
                 }
                 try db.execute(sql: "UPDATE collection_work SET recovery_certificate = ? WHERE id = ?",
                     arguments: [bytes, capture.id.uuidString])
-                guard try Int.fetchOne(db, sql: "SELECT COALESCE(SUM(length(encoded) + COALESCE(length(recovery_certificate), 0) + COALESCE(length(recovery_chain), 0)), 0) FROM collection_work") ?? 0
+                guard try Int.fetchOne(db, sql: HotQueries.workBytes) ?? 0
                     <= limits.maxProtectedStateBytes else { throw StorageError.stateTooLarge }
             }
             if let priorRecoveryID, recoveryWindowCovered {
@@ -1385,7 +1385,7 @@ public actor ProtectedStore {
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """, arguments: [id.uuidString, CollectionWorkState.queued.rawValue, now.timeIntervalSince1970,
                 now.timeIntervalSince1970, recoveryOf?.uuidString, context, recoveryChain])
-        guard try Int.fetchOne(db, sql: "SELECT COALESCE(SUM(length(encoded) + COALESCE(length(recovery_certificate), 0) + COALESCE(length(recovery_chain), 0)), 0) FROM collection_work") ?? 0 <= maximumBytes else {
+        guard try Int.fetchOne(db, sql: HotQueries.workBytes) ?? 0 <= maximumBytes else {
             throw StorageError.stateTooLarge
         }
     }
@@ -1393,13 +1393,7 @@ public actor ProtectedStore {
     /// Completed polls have no unresolved work to retry. Keep a bounded recent receipt set,
     /// while retaining exact work referenced by gap evidence and the separate latest-read rows.
     private static func pruneCompletedWork(in db: Database, retaining count: Int) throws {
-        try db.execute(sql: """
-            DELETE FROM collection_work WHERE id IN (
-                SELECT id FROM collection_work WHERE state IN (?, ?) AND retain_evidence = 0
-                AND NOT (recovery_certificate IS NOT NULL AND recovery_of IN
-                    (SELECT id FROM collection_work WHERE state = 'terminal'))
-                ORDER BY updated_at DESC, id LIMIT -1 OFFSET ?)
-            """, arguments: [CollectionWorkState.completed.rawValue, CollectionWorkState.recovered.rawValue, count])
+        try db.execute(sql: HotQueries.pruneCompletedWork, arguments: [count])
     }
 
     private static func updateWork(id: UUID, state: CollectionWorkState, at now: Date, in db: Database) throws {
@@ -1917,12 +1911,10 @@ public actor ProtectedStore {
     public func expireCoverageRecovery(at now: Date = Date()) throws -> Int {
         guard !closed, now.timeIntervalSince1970.isFinite else { throw StorageError.invalidTime }
         return try Self.write(database) { db in
-            try db.execute(sql: """
-                UPDATE coverage_omissions SET state = ?
-                WHERE COALESCE(content_at, created_at) < ? AND state IN (?, ?)
-                """, arguments: [CoverageOmissionState.unrecoverable.rawValue,
-                    now.addingTimeInterval(-HistoricalAuditContext.lookback).timeIntervalSince1970,
-                    CoverageOmissionState.retryable.rawValue, CoverageOmissionState.blocked.rawValue])
+            try db.execute(sql: HotQueries.expireRecoverableOmissions, arguments: [
+                CoverageOmissionState.unrecoverable.rawValue,
+                now.addingTimeInterval(-HistoricalAuditContext.lookback).timeIntervalSince1970,
+                CoverageOmissionState.retryable.rawValue, CoverageOmissionState.blocked.rawValue])
             let expired = db.changesCount
             _ = try Self.resolveHealthIncidents(where: """
                 requires_assessment = 0
@@ -2582,7 +2574,7 @@ public actor ProtectedStore {
             }
         }
         if !prepared.omissions.isEmpty {
-            let bytes = try Int.fetchOne(db, sql: "SELECT COALESCE(SUM(length(encoded)), 0) FROM coverage_omissions") ?? 0
+            let bytes = try Int.fetchOne(db, sql: HotQueries.omissionBytes) ?? 0
             guard bytes <= maximumBytes else { throw StorageError.stateTooLarge }
         }
         for incident in prepared.incidents {
@@ -2868,6 +2860,23 @@ public actor ProtectedStore {
             try db.execute(sql: "ALTER TABLE collection_work ADD COLUMN recovery_chain BLOB")
             try db.execute(sql: "CREATE INDEX collection_work_recovery ON collection_work (recovery_of)")
         }
+        migrator.registerMigration("v9-indexed-queue-maintenance") { db in
+            // Each statement in HotQueries reaches its rows through one of these indexes instead
+            // of reading the encrypted columns of every queued capture or ledger row.
+            try db.execute(sql: """
+                CREATE INDEX captures_expiry ON captures (expires_at);
+                CREATE INDEX captures_claim ON captures (state, work_class, captured_at, id, available_at, expires_at);
+                CREATE INDEX captures_bytes ON captures (id, byte_count);
+                CREATE INDEX collection_work_state ON collection_work (state, id);
+                CREATE INDEX collection_work_bytes ON collection_work
+                    (length(encoded) + COALESCE(length(recovery_certificate), 0) + COALESCE(length(recovery_chain), 0));
+                CREATE INDEX collection_work_prunable ON collection_work
+                    (updated_at DESC, id, state, retain_evidence, recovery_of, recovery_certificate)
+                    WHERE state IN ('completed', 'recovered') AND retain_evidence = 0;
+                CREATE INDEX coverage_omissions_bytes ON coverage_omissions (length(encoded));
+                CREATE INDEX coverage_omissions_expiry ON coverage_omissions (state, COALESCE(content_at, created_at));
+                """)
+        }
         try migrator.migrate(database)
     }
 
@@ -2907,5 +2916,56 @@ public actor ProtectedStore {
                 guard chmod(url.path, 0o600) == 0 else { throw StorageError.unsafeStorageLocation }
             }
         }
+    }
+}
+
+extension ProtectedStore {
+    /// Statements that run for every capture or every refresh. The queue and the work and omission
+    /// ledgers hold thousands of rows with large encrypted columns, so each statement reaches its
+    /// rows through an index from `v9-indexed-queue-maintenance`. Reading every row instead made
+    /// each capture slower the longer the queue grew.
+    enum HotQueries {
+        static let expiringCaptures = """
+            SELECT id, encoded, captured_at, expires_at, retry_count FROM captures
+            WHERE expires_at <= ? ORDER BY expires_at LIMIT ?
+            """
+        static let queueBytes = "SELECT COALESCE(SUM(byte_count), 0) FROM captures"
+        static let queueBytesExcluding = "SELECT COALESCE(SUM(byte_count), 0) FROM captures WHERE id != ?"
+        static let historicalCount = "SELECT COUNT(*) FROM captures WHERE work_class = 1"
+        /// Matches the `collection_work_bytes` index expression exactly, so the sum reads only the index.
+        static let workBytes = """
+            SELECT COALESCE(SUM(length(encoded) + COALESCE(length(recovery_certificate), 0) + COALESCE(length(recovery_chain), 0)), 0)
+            FROM collection_work
+            """
+        static let omissionBytes = "SELECT COALESCE(SUM(length(encoded)), 0) FROM coverage_omissions"
+        static let releaseExpiredClaims = """
+            UPDATE captures SET state = 0, claim_id = NULL, lease_until = NULL WHERE state = 1 AND lease_until <= ?
+            """
+        static let requeueReleasedWork = """
+            UPDATE collection_work SET state = ? WHERE state = ?
+            AND EXISTS (SELECT 1 FROM captures WHERE captures.id = collection_work.id AND captures.state = 0)
+            """
+        /// The oldest available capture of one work class. Without the pinned index SQLite would
+        /// range over availability and sort every queued capture to find it.
+        static let nextCapture = """
+            SELECT id, encoded, captured_at, expires_at, retry_count FROM captures INDEXED BY captures_claim
+            WHERE state = 0 AND work_class = ? AND available_at <= ? AND expires_at > ?
+            ORDER BY captured_at, id LIMIT 1
+            """
+        /// Keeps the newest `?` completed or recovered rows that hold no gap evidence or recovery
+        /// certificate. The states are literals so the partial `collection_work_prunable` index
+        /// applies; it walks the retained rows in order without reading the table.
+        static let pruneCompletedWork = """
+            DELETE FROM collection_work WHERE id IN (
+                SELECT id FROM collection_work INDEXED BY collection_work_prunable
+                WHERE state IN ('completed', 'recovered') AND retain_evidence = 0
+                AND NOT (recovery_certificate IS NOT NULL AND recovery_of IN
+                    (SELECT id FROM collection_work WHERE state = 'terminal'))
+                ORDER BY updated_at DESC, id LIMIT -1 OFFSET ?)
+            """
+        static let expireRecoverableOmissions = """
+            UPDATE coverage_omissions SET state = ?
+            WHERE COALESCE(content_at, created_at) < ? AND state IN (?, ?)
+            """
     }
 }

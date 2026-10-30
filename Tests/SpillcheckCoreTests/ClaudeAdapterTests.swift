@@ -23,6 +23,11 @@ private func claudePacket(_ hook: [String: Any], profile: String = "test", inter
                       eventJSON: JSONSerialization.data(withJSONObject: hook))
 }
 private func claudeText(_ source: CollectedSource) -> String { source.record.segments.map { String(decoding: $0.utf8, as: UTF8.self) }.joined(separator: "\n") }
+private actor ClaudeCheckpointStore {
+    private var saved: [UUID: SourceCheckpoint] = [:]
+    func lookup(_ id: UUID) -> SourceCheckpoint? { saved[id] }
+    func keep(_ batch: CollectionBatch) { for checkpoint in batch.checkpoints { saved[checkpoint.sourceDocumentID] = checkpoint } }
+}
 
 @Suite("Claude validated collection")
 struct ClaudeAdapterTests {
@@ -373,6 +378,37 @@ struct ClaudeAdapterTests {
         let batch=try await adapter.normalize(claudePacket(["session_id":"session","hook_event_name":"PostToolUse","transcript_path":file.path,"tool_use_id":"pending"]),capturedAt:Date(),cryptography:crypto)
         #expect(batch.sources.isEmpty)
         #expect(batch.coverageGaps.isEmpty)
+    }
+
+    /// A long session has more tool calls than the cursor remembers. A hook processed after a poll
+    /// already read its row, as happens with any backlog, must still find its newest call.
+    @Test(arguments: [false, true])
+    func lateHookFindsTheNewestCallInALongSession(pollReadsItFirst: Bool) async throws {
+        let directory = try claudeTemporaryDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("source.jsonl")
+        let checkpoints = ClaudeCheckpointStore()
+        let adapter = try ClaudeAdapter(profileID: "test", agentVersion: "2.1.293", allowedTranscriptRoots: [directory],
+            checkpointLookup: { await checkpoints.lookup($0) })
+        let crypto = try BackgroundCryptography.ephemeralForTesting()
+        func result(_ id: String) throws -> Data {
+            try claudeRow(uuid: "row-\(id)", content: [["type": "tool_result", "tool_use_id": id, "content": "synthetic output"]])
+        }
+        func poll() async throws -> CollectionBatch {
+            let batch = try await adapter.normalize(claudePacket(["session_id": "session",
+                "hook_event_name": "SpillcheckTranscriptPoll", "transcript_path": file.path]), capturedAt: Date(), cryptography: crypto)
+            await checkpoints.keep(batch)
+            return batch
+        }
+        // 2,100 earlier calls whose IDs sort after the newest one.
+        try (0..<2100).map { try result("toolu_z\(String(format: "%05d", $0))") }.reduce(Data(), +).write(to: file)
+        for _ in 0..<8 where try await poll().continuation != nil {}
+        let handle = try FileHandle(forWritingTo: file); try handle.seekToEnd()
+        try handle.write(contentsOf: result("toolu_a-newest")); try handle.close()
+        if pollReadsItFirst { _ = try await poll() }
+        let batch = try await adapter.normalize(claudePacket(["session_id": "session", "hook_event_name": "PostToolUse",
+            "transcript_path": file.path, "tool_use_id": "toolu_a-newest"]), capturedAt: Date(), cryptography: crypto)
+        #expect(batch.coverageGaps.isEmpty)
+        #expect(batch.sources.contains { $0.record.metadata.identity.itemID == "tool:toolu_a-newest" } == !pollReadsItFirst)
     }
 
     @Test func subagentNudgeValidatesIndependentSessionAndRetainsItsOwnContext() async throws {

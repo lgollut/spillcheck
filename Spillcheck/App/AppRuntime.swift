@@ -1176,6 +1176,8 @@ final class AppRuntime {
             #endif
         } catch {
             model.storageMessage = Self.storageFailureMessage(error)
+            // Keep the activity while monitoring runs: analysis can go on while a report fails.
+            if !model.monitoringEnabled { holdAnalysisActivity(false) }
         }
     }
 

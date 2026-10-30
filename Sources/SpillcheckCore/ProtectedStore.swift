@@ -797,13 +797,15 @@ public actor ProtectedStore {
         catch { throw StorageError.databaseUnavailable }
     }
 
+    /// A `progressed` attempt ran out of time after committing new sources. It is queued again at
+    /// once without using up a retry, so a long pass finishes; an attempt that adds nothing counts.
     public func retry(
         _ capture: PendingCapture, reason: CoverageGapReason, at now: Date,
-        permit: StoreProcessingPermit
+        permit: StoreProcessingPermit, progressed: Bool = false
     ) async throws {
         try check(permit)
         guard now.timeIntervalSince1970.isFinite else { throw StorageError.invalidTime }
-        let count = capture.retryCount + 1
+        let count = progressed ? capture.retryCount : capture.retryCount + 1
         let shouldDrop = count > limits.maxRetryCount || capture.expiresAt <= now
         let opened = try? await openCapturedWork(capture)
         let attempted = try await prepareFailedHistoricalAttempt(opened: opened, continuing: !shouldDrop, at: now)
@@ -823,12 +825,13 @@ public actor ProtectedStore {
                         ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at, encoded = excluded.encoded
                         """, arguments: [attempted.id.uuidString, now.timeIntervalSince1970, attempted.bytes])
                 }
-                try Self.updateWork(id: capture.id, state: shouldDrop ? .terminal : .stalled, at: now, in: db)
+                try Self.updateWork(id: capture.id, state: shouldDrop ? .terminal : progressed ? .queued : .stalled,
+                                    at: now, in: db)
                 if shouldDrop {
                     try Self.consumeCapture(capture.id, in: db)
                     if let loss { try Self.writeCoverageSettlement(loss, at: now, maximumBytes: limits.maxProtectedStateBytes, in: db) }
                 } else {
-                    let delay = min(60.0, pow(2.0, Double(min(count, 6))))
+                    let delay = progressed ? 0 : min(60.0, pow(2.0, Double(min(count, 6))))
                     try db.execute(sql: """
                         UPDATE captures SET state = 0, claim_id = NULL, lease_until = NULL,
                         retry_count = ?, available_at = ? WHERE id = ?

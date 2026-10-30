@@ -43,6 +43,11 @@ public actor DetectionPipeline {
     private var liveSince: Date
     private var worker: Task<Void, Never>?
     private var processing = false
+    /// Worker time live captures may still use before history gets its next turn. A history
+    /// attempt grants live work as much time as it took, so slow catch-up passes cannot crowd out
+    /// live captures; history still waits for four live claims too.
+    private var liveTimeOwed: Duration = .zero
+    private var liveClaimsSinceHistory = 0
     private var lastCompaction = Date.distantPast
     private var failureObserver: (@Sendable (PipelineFailureDiagnostic) async -> Void)?
     private var captureCompletionObserver: (@Sendable (UUID) async -> Void)?
@@ -112,7 +117,12 @@ public actor DetectionPipeline {
     public func processNext(at now: Date = Date()) async throws -> PipelineOutcome {
         guard !processing else { throw PipelineError.alreadyProcessing }
         guard !Task.isCancelled, let permit = await store.processingPermit() else { return .idle }
-        guard let capture = try await store.nextPending(at: now, permit: permit) else { return .idle }
+        let historyTurn = liveTimeOwed <= .zero && liveClaimsSinceHistory >= 4
+        guard let capture = try await store.nextPending(at: now, permit: permit, historyTurn: historyTurn) else {
+            return .idle
+        }
+        let started = ContinuousClock.now
+        defer { account(capture, elapsed: ContinuousClock.now - started) }
         processing = true
         await publish(processing: true)
         do {
@@ -141,6 +151,14 @@ public actor DetectionPipeline {
             // The store generation rejects retry work after pause, deletion or shutdown too.
             try await store.retry(capture, reason: Self.reason(for: error), at: Date(), permit: permit)
             return .retryScheduled
+        }
+    }
+
+    private func account(_ capture: PendingCapture, elapsed: Duration) {
+        if capture.isHistorical {
+            liveTimeOwed = elapsed; liveClaimsSinceHistory = 0
+        } else {
+            liveTimeOwed -= elapsed; liveClaimsSinceHistory = min(4, liveClaimsSinceHistory + 1)
         }
     }
 

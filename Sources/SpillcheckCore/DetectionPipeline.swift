@@ -81,12 +81,16 @@ public actor DetectionPipeline {
         worker = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { break }
+                var wait = true
                 do {
-                    if try await self.processNext() == .idle { await self.compactIfDue() }
+                    if try await self.processNext() == .idle { await self.compactIfDue() } else { wait = false }
                 }
                 catch is CancellationError { break }
                 catch { /* Only controlled coverage errors enter persistence, never raw diagnostics. */ }
-                do { try await Task.sleep(for: .milliseconds(250)) } catch { break }
+                // Queued captures run back to back; the worker waits only when none was claimable
+                // or a claim failed, so a persistent failure cannot spin.
+                if wait { do { try await Task.sleep(for: .milliseconds(250)) } catch { break } }
+                else { await Task.yield() }
             }
         }
     }

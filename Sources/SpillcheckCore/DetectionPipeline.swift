@@ -39,10 +39,14 @@ public actor DetectionPipeline {
     private let normalizer: any CaptureNormalizer
     private let detector: any SecretDetector
     private let detectorVersion: String
+    private let processingBudget: Duration
     private let onActivity: @Sendable (PipelineActivity) async -> Void
     private var liveSince: Date
     private var worker: Task<Void, Never>?
     private var processing = false
+    /// Sources this attempt added to the inventory. An attempt that ran out of time after adding
+    /// some resumes past them, since replayed sources are skipped by their receipts.
+    private var committedSources = 0
     private var lastCompaction = Date.distantPast
     private var failureObserver: (@Sendable (PipelineFailureDiagnostic) async -> Void)?
     private var captureCompletionObserver: (@Sendable (UUID) async -> Void)?
@@ -64,13 +68,14 @@ public actor DetectionPipeline {
 
     public init(store: ProtectedStore, cryptography: BackgroundCryptography,
                 normalizer: any CaptureNormalizer, detector: any SecretDetector,
-                detectorVersion: String, liveSince: Date = Date(),
+                detectorVersion: String, liveSince: Date = Date(), processingBudget: Duration = .seconds(110),
                 onActivity: @escaping @Sendable (PipelineActivity) async -> Void = { _ in }) {
         self.store = store
         self.cryptography = cryptography
         self.normalizer = normalizer
         self.detector = detector
         self.detectorVersion = detectorVersion
+        self.processingBudget = processingBudget
         self.liveSince = liveSince
         self.onActivity = onActivity
     }
@@ -114,12 +119,13 @@ public actor DetectionPipeline {
         guard !Task.isCancelled, let permit = await store.processingPermit() else { return .idle }
         guard let capture = try await store.nextPending(at: now, permit: permit) else { return .idle }
         processing = true
+        committedSources = 0
         await publish(processing: true)
         do {
             try await withThrowingTaskGroup(of: Void.self) { group in
                 group.addTask { try await self.process(capture, permit: permit, now: now) }
                 group.addTask {
-                    try await Task.sleep(for: .seconds(110))
+                    try await Task.sleep(for: self.processingBudget)
                     throw PipelineError.budgetExhausted
                 }
                 defer { group.cancelAll() }
@@ -139,7 +145,9 @@ public actor DetectionPipeline {
                 await failureObserver(.init(stage: failureStage, code: Self.diagnosticCode(error), reason: Self.reason(for: error)))
             }
             // The store generation rejects retry work after pause, deletion or shutdown too.
-            try await store.retry(capture, reason: Self.reason(for: error), at: Date(), permit: permit)
+            let progressed = error as? PipelineError == .budgetExhausted && committedSources > 0
+            try await store.retry(capture, reason: Self.reason(for: error), at: Date(), permit: permit,
+                                  progressed: progressed)
             return .retryScheduled
         }
     }
@@ -210,7 +218,8 @@ public actor DetectionPipeline {
             let prepared = try await prepare(source: source, context: collected.context, output: output, version: version)
             try Task.checkCancellation()
             diagnosticStage(.commitSource)
-            _ = try await store.commit(prepared.analysis, payloads: prepared.payloads, linking: capture, permit: permit)
+            let transition = try await store.commit(prepared.analysis, payloads: prepared.payloads, linking: capture, permit: permit)
+            if transition.outcome == .processed { committedSources += 1 }
         }
         if reducedCoverage {
             // Retryable scanner work retains its queue claim and source progress. Persist its

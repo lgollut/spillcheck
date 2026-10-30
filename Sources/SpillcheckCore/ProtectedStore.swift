@@ -112,7 +112,8 @@ private struct OmissionIdentityKey: Codable {
 /// Opened report rows, kept while their ciphertext is unchanged. Opening is a pure function of a
 /// row's ciphertext and its row binding, so a kept value is exactly what reopening would return.
 /// The app refreshes coverage every second; reopening up to a thousand unchanged rows of each kind
-/// every time kept the store busy and delayed capture processing.
+/// every time kept the store busy and delayed capture processing. Closing the store clears them,
+/// and a decode that resumes after closing keeps nothing.
 private struct OpenedRows<Value> {
     private static var capacity: Int { 2048 }
     private var entries: [UUID: (encoded: Data, value: Value)] = [:]
@@ -1591,7 +1592,7 @@ public actor ProtectedStore {
             if let kept = openedWorkContexts.value(for: id, encoded: encoded) { context = kept } else {
                 let bytes = try await cryptography.openBackground(Self.decode(encoded), binding: Self.checkpointBinding(id))
                 context = try JSONDecoder().decode(CollectionWorkContext.self, from: bytes)
-                openedWorkContexts.keep(context, for: id, encoded: encoded)
+                if !closed { openedWorkContexts.keep(context, for: id, encoded: encoded) }
             }
             let attempted: Double? = row["attempted_at"], completed: Double? = row["completed_at"]
             let omission: String? = row["omission_id"]
@@ -1795,7 +1796,7 @@ public actor ProtectedStore {
                     } else {
                         opened = .legacy(try JSONDecoder().decode(CoverageGap.self, from: bytes))
                     }
-                    openedGapEvents.keep(opened, for: id, encoded: encoded)
+                    if !closed { openedGapEvents.keep(opened, for: id, encoded: encoded) }
                 }
                 let observed = Date(timeIntervalSince1970: row["created_at"])
                 switch opened {
@@ -1884,7 +1885,7 @@ public actor ProtectedStore {
                 let plaintext = try await cryptography.openBackground(Self.decode(encoded), binding: Self.checkpointBinding(id))
                 stored = try JSONDecoder().decode(CoverageOmission.self, from: plaintext)
                 guard stored.id == id else { throw StorageError.corruptProtectedState }
-                openedOmissions.keep(stored, for: id, encoded: encoded)
+                if !closed { openedOmissions.keep(stored, for: id, encoded: encoded) }
             }
             let resolved: Double? = row["resolved_at"]
             result.append(CoverageOmission(id: id, gap: stored.gap, firstObservedAt: stored.firstObservedAt,

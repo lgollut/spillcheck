@@ -26,19 +26,19 @@ struct PipelineWorkerTests {
         let packet = try CapturePacket(metadata: .init(agent: .claudeCode, profileID: "worker-fixture"),
             eventJSON: Data("{}".utf8))
         let now = Date()
-        for _ in 0..<40 { _ = try await store.enqueue(packet.body, capturedAt: now, permit: permit, at: now) }
+        for _ in 0..<10 { _ = try await store.enqueue(packet.body, capturedAt: now, permit: permit, at: now) }
+        // The worker waits a minute whenever it pauses, so the queue drains within that minute
+        // only if it never pauses between captures. It used to pause after every capture.
         let pipeline = DetectionPipeline(store: store, cryptography: crypto, normalizer: EmptyBatchNormalizer(),
-            detector: UnusedWorkerDetector(), detectorVersion: "worker-fixture")
+            detector: UnusedWorkerDetector(), detectorVersion: "worker-fixture", idleWait: .seconds(60))
         let started = ContinuousClock.now
         await pipeline.start()
-        while try await store.queueStatistics().count > 0, ContinuousClock.now - started < .seconds(20) {
+        while try await store.queueStatistics().count > 0, ContinuousClock.now - started < .seconds(50) {
             try await Task.sleep(for: .milliseconds(20))
         }
-        let elapsed = ContinuousClock.now - started
+        let elapsed = ContinuousClock.now - started, left = try await store.queueStatistics().count
+        #expect(left == 0, "\(left) left after \(elapsed)")
         await pipeline.stop()
-        #expect(try await store.queueStatistics().count == 0)
-        // The worker used to pause 250 ms after every capture, so these forty took at least 10 s.
-        #expect(elapsed < .seconds(5), "draining took \(elapsed)")
         try await store.close()
     }
 }

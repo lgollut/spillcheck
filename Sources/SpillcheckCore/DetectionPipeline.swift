@@ -40,6 +40,8 @@ public actor DetectionPipeline {
     private let detector: any SecretDetector
     private let detectorVersion: String
     private let onActivity: @Sendable (PipelineActivity) async -> Void
+    /// How long the running worker waits when nothing was claimable or a claim failed.
+    private let idleWait: Duration
     private var liveSince: Date
     private var worker: Task<Void, Never>?
     private var processing = false
@@ -64,9 +66,10 @@ public actor DetectionPipeline {
 
     public init(store: ProtectedStore, cryptography: BackgroundCryptography,
                 normalizer: any CaptureNormalizer, detector: any SecretDetector,
-                detectorVersion: String, liveSince: Date = Date(),
+                detectorVersion: String, liveSince: Date = Date(), idleWait: Duration = .milliseconds(250),
                 onActivity: @escaping @Sendable (PipelineActivity) async -> Void = { _ in }) {
         self.store = store
+        self.idleWait = idleWait
         self.cryptography = cryptography
         self.normalizer = normalizer
         self.detector = detector
@@ -89,7 +92,7 @@ public actor DetectionPipeline {
                 catch { /* Only controlled coverage errors enter persistence, never raw diagnostics. */ }
                 // Queued captures run back to back; the worker waits only when none was claimable
                 // or a claim failed, so a persistent failure cannot spin.
-                if wait { do { try await Task.sleep(for: .milliseconds(250)) } catch { break } }
+                if wait { do { try await Task.sleep(for: self.idleWait) } catch { break } }
                 else { await Task.yield() }
             }
         }

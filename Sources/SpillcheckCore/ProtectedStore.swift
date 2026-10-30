@@ -109,6 +109,32 @@ private struct OmissionIdentityKey: Codable {
     let operation: CollectionOperation?
 }
 
+/// Opened report rows, kept while their ciphertext is unchanged. Opening is a pure function of a
+/// row's ciphertext and its row binding, so a kept value is exactly what reopening would return.
+/// The app refreshes coverage every second; reopening up to a thousand unchanged rows of each kind
+/// every time kept the store busy and delayed capture processing. Closing the store clears them,
+/// and a decode that resumes after closing keeps nothing.
+private struct OpenedRows<Value> {
+    private static var capacity: Int { 2048 }
+    private var entries: [UUID: (encoded: Data, value: Value)] = [:]
+
+    func value(for id: UUID, encoded: Data) -> Value? {
+        guard let entry = entries[id], entry.encoded == encoded else { return nil }
+        return entry.value
+    }
+    mutating func keep(_ value: Value, for id: UUID, encoded: Data) {
+        if entries[id] == nil, entries.count >= Self.capacity { entries.removeAll(keepingCapacity: true) }
+        entries[id] = (encoded, value)
+    }
+    mutating func removeAll() { entries.removeAll() }
+}
+
+private enum OpenedGapEvent {
+    case event(StoredCoverageGapEvent)
+    /// Schema 1–3 stored the gap without its encrypted event envelope.
+    case legacy(CoverageGap)
+}
+
 private struct HealthIdentityKey: Codable {
     let scope: CollectionScope
     let contentType: ContentType?
@@ -135,6 +161,9 @@ public actor ProtectedStore {
     private var generation = UUID()
     private var closed = false
     private var consecutiveLiveClaims = 0
+    private var openedOmissions = OpenedRows<CoverageOmission>()
+    private var openedGapEvents = OpenedRows<OpenedGapEvent>()
+    private var openedWorkContexts = OpenedRows<CollectionWorkContext>()
 
     private init(
         directory: URL, manifest: ProtectionManifest, database: DatabaseQueue,
@@ -279,6 +308,7 @@ public actor ProtectedStore {
         monitoringEnabled = false
         generation = UUID()
         guard !closed else { return }
+        openedOmissions.removeAll(); openedGapEvents.removeAll(); openedWorkContexts.removeAll()
         do { try database.close(); closed = true }
         catch { throw StorageError.databaseUnavailable }
     }
@@ -1557,8 +1587,13 @@ public actor ProtectedStore {
             guard let id = UUID(uuidString: row["id"]), let state = CollectionWorkState(rawValue: row["state"]) else {
                 throw StorageError.corruptProtectedState
             }
-            let bytes = try await cryptography.openBackground(Self.decode(row["encoded"]), binding: Self.checkpointBinding(id))
-            let context = try JSONDecoder().decode(CollectionWorkContext.self, from: bytes)
+            let encoded: Data = row["encoded"]
+            let context: CollectionWorkContext
+            if let kept = openedWorkContexts.value(for: id, encoded: encoded) { context = kept } else {
+                let bytes = try await cryptography.openBackground(Self.decode(encoded), binding: Self.checkpointBinding(id))
+                context = try JSONDecoder().decode(CollectionWorkContext.self, from: bytes)
+                if !closed { openedWorkContexts.keep(context, for: id, encoded: encoded) }
+            }
             let attempted: Double? = row["attempted_at"], completed: Double? = row["completed_at"]
             let omission: String? = row["omission_id"]
             let recoveryString: String? = row["recovery_of"]
@@ -1752,17 +1787,25 @@ public actor ProtectedStore {
         for row in rows {
             do {
                 guard let id = UUID(uuidString: row["id"]) else { throw StorageError.corruptProtectedState }
-                let payload = try Self.decode(row["encoded"])
-                let bytes = try await cryptography.openBackground(payload, binding: Self.checkpointBinding(id))
+                let encoded: Data = row["encoded"]
+                let opened: OpenedGapEvent
+                if let kept = openedGapEvents.value(for: id, encoded: encoded) { opened = kept } else {
+                    let bytes = try await cryptography.openBackground(Self.decode(encoded), binding: Self.checkpointBinding(id))
+                    if let event = try? JSONDecoder().decode(StoredCoverageGapEvent.self, from: bytes) {
+                        opened = .event(event)
+                    } else {
+                        opened = .legacy(try JSONDecoder().decode(CoverageGap.self, from: bytes))
+                    }
+                    if !closed { openedGapEvents.keep(opened, for: id, encoded: encoded) }
+                }
                 let observed = Date(timeIntervalSince1970: row["created_at"])
-                if let event = try? JSONDecoder().decode(StoredCoverageGapEvent.self, from: bytes) {
+                switch opened {
+                case .event(let event):
                     guard event.id == id, abs(event.observedAt.timeIntervalSince(observed)) < 0.001 else {
                         throw StorageError.corruptProtectedState
                     }
                     events.append(event)
-                } else {
-                    // Schema 1–3 stored the gap without its encrypted event envelope.
-                    let gap = try JSONDecoder().decode(CoverageGap.self, from: bytes)
+                case .legacy(let gap):
                     events.append(StoredCoverageGapEvent(id: id, gap: gap, observedAt: observed))
                 }
             } catch let error as StorageError { throw error }
@@ -1836,9 +1879,14 @@ public actor ProtectedStore {
         for row in rows {
             guard let id = UUID(uuidString: row["id"]),
                   let state = CoverageOmissionState(rawValue: row["state"]) else { throw StorageError.corruptProtectedState }
-            let plaintext = try await cryptography.openBackground(Self.decode(row["encoded"]), binding: Self.checkpointBinding(id))
-            let stored = try JSONDecoder().decode(CoverageOmission.self, from: plaintext)
-            guard stored.id == id else { throw StorageError.corruptProtectedState }
+            let encoded: Data = row["encoded"]
+            let stored: CoverageOmission
+            if let kept = openedOmissions.value(for: id, encoded: encoded) { stored = kept } else {
+                let plaintext = try await cryptography.openBackground(Self.decode(encoded), binding: Self.checkpointBinding(id))
+                stored = try JSONDecoder().decode(CoverageOmission.self, from: plaintext)
+                guard stored.id == id else { throw StorageError.corruptProtectedState }
+                if !closed { openedOmissions.keep(stored, for: id, encoded: encoded) }
+            }
             let resolved: Double? = row["resolved_at"]
             result.append(CoverageOmission(id: id, gap: stored.gap, firstObservedAt: stored.firstObservedAt,
                 state: state, resolvedAt: resolved.map(Date.init(timeIntervalSince1970:))))

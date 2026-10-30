@@ -74,7 +74,11 @@ private struct ClaudeRestorationFixture {
                 let context = try route.context(for: packet, trigger: .activePoll)
                 _ = try await store.enqueue(packet.body, capturedAt: time, permit: permit, at: time,
                     scope: liveScope, workContext: context)
-            }, onGap: { gap in try? await store.recordCoverageGap(gap) })
+            }, onGap: { gap in
+                // The fixture's polls and reports run on `now`, not the wall clock. A gap dated by
+                // the wall clock fell outside the report window whenever the suite ran slowly.
+                try? await store.recordCoverageGap(gap, at: gap.observedAt ?? now)
+            })
         let pipeline = DetectionPipeline(store: store, cryptography: crypto, normalizer: adapter,
             detector: ClaudeRestorationDetector(), detectorVersion: "claude-restoration-fixture", liveSince: now)
         return (store, pipeline, monitor)

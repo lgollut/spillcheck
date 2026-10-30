@@ -45,7 +45,7 @@ public actor DetectionPipeline {
     private var processing = false
     /// Worker time live captures may still use before history gets its next turn. A history
     /// attempt grants live work as much time as it took, so slow catch-up passes cannot crowd out
-    /// live captures; history still waits for four live claims too.
+    /// live captures; history still waits for four live claims too. An idle worker owes nothing.
     private var liveTimeOwed: Duration = .zero
     private var liveClaimsSinceHistory = 0
     private var lastCompaction = Date.distantPast
@@ -119,6 +119,7 @@ public actor DetectionPipeline {
         guard !Task.isCancelled, let permit = await store.processingPermit() else { return .idle }
         let historyTurn = liveTimeOwed <= .zero && liveClaimsSinceHistory >= 4
         guard let capture = try await store.nextPending(at: now, permit: permit, historyTurn: historyTurn) else {
+            liveTimeOwed = .zero
             return .idle
         }
         let started = ContinuousClock.now

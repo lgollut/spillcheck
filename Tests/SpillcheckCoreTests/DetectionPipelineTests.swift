@@ -150,14 +150,14 @@ private actor PipelineClaimLog {
     func record(_ id: String) { ids.append(id) }
 }
 
-/// History captures take a second to read; live captures are immediate. Both yield no sources.
+/// History captures take two seconds to read; live captures are immediate. Both yield no sources.
 private struct PipelineTimedNormalizer: CaptureNormalizer {
     let log: PipelineClaimLog
     func normalize(_ packet: CapturePacket, capturedAt: Date,
                    cryptography: BackgroundCryptography) async throws -> CollectionBatch {
         let id = try JSONDecoder().decode(PipelineCaptureID.self, from: packet.eventJSON).id
         await log.record(id)
-        if id.hasPrefix("history") { try await Task.sleep(for: .seconds(1)) }
+        if id.hasPrefix("history") { try await Task.sleep(for: .seconds(2)) }
         return CollectionBatch(sources: [], checkpoints: [])
     }
 }
@@ -185,8 +185,8 @@ struct DetectionPipelineTests {
         for _ in ids {
             #expect(try await pipeline.processNext(at: now.addingTimeInterval(1)) == .processed)
         }
-        // Four live captures go first, as before. After the one-second history pass, the eight
-        // remaining live captures need far less than a second, so all of them run before history.
+        // Four live captures go first, as before. After the two-second history pass, the eight
+        // remaining live captures need far less time, so all of them run before history.
         let order = await log.ids
         #expect(order.count == ids.count)
         #expect(order.firstIndex(of: "history-1") == 4)

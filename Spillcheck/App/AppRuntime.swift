@@ -1169,6 +1169,8 @@ final class AppRuntime {
             #endif
         } catch {
             model.storageMessage = Self.storageFailureMessage(error)
+            // Keep the activity while monitoring runs: analysis can go on while a report fails.
+            if !model.monitoringEnabled { holdAnalysisActivity(false) }
         }
     }
 
@@ -2616,7 +2618,11 @@ final class AppRuntime {
         model.startupFailure = nil
         model.storageMessage = nil
         model.resumeAfterBarrier()
-        startup = Task { [weak self] in await self?.openStorage() }
+        startup = Task { [weak self] in
+            // The unlock notification can arrive just before the keys become readable.
+            guard (try? await Task.sleep(for: .seconds(2))) != nil else { return }
+            await self?.openStorage()
+        }
     }
 
     private static func isLockedKeychain(_ error: KeyUnavailable) -> Bool {
@@ -2652,7 +2658,7 @@ final class AppRuntime {
         }
         if let keyError = error as? KeyUnavailable, case .unusableKey(_, let code) = keyError,
            code == Int(errSecInteractionNotAllowed) {
-            return "macOS is preventing access to the vault’s device keys. Make sure your Mac is unlocked, then quit and reopen Spillcheck. Existing storage is preserved."
+            return "macOS is preventing access to the vault’s device keys while your Mac is locked. Spillcheck opens the vault the next time you unlock your Mac; to open it now, quit and reopen Spillcheck. Existing storage is preserved."
         }
         if error is KeyUnavailable { return "Vault unavailable. Required device keys could not be loaded. Existing storage is preserved." }
         if let error = error as? StorageError {

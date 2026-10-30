@@ -2322,13 +2322,16 @@ final class AppRuntime {
         let required = batch.coverageGaps.filter { $0.requiresAnalysis && $0.reason != .budgetExhausted }
         if required.contains(where: { $0.operation == nil }) { operations.removeAll() }
         operations.subtract(required.compactMap(\.operation))
-        model.collectionAssessments[scope] = CollectionAssessment(scope: scope,
+        let assessment = CollectionAssessment(scope: scope,
             observedExecutableVersion: version,
             format: path == .hook ? nil : metadata.agent == .claudeCode ? .claudeTranscript
                 : path == .versionedTranscript ? .codexNativeRollout : .codexPublicHistory,
             usableOperations: operations, unavailableContent: Set(required.compactMap(\.contentType)),
             failures: required.map { .init(reason: $0.operation == nil ? .changedContentFormat : .sourceUnavailable,
                                           operation: $0.operation, contentType: $0.contentType) })
+        // Every processed capture lands here. Writing an unchanged assessment would still
+        // invalidate the coverage window, which then re-laid itself out for every capture.
+        if previous != assessment { model.collectionAssessments[scope] = assessment }
     }
 
     private func markCodexObserved(_ sources: [CodexActiveSource]) async {

@@ -943,7 +943,8 @@ final class AppModel {
     }
     @ObservationIgnored private var queueActive = false
     func updatePipeline(_ activity: PipelineActivity) {
-        queueProcessing = activity.processing
+        // Called twice per capture; an unchanged write would still invalidate its readers.
+        if queueProcessing != activity.processing { queueProcessing = activity.processing }
         updateQueue(count: activity.pendingCount)
     }
     func updateCoverage(_ status: CoverageStatus) {

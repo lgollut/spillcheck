@@ -147,6 +147,10 @@ final class AppRuntime {
     private var startupPhase = StorageStartupFailure.Phase.preparingStorage
     private var refreshTask: Task<Void, Never>?
     private var pipeline: DetectionPipeline?
+    /// Held while monitoring is on and captures wait. Without it macOS naps the app whenever none
+    /// of its windows is visible, for example while the screen is locked: the worker then gets
+    /// almost no processor time and the queue grows while agents keep working.
+    private var analysisActivity: NSObjectProtocol?
     private var activeMonitor: ClaudeActiveTranscriptMonitor?
     private var codexMonitor: CodexActiveHistoryMonitor?
     private var codexHistory: CodexAppServerHistoryClient?
@@ -1093,8 +1097,18 @@ final class AppRuntime {
         await refresh()
     }
 
+    private func holdAnalysisActivity(_ busy: Bool) {
+        if busy, analysisActivity == nil {
+            analysisActivity = ProcessInfo.processInfo.beginActivity(
+                options: .userInitiatedAllowingIdleSystemSleep, reason: "Analyzing captured agent activity")
+        } else if !busy, let activity = analysisActivity {
+            ProcessInfo.processInfo.endActivity(activity)
+            analysisActivity = nil
+        }
+    }
+
     func refresh() async {
-        guard let store, !terminating else { return }
+        guard let store, !terminating else { holdAnalysisActivity(false); return }
         do {
             #if DEBUG
             if let recovery = acceptanceRecovery, !acceptanceCodexPollingStopped,
@@ -1123,6 +1137,7 @@ final class AppRuntime {
             if model.coverageReport?.hasSameRecords(as: report) != true { model.coverageReport = report }
             if model.historyProgress != report.history.items { model.historyProgress = report.history.items }
             model.updateQueue(count: report.queue.count)
+            holdAnalysisActivity(model.monitoringEnabled && report.queue.count > 0)
             model.updateHistoryWork(queued: report.queue.historicalCount, providers: report.providersReadingHistory)
             model.refreshCollectionLimitations()
             await refreshSetup()
@@ -1161,6 +1176,8 @@ final class AppRuntime {
             #endif
         } catch {
             model.storageMessage = Self.storageFailureMessage(error)
+            // Keep the activity while monitoring runs: analysis can go on while a report fails.
+            if !model.monitoringEnabled { holdAnalysisActivity(false) }
         }
     }
 

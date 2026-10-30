@@ -250,6 +250,10 @@ final class AppRuntime {
     private var eventMonitor: Any?
     private var workspaceObservers: [NSObjectProtocol] = []
     private var lockObserver: NSObjectProtocol?
+    private var unlockObserver: NSObjectProtocol?
+    /// Set when startup could not read the device keys because the Mac was locked. The keys are
+    /// readable only while unlocked, so the next unlock starts storage again.
+    private var startupAwaitsUnlock = false
     private var activationObserver: NSObjectProtocol?
 
     init(model: AppModel) {
@@ -467,6 +471,8 @@ final class AppRuntime {
             model.startupFailure = StorageStartupFailure(error: error, phase: startupPhase)
             model.storageMessage = Self.storageFailureMessage(error)
             model.pauseAfterBarrier()
+            startupAwaitsUnlock = startupPhase == .loadingDeviceKeys
+                && (error as? KeyUnavailable).map(Self.isLockedKeychain) == true
             #if DEBUG
             writeOpeningReport(phase: Self.controlledFailure(error))
             #endif
@@ -2568,6 +2574,10 @@ final class AppRuntime {
             forName: NSNotification.Name("com.apple.screenIsLocked"), object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated { self?.lock(.sessionLock) }
             }
+        unlockObserver = DistributedNotificationCenter.default().addObserver(
+            forName: NSNotification.Name("com.apple.screenIsUnlocked"), object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.retryStartupAfterUnlock() }
+            }
         let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.protection?.viewingSession.expireIfNeeded()
@@ -2593,6 +2603,25 @@ final class AppRuntime {
         }
     }
 
+    /// Undoes only what a failed key load changed: nothing else had started when the keys were
+    /// unreadable, so storage starts again from the beginning.
+    private func retryStartupAfterUnlock() {
+        guard startupAwaitsUnlock, !terminating, model.storageFailed else { return }
+        startupAwaitsUnlock = false
+        monitoringRequested = true
+        updateNotificationGate()
+        model.storageFailed = false
+        model.startupFailure = nil
+        model.storageMessage = nil
+        model.resumeAfterBarrier()
+        startup = Task { [weak self] in await self?.openStorage() }
+    }
+
+    private static func isLockedKeychain(_ error: KeyUnavailable) -> Bool {
+        if case .unusableKey(_, let code) = error { return code == Int(errSecInteractionNotAllowed) }
+        return false
+    }
+
     private func removeViewingLifecycle() {
         timer?.invalidate()
         timer = nil
@@ -2602,6 +2631,8 @@ final class AppRuntime {
         workspaceObservers.removeAll()
         if let lockObserver { DistributedNotificationCenter.default().removeObserver(lockObserver) }
         lockObserver = nil
+        if let unlockObserver { DistributedNotificationCenter.default().removeObserver(unlockObserver) }
+        unlockObserver = nil
         if let activationObserver { NotificationCenter.default.removeObserver(activationObserver) }
         activationObserver = nil
     }

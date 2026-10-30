@@ -44,8 +44,9 @@ public actor DetectionPipeline {
     private var liveSince: Date
     private var worker: Task<Void, Never>?
     private var processing = false
-    /// Sources this attempt added to the inventory. An attempt that ran out of time after adding
-    /// some resumes past them, since replayed sources are skipped by their receipts.
+    /// Sources this attempt added to the inventory. Their receipts let the next attempt skip them,
+    /// so an attempt that ran out of time after adding some has advanced. Sources scanned with
+    /// coverage gaps are scanned again on every attempt and add nothing the second time.
     private var committedSources = 0
     private var lastCompaction = Date.distantPast
     private var failureObserver: (@Sendable (PipelineFailureDiagnostic) async -> Void)?

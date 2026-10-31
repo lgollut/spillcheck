@@ -173,8 +173,13 @@ struct CollectionWorkMigrationTests {
             try await store.recordNotificationDelivery(identifier: notification.identifier, state: .delivered)
         }
         let snapshot = await store.snapshot()
+        let stateRevision = await store.stateRevision()
+        // The seed ran on the partitioned ledger. The predecessor kept the whole snapshot in this row.
+        let predecessorLedger = try await ProtectedStore.legacyLedgerRowForTesting(snapshot, cryptography: crypto)
         try await store.close()
-        let rows = try legacyRows(seedDirectory)
+        var rows = try legacyRows(seedDirectory)
+        let predecessorState: Row = ["id": 1, "revision": stateRevision, "encoded": predecessorLedger]
+        rows["store_state"] = [predecessorState]
         let pendingRow = try #require(rows["captures"]?.first)
         let pendingID = try #require(UUID(uuidString: pendingRow["id"] as String))
         try createPredecessor(at: directory, rows: rows)
@@ -211,8 +216,8 @@ struct CollectionWorkMigrationTests {
         #expect(try legacyRows(fixture.directory) == before)
         try readDatabase(fixture.directory) { db throws -> Void in
             #expect(try String.fetchAll(db, sql: "SELECT identifier FROM grdb_migrations ORDER BY identifier")
-                == Self.predecessorMigrations + [Self.currentMigration, "v7-codex-hook-content-slots", "v8-certified-source-recovery",
-                    "v9-indexed-queue-maintenance"])
+                == (Self.predecessorMigrations + [Self.currentMigration, "v7-codex-hook-content-slots", "v8-certified-source-recovery",
+                    "v9-indexed-queue-maintenance", "v10-partitioned-ledger"]).sorted())
             #expect(try db.tableExists("collection_work"))
             #expect(try db.tableExists("successful_collection_reads"))
         }

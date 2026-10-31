@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Foundation
 import GRDB
@@ -130,6 +131,8 @@ public actor ProtectedStore {
     private let limits: StoreLimits
     private let failureInjector: StorageFailureInjector?
     private var ledger: InventoryLedger
+    /// What the ledger rows on disk look like, so a write seals only the segments it changed.
+    private var layout: LedgerLayoutState
     private var revision: Int64
     private var monitoringEnabled = true
     private var generation = UUID()
@@ -139,7 +142,7 @@ public actor ProtectedStore {
     private init(
         directory: URL, manifest: ProtectionManifest, database: DatabaseQueue,
         cryptography: any BackgroundStoreCryptography, limits: StoreLimits,
-        ledger: InventoryLedger, revision: Int64, failureInjector: StorageFailureInjector?
+        ledger: InventoryLedger, layout: LedgerLayoutState, revision: Int64, failureInjector: StorageFailureInjector?
     ) {
         self.directory = directory
         self.manifest = manifest
@@ -147,6 +150,7 @@ public actor ProtectedStore {
         self.cryptography = cryptography
         self.limits = limits
         self.ledger = ledger
+        self.layout = layout
         self.revision = revision
         self.failureInjector = failureInjector
     }
@@ -170,7 +174,7 @@ public actor ProtectedStore {
                               "source_checkpoints", "coverage_gaps", "notification_outbox",
                               "collection_authorities", "historical_progress", "protected_preferences", "historical_notification_outbox",
                               "coverage_omissions", "collection_health_incidents", "collection_work", "successful_collection_reads",
-                              "codex_hook_content_slots"] {
+                              "codex_hook_content_slots", "ledger_parts", "ledger_buckets"] {
                     if try connection.tableExists(table),
                        try Int.fetchOne(connection, sql: "SELECT COUNT(*) FROM \(table)") ?? 0 > 0 {
                         hasProtectedRows = true
@@ -227,45 +231,39 @@ public actor ProtectedStore {
         } catch { throw StorageError.databaseUnavailable }
         do {
             let manifestData = try JSONEncoder().encode(manifest)
-            let state = try Self.read(database) { db -> (Data?, Int64) in
-                guard let row = try Row.fetchOne(db, sql: "SELECT encoded, revision FROM store_state WHERE id = 1") else {
-                    return (nil, 0)
-                }
-                return (row["encoded"], row["revision"])
-            }
             let ledger: InventoryLedger
-            if let encoded = state.0 {
-                let payload = try decode(encoded, maximumBytes: limits.maxProtectedStateBytes * 2)
-                let plaintext: Data
-                do {
-                    plaintext = try await cryptography.openBackground(payload, binding: ledgerBinding(manifest))
-                } catch { throw StorageError.protectionUnavailable }
-                guard plaintext.count <= limits.maxProtectedStateBytes else { throw StorageError.stateTooLarge }
-                do {
-                    ledger = try InventoryLedger(snapshot: JSONDecoder().decode(InventorySnapshot.self, from: plaintext))
-                } catch { throw StorageError.corruptProtectedState }
+            let layout: LedgerLayoutState
+            let revision: Int64
+            if let rows = try Self.readLedgerRows(database) {
+                (ledger, layout) = try await openLedger(rows, manifest: manifest, cryptography: cryptography, limits: limits)
+                revision = rows.revision
             } else {
                 // A missing state row alongside protected artifacts is corruption, never an empty inventory.
                 if probe.state == .protectedDataPresent { throw StorageError.corruptProtectedState }
                 ledger = InventoryLedger()
-                let bytes = try JSONEncoder().encode(ledger.snapshot)
-                let payload = try await cryptography.sealBackground(bytes, binding: ledgerBinding(manifest))
-                let encoded = try payload.encoded()
+                var empty = ledger
+                let plan = try LedgerLayoutState.unpartitioned(revision: 0)
+                    .plan(committed: ledger, next: &empty, revision: 0, maximumBytes: limits.maxProtectedStateBytes)
+                let sealed = try await seal(plan, manifest: manifest, cryptography: cryptography)
                 try Self.write(database) { db in
-                    guard try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM protection_manifest") == 0,
-                          try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM store_state") == 0 else {
-                        throw StorageError.corruptProtectedState
+                    for table in ["protection_manifest", "store_state", "ledger_parts", "ledger_buckets"] {
+                        guard try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \(table)") == 0 else {
+                            throw StorageError.corruptProtectedState
+                        }
                     }
                     // Bootstrap is one transaction; an existing manifest never licenses empty reset.
                     try db.execute(sql: "INSERT INTO protection_manifest (id, encoded) VALUES (1, ?)", arguments: [manifestData])
-                    try db.execute(sql: "INSERT INTO store_state (id, revision, encoded) VALUES (1, 0, ?)", arguments: [encoded])
+                    try db.execute(sql: "INSERT INTO store_state (id, revision, encoded) VALUES (1, 0, ?)", arguments: [sealed.header])
+                    try Self.insertLedgerSegments(sealed, in: db)
                 }
+                layout = plan.layout
+                revision = 0
             }
             try restrictFileModes(in: directory)
             return ProtectedStore(
                 directory: directory, manifest: manifest, database: database,
-                cryptography: cryptography, limits: limits, ledger: ledger,
-                revision: state.1, failureInjector: failureInjector
+                cryptography: cryptography, limits: limits, ledger: ledger, layout: layout,
+                revision: revision, failureInjector: failureInjector
             )
         } catch {
             try? database.close()
@@ -598,7 +596,8 @@ public actor ProtectedStore {
                 ("collection_health_incidents", ["id", "key_id", "created_at", "resolved_at", "delivery", "requires_assessment", "encoded"]),
                 ("collection_work", ["id", "state", "admitted_at", "updated_at", "attempted_at", "completed_at", "recovery_of", "omission_id", "retain_evidence", "encoded", "recovery_certificate", "recovery_chain"]),
                 ("successful_collection_reads", ["id", "succeeded_at", "encoded"]),
-                ("codex_hook_content_slots", ["id", "encoded"])
+                ("codex_hook_content_slots", ["id", "encoded"]),
+                ("ledger_parts", ["part", "encoded"]), ("ledger_buckets", ["bucket", "encoded"])
             ]
             let migrations = try String.fetchAll(db, sql: "SELECT identifier FROM grdb_migrations ORDER BY identifier LIMIT 17")
             guard migrations.count <= 16 else { throw StorageError.stateTooLarge }
@@ -634,6 +633,72 @@ public actor ProtectedStore {
             }
             return (migrations, result)
         }
+    }
+
+    /// Segment identities, write revisions and ciphertext digests of the persisted ledger, so a test
+    /// can tell which rows a write changed. It exports no plaintext, identity or value.
+    @_spi(Testing) public struct PersistedLedgerLayout: Equatable, Sendable {
+        public struct Segment: Equatable, Sendable {
+            public let id: String
+            public let writtenAtRevision: Int64
+            public let ciphertextDigest: String
+        }
+        public let format: Int
+        public let revision: Int64
+        public let segments: [Segment]
+    }
+
+    /// Plaintext sizes of the ledger's segments and counts of what it holds, never the content.
+    @_spi(Testing) public struct LedgerSizeBreakdown: Equatable, Sendable {
+        public let format: Int
+        public let totalBytes: Int
+        public let headerBytes: Int
+        public let partBytes: [Int]
+        public let bucketBytes: [Int]
+        public let sourceCount: Int
+        public let receiptCount: Int
+    }
+
+    @_spi(Testing) public func persistedLayoutForTesting() throws -> PersistedLedgerLayout {
+        guard !closed else { throw StorageError.databaseUnavailable }
+        func digest(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
+        guard let rows = try Self.readLedgerRows(database) else { throw StorageError.corruptProtectedState }
+        guard layout.isPartitioned else {
+            return PersistedLedgerLayout(format: 1, revision: rows.revision, segments: [
+                .init(id: "state", writtenAtRevision: rows.revision, ciphertextDigest: digest(rows.state))])
+        }
+        var segments = [PersistedLedgerLayout.Segment(id: "header", writtenAtRevision: layout.header.revision,
+                                                      ciphertextDigest: digest(rows.state))]
+        for part in LedgerPart.allCases {
+            segments.append(.init(id: "part-\(part.rawValue)", writtenAtRevision: layout.header.partRevisions[part.rawValue - 1],
+                                  ciphertextDigest: digest(rows.parts[part.rawValue] ?? Data())))
+        }
+        for bucket in 0..<LedgerLayout.bucketCount {
+            segments.append(.init(id: "bucket-\(String(format: "%02d", bucket))", writtenAtRevision: layout.header.bucketRevisions[bucket],
+                                  ciphertextDigest: digest(rows.buckets[bucket] ?? Data())))
+        }
+        return PersistedLedgerLayout(format: 2, revision: rows.revision, segments: segments)
+    }
+
+    @_spi(Testing) public func stateSizeBreakdownForTesting() throws -> LedgerSizeBreakdown {
+        guard !closed else { throw StorageError.databaseUnavailable }
+        let snapshot = ledger.snapshot
+        guard layout.isPartitioned else {
+            return LedgerSizeBreakdown(format: 1, totalBytes: try JSONEncoder().encode(snapshot).count, headerBytes: 0,
+                partBytes: [], bucketBytes: [], sourceCount: snapshot.sourceKinds.count, receiptCount: snapshot.analysisReceipts.count)
+        }
+        return LedgerSizeBreakdown(format: 2, totalBytes: layout.sizes.total, headerBytes: layout.sizes.header,
+            partBytes: layout.sizes.parts, bucketBytes: layout.sizes.buckets,
+            sourceCount: snapshot.sourceKinds.count, receiptCount: snapshot.analysisReceipts.count)
+    }
+
+    /// What a build before the partitioned ledger stores for `snapshot`: the whole snapshot under the
+    /// vault-wide ledger binding. Tests install it to simulate a vault that has not converted yet.
+    @_spi(Testing) public static func legacyLedgerRowForTesting(
+        _ snapshot: InventorySnapshot, cryptography: any BackgroundStoreCryptography
+    ) async throws -> Data {
+        try await cryptography.sealBackground(JSONEncoder().encode(snapshot),
+            binding: ledgerBinding(cryptography.manifest)).encoded()
     }
 
     /// Age-limit maintenance also runs while paused. It opens each expiring capture in memory
@@ -852,7 +917,7 @@ public actor ProtectedStore {
         let expectedRevision = revision
         var next = ledger
         let transition = try next.ingest(analysis)
-        let encodedState = try await sealSnapshot(next.snapshot)
+        let sealedLedger = try await sealLedger(committed: ledger, next: &next, revision: expectedRevision + 1)
         let checkpointPayload: ProtectedPayload?
         if let checkpoint {
             do {
@@ -875,7 +940,7 @@ public actor ProtectedStore {
                 if let capture { try Self.checkClaim(capture, in: db, at: now) }
                 if let linkedCapture { try Self.checkClaim(linkedCapture, in: db, at: now) }
                 try Self.insertPayloads(inserts, required: required, in: db)
-                try Self.writeState(encodedState, snapshot: nextSnapshot, revision: expectedRevision + 1, in: db)
+                try Self.writeLedger(sealedLedger, snapshot: nextSnapshot, revision: expectedRevision + 1, in: db)
                 if let linkedCapture {
                     // Newly created values and their pending raw capture become related atomically.
                     // A deletion immediately after commit can purge this multi-record retry too.
@@ -892,9 +957,11 @@ public actor ProtectedStore {
                 try injector?(.beforeProcessingCommit)
             }
             ledger = next
+            layout = sealedLedger.layout
             revision = expectedRevision + 1
             try Self.restrictFileModes(in: directory)
             try injector?(.afterProcessingCommit)
+            try await verifyPersistedLedger()
             return transition
         } catch let error as StorageError { throw error }
         catch { throw StorageError.databaseUnavailable }
@@ -2012,7 +2079,7 @@ public actor ProtectedStore {
         let expectedRevision = revision
         var next = ledger
         let result = try mutation(&next)
-        let encodedState = try await sealSnapshot(next.snapshot)
+        let sealedLedger = try await sealLedger(committed: ledger, next: &next, revision: expectedRevision + 1)
         let snapshot = next.snapshot
         let plan = result as? ContentRemovalPlan
         let removalTime = Date()
@@ -2030,7 +2097,7 @@ public actor ProtectedStore {
                         throw StorageError.stateChanged
                     }
                 }
-                try Self.writeState(encodedState, snapshot: snapshot, revision: expectedRevision + 1, in: db)
+                try Self.writeLedger(sealedLedger, snapshot: snapshot, revision: expectedRevision + 1, in: db)
                 if let plan {
                     for reference in plan.payloadReferences {
                         try db.execute(sql: "DELETE FROM protected_payloads WHERE reference_id = ?", arguments: [reference.id.uuidString])
@@ -2057,8 +2124,10 @@ public actor ProtectedStore {
                 }
             }
             ledger = next
+            layout = sealedLedger.layout
             revision = expectedRevision + 1
             if removal { generation = UUID() }
+            try await verifyPersistedLedger()
             return result
         } catch let error as StorageError { throw error }
         catch { throw StorageError.databaseUnavailable }
@@ -2070,13 +2139,36 @@ public actor ProtectedStore {
         guard generation == permit.generation else { throw StorageError.staleProcessingPermit }
     }
 
-    private func sealSnapshot(_ snapshot: InventorySnapshot) async throws -> Data {
-        let bytes = try JSONEncoder().encode(snapshot)
-        guard bytes.count <= limits.maxProtectedStateBytes else { throw StorageError.stateTooLarge }
-        do {
-            return try await cryptography.sealBackground(bytes, binding: Self.ledgerBinding(manifest)).encoded()
-        } catch { throw StorageError.protectionUnavailable }
+    /// Plans which ledger segments `next` changes and seals only those. A conversion from version 1
+    /// proves, before anything is written, that the sealed rows read back as exactly `next`.
+    private func sealLedger(committed: InventoryLedger, next: inout InventoryLedger, revision: Int64) async throws -> SealedLedgerWrite {
+        let plan = try layout.plan(committed: committed, next: &next, revision: revision, maximumBytes: limits.maxProtectedStateBytes)
+        let sealed = try await Self.seal(plan, manifest: manifest, cryptography: cryptography)
+        if plan.isConversion {
+            let read = try await Self.readSegments(sealed.rows(revision: revision), manifest: manifest, cryptography: cryptography, limits: limits)
+            guard read.snapshot.matches(next.snapshot), read.layout.header == plan.layout.header else {
+                throw StorageError.corruptProtectedState
+            }
+        }
+        return sealed
     }
+
+    /// Debug builds with SPILLCHECK_VERIFY_LEDGER_LAYOUT=1 read the rows back after every write and
+    /// require them to reproduce the in-memory ledger and layout. The environment variable is set for
+    /// tests and CI, never for the application.
+    private func verifyPersistedLedger() async throws {
+        #if DEBUG
+        guard Self.verifiesLedgerLayout, !closed, let rows = try Self.readLedgerRows(database) else { return }
+        let read = try await Self.readSegments(rows, manifest: manifest, cryptography: cryptography, limits: limits)
+        guard rows.revision == revision, read.snapshot.matches(ledger.snapshot), read.layout.header == layout.header,
+              read.layout.sizes == layout.sizes, read.layout.mirror.matches(ledger.bookkeeping),
+              layout.mirror.matches(ledger.bookkeeping) else { throw StorageError.corruptProtectedState }
+        #endif
+    }
+
+    #if DEBUG
+    private static let verifiesLedgerLayout = ProcessInfo.processInfo.environment["SPILLCHECK_VERIFY_LEDGER_LAYOUT"] == "1"
+    #endif
 
     private func checkedPayloads(
         _ payloads: [ProtectedPayload], required: [ProtectedPayloadReference: ProtectedPayloadKind]
@@ -2694,13 +2786,14 @@ public actor ProtectedStore {
     private static func captureBinding(_ id: UUID) -> PayloadBinding {
         PayloadBinding(reference: ProtectedPayloadReference(id: id), ownerID: id, kind: .queueEvent)
     }
-    private static func ledgerBinding(_ manifest: ProtectionManifest) -> PayloadBinding {
+    /// The binding of the version 1 ledger, which older builds read and write.
+    static func ledgerBinding(_ manifest: ProtectionManifest) -> PayloadBinding {
         PayloadBinding(reference: ProtectedPayloadReference(id: manifest.vaultID), ownerID: manifest.vaultID, kind: .ledgerSnapshot)
     }
     private static func checkpointBinding(_ id: UUID) -> PayloadBinding {
         PayloadBinding(reference: ProtectedPayloadReference(id: id), ownerID: id, kind: .sourceCheckpoint)
     }
-    private static func decode(_ bytes: Data, maximumBytes: Int = 16 * 1024 * 1024) throws -> ProtectedPayload {
+    static func decode(_ bytes: Data, maximumBytes: Int = 16 * 1024 * 1024) throws -> ProtectedPayload {
         do { return try ProtectedPayload.decode(bytes, maximumBytes: maximumBytes) }
         catch { throw StorageError.corruptProtectedState }
     }
@@ -2762,8 +2855,25 @@ public actor ProtectedStore {
                   try decode(existing).binding.kind == kind else { throw StorageError.payloadMissing }
         }
     }
-    private static func writeState(_ encoded: Data, snapshot: InventorySnapshot, revision: Int64, in db: Database) throws {
-        try db.execute(sql: "UPDATE store_state SET revision = ?, encoded = ? WHERE id = 1", arguments: [revision, encoded])
+    private static func writeLedger(_ sealed: SealedLedgerWrite, snapshot: InventorySnapshot, revision: Int64, in db: Database) throws {
+        try db.execute(sql: "UPDATE store_state SET revision = ?, encoded = ? WHERE id = 1", arguments: [revision, sealed.header])
+        if sealed.isConversion {
+            // The first partitioned write replaces the version 1 row and fills empty tables, in this transaction.
+            for table in ["ledger_parts", "ledger_buckets"] {
+                guard try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \(table)") == 0 else { throw StorageError.corruptProtectedState }
+            }
+            try insertLedgerSegments(sealed, in: db)
+        } else {
+            // Every slot exists after open, so a row that is not there to update was removed behind our back.
+            for (part, encoded) in sealed.parts {
+                try db.execute(sql: "UPDATE ledger_parts SET encoded = ? WHERE part = ?", arguments: [encoded, part])
+                guard db.changesCount == 1 else { throw StorageError.corruptProtectedState }
+            }
+            for (bucket, encoded) in sealed.buckets {
+                try db.execute(sql: "UPDATE ledger_buckets SET encoded = ? WHERE bucket = ?", arguments: [encoded, bucket])
+                guard db.changesCount == 1 else { throw StorageError.corruptProtectedState }
+            }
+        }
         try db.execute(sql: "DELETE FROM notification_outbox")
         for alert in snapshot.alertDecisions.values {
             try db.execute(sql: "INSERT INTO notification_outbox (id, value_id, delivery) VALUES (?, ?, ?)",
@@ -2773,6 +2883,14 @@ public actor ProtectedStore {
         for decision in snapshot.historicalNotificationDecisions.values {
             try db.execute(sql: "INSERT INTO historical_notification_outbox (audit_id, delivery) VALUES (?, ?)",
                 arguments: [decision.audit.id.uuidString, decision.delivery.rawValue])
+        }
+    }
+    private static func insertLedgerSegments(_ sealed: SealedLedgerWrite, in db: Database) throws {
+        for (part, encoded) in sealed.parts {
+            try db.execute(sql: "INSERT INTO ledger_parts (part, encoded) VALUES (?, ?)", arguments: [part, encoded])
+        }
+        for (bucket, encoded) in sealed.buckets {
+            try db.execute(sql: "INSERT INTO ledger_buckets (bucket, encoded) VALUES (?, ?)", arguments: [bucket, encoded])
         }
     }
 
@@ -2875,6 +2993,14 @@ public actor ProtectedStore {
                     WHERE state IN ('completed', 'recovered') AND retain_evidence = 0;
                 CREATE INDEX coverage_omissions_bytes ON coverage_omissions (length(encoded));
                 CREATE INDEX coverage_omissions_expiry ON coverage_omissions (state, COALESCE(content_at, created_at));
+                """)
+        }
+        migrator.registerMigration("v10-partitioned-ledger") { db in
+            // Only new tables: no existing row is touched, so opening a version 1 vault writes nothing.
+            // The ledger converts on its first ordinary write, in that write's transaction.
+            try db.execute(sql: """
+                CREATE TABLE ledger_parts (part INTEGER PRIMARY KEY CHECK (part IN (1, 2, 3)), encoded BLOB NOT NULL);
+                CREATE TABLE ledger_buckets (bucket INTEGER PRIMARY KEY CHECK (bucket BETWEEN 0 AND 63), encoded BLOB NOT NULL);
                 """)
         }
         try migrator.migrate(database)

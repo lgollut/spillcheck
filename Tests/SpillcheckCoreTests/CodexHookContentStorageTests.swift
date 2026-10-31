@@ -308,7 +308,9 @@ struct CodexHookContentStorageTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let crypto = try BackgroundCryptography.ephemeralForTesting()
         let store = try await ProtectedStore.open(at: directory, cryptography: crypto)
-        let source = try hookStoreSource(), other = try hookStoreSource(turn: "other-turn")
+        // The sealed ledger alone needs about 4 KB under the limit, so the session is padded to make a slot larger.
+        let session = String(repeating: "s", count: 3500)
+        let source = try hookStoreSource(session: session), other = try hookStoreSource(session: session, turn: "other-turn")
         let permit = try await authorizeHookSource(source, in: store)
         _ = try await store.bindCodexHookContent(source: source, revision: hookStoreRevision(1), observedAt: hookStorageTime, permit: permit)
         let retainedBytes = try #require(hookSlotRows(directory).first?.1.count)

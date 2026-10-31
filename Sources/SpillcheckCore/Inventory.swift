@@ -288,12 +288,10 @@ public struct InventoryLedger: Sendable {
     public private(set) var valueLabels: [ValueFingerprint: MaskedValueLabel] = [:]
     public private(set) var unlocatedLabels: [UUID: MaskedValueLabel] = [:]
     private var nextValueLabel = 1
-    private var analysisReceipts: Set<AnalysisReceipt> = []
     private var locationReceipts: [OccurrenceIdentity: LocationReceipt] = [:]
     private var strongSignalReceipts: [AlertEligibilityKey: StrongSignalReceipt] = [:]
     private var unlocatedReceipts: Set<UnlocatedIdentity> = []
-    private var sourceKinds: [SourceIdentity: ContentType] = [:]
-    private var sourceTimes: [SourceIdentity: Date] = [:]
+    private(set) var bookkeeping = SourceBookkeeping()
 
     public init() {}
 
@@ -301,9 +299,9 @@ public struct InventoryLedger: Sendable {
         InventorySnapshot(
             records: records, occurrences: occurrences, obsoleteAppearances: obsoleteAppearances,
             obsoleteMarkers: obsoleteMarkers, alertDecisions: alertDecisions, unlocatedResults: unlocatedResults,
-            analysisReceipts: analysisReceipts, locationReceipts: locationReceipts,
-            strongSignalReceipts: strongSignalReceipts, unlocatedReceipts: unlocatedReceipts, sourceKinds: sourceKinds,
-            sourceTimes: sourceTimes, conversationLabels: conversationLabels, historicalNotificationDecisions: historicalNotificationDecisions,
+            analysisReceipts: bookkeeping.receipts, locationReceipts: locationReceipts,
+            strongSignalReceipts: strongSignalReceipts, unlocatedReceipts: unlocatedReceipts, sourceKinds: bookkeeping.kinds,
+            sourceTimes: bookkeeping.times, conversationLabels: conversationLabels, historicalNotificationDecisions: historicalNotificationDecisions,
             valueLabels: valueLabels, unlocatedLabels: unlocatedLabels, nextValueLabel: nextValueLabel
         )
     }
@@ -316,12 +314,10 @@ public struct InventoryLedger: Sendable {
         obsoleteMarkers = snapshot.obsoleteMarkers
         alertDecisions = snapshot.alertDecisions
         unlocatedResults = snapshot.unlocatedResults
-        analysisReceipts = snapshot.analysisReceipts
+        bookkeeping = SourceBookkeeping(receipts: snapshot.analysisReceipts, kinds: snapshot.sourceKinds, times: snapshot.sourceTimes)
         locationReceipts = snapshot.locationReceipts
         strongSignalReceipts = snapshot.strongSignalReceipts
         unlocatedReceipts = snapshot.unlocatedReceipts
-        sourceKinds = snapshot.sourceKinds
-        sourceTimes = snapshot.sourceTimes
         conversationLabels = snapshot.conversationLabels
         historicalNotificationDecisions = snapshot.historicalNotificationDecisions
         let sessions = Set(snapshot.sourceKinds.keys.map(\.session))
@@ -354,12 +350,16 @@ public struct InventoryLedger: Sendable {
         }
     }
 
+    /// The sources whose bookkeeping changed since the last call. A ledger restored from a
+    /// snapshot starts with none; only a committed copy is ever taken from.
+    mutating func takeBookkeepingChanges() -> Set<SourceIdentity> { bookkeeping.takeChanges() }
+
     /// Receipts contain source/range identity, not a value, excerpt or inventory record reference.
     public var processedLocations: Set<OccurrenceIdentity> { Set(locationReceipts.keys) }
-    public var analyzedRevisionCount: Int { analysisReceipts.count }
+    public var analyzedRevisionCount: Int { bookkeeping.receipts.count }
 
     public func needsProcessedSourceCompaction(before cutoff: Date) -> Bool {
-        guard sourceKinds.count == sourceTimes.count else { return true }
+        guard bookkeeping.kinds.count == bookkeeping.times.count else { return true }
         var copy = self
         return copy.pruneProcessedSources(before: cutoff, stampingUntimedAt: cutoff) > 0
     }
@@ -372,22 +372,20 @@ public struct InventoryLedger: Sendable {
     /// Returns the number of removed entries.
     @discardableResult
     public mutating func pruneProcessedSources(before cutoff: Date, stampingUntimedAt now: Date) -> Int {
-        for source in sourceKinds.keys where sourceTimes[source] == nil { sourceTimes[source] = now }
-        let stale = Set(sourceTimes.filter { $0.value < cutoff }.keys)
+        bookkeeping.stampUntimed(at: now)
+        let stale = Set(bookkeeping.times.filter { $0.value < cutoff }.keys)
         guard !stale.isEmpty else { return 0 }
         let referenced = Set(occurrences.values.map(\.identity.source))
             .union(obsoleteAppearances.values.map(\.source))
             .union(unlocatedResults.values.map(\.source.identity))
         let unreferenced = stale.subtracting(referenced)
-        let before = analysisReceipts.count + locationReceipts.count + unlocatedReceipts.count + sourceKinds.count
-        analysisReceipts = analysisReceipts.filter { !stale.contains($0.source) }
+        func total() -> Int { bookkeeping.receipts.count + locationReceipts.count + unlocatedReceipts.count + bookkeeping.kinds.count }
+        let before = total()
+        bookkeeping.removeReceipts(of: stale)
         locationReceipts = locationReceipts.filter { $0.value != .removed || !stale.contains($0.key.source) }
         unlocatedReceipts = unlocatedReceipts.filter { !unreferenced.contains($0.source) }
-        for source in unreferenced {
-            sourceKinds.removeValue(forKey: source)
-            sourceTimes.removeValue(forKey: source)
-        }
-        return before - (analysisReceipts.count + locationReceipts.count + unlocatedReceipts.count + sourceKinds.count)
+        for source in unreferenced { bookkeeping.remove(source: source) }
+        return before - total()
     }
 
     /// The caller must also check its monitoring generation immediately before durable commit.
@@ -570,15 +568,14 @@ public struct InventoryLedger: Sendable {
         let analysisReceipt = AnalysisReceipt(
             source: analysis.source.identity, revision: analysis.revision, detectorVersion: analysis.detectorVersion
         )
-        guard !analysisReceipts.contains(analysisReceipt) else {
+        guard !bookkeeping.receipts.contains(analysisReceipt) else {
             return emptyTransition(outcome: .replay, discarded: payloads)
         }
-        if let knownKind = sourceKinds[analysis.source.identity], knownKind != analysis.source.contentType {
+        if let knownKind = bookkeeping.kinds[analysis.source.identity], knownKind != analysis.source.contentType {
             throw ContractError.conflictingSourceMetadata
         }
-        sourceKinds[analysis.source.identity] = analysis.source.contentType
-        sourceTimes[analysis.source.identity] = max(sourceTimes[analysis.source.identity] ?? .distantPast,
-                                                    analysis.source.contentTime)
+        bookkeeping.setKind(analysis.source.contentType, for: analysis.source.identity)
+        bookkeeping.raiseTime(to: analysis.source.contentTime, for: analysis.source.identity)
         var createdValueIDs: Set<UUID> = []
         var insertedOccurrenceIDs: Set<UUID> = []
         var insertedObsoleteIDs: Set<UUID> = []
@@ -696,7 +693,7 @@ public struct InventoryLedger: Sendable {
             unlocatedLabels[result.id] = takeValueLabel()
             insertedUnlocatedIDs.insert(result.id)
         }
-        analysisReceipts.insert(analysisReceipt)
+        bookkeeping.insertReceipt(analysisReceipt)
 
         let history: HistoricalContribution?
         if case .historical(let audit) = analysis.source.origin.provenance {

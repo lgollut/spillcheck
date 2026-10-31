@@ -67,6 +67,17 @@ without authorizing access to existing ones. Each retained payload has a fresh
 data key wrapped for the inventory key; private-key use requires authorization
 through `LAPersistedRight`.
 
+The inventory ledger is sealed as separately stored segments
+([ADR 0008](adr/0008-partitioned-sealed-ledger.md)): a small header in
+`store_state`, three parts in `ledger_parts` (findings, notification decisions,
+conversation labels) and 64 buckets of per-source bookkeeping in `ledger_buckets`.
+Each is sealed under a binding derived from the vault and its slot.
+`SourceBookkeeping.swift` journals the sources a commit touches and
+`PartitionedLedgerState.swift` plans which segments to rewrite;
+`ProtectedStoreLedger.swift` seals, opens and checks them. Opening never writes.
+A vault from before the layout converts in its first ordinary write, and older
+builds cannot open it afterwards.
+
 `ProtectionBootstrapJournal.swift` coordinates key creation and store startup.
 Missing keys with existing protected state are an error, not permission to
 create a replacement vault. Raw values, excerpts, titles and paths stay encrypted

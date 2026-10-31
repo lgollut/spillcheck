@@ -52,6 +52,9 @@ It runs for PRs targeting `main` and for every push to `main`.
 CI runs test cases serially with `swift test --no-parallel` because the process
 and socket probes have short deadlines; run that to reproduce a CI timing failure.
 Tests still exercise their own concurrent tasks and races.
+`make test` and CI set `SPILLCHECK_VERIFY_LEDGER_LAYOUT=1`, which makes Debug builds
+read the sealed ledger back after every write and compare it with memory. Set it
+too when running `swift test` directly after changing ledger storage.
 
 CI does not exercise real provider sessions, production Keychain authentication,
 the GUI, notarization, or installed-app acceptance. Follow the

@@ -83,7 +83,10 @@ enum ScannerProcess {
         return ignoreURL
     }
 
-    static func run(_ input: Data, configuration: BetterleaksConfiguration, timeout: TimeInterval) throws -> Data {
+    static func run(
+        _ input: Data, configuration: BetterleaksConfiguration, timeout: TimeInterval,
+        isCancelled: () -> Bool = { Task.isCancelled }
+    ) throws -> Data {
         guard FileManager.default.isExecutableFile(atPath: "/usr/bin/sandbox-exec") else {
             throw DetectorFailure.networkIsolationUnavailable
         }
@@ -91,13 +94,13 @@ enum ScannerProcess {
         return try runBounded(input, executable: URL(fileURLWithPath: "/usr/bin/sandbox-exec"),
                               arguments: arguments(configuration: configuration, ignoreURL: ignore),
                               directory: configuration.workingDirectoryURL, timeout: timeout,
-                              maximumOutputBytes: configuration.maximumReportBytes)
+                              maximumOutputBytes: configuration.maximumReportBytes, isCancelled: isCancelled)
     }
 
     /// Only controlled arguments reach Process. Input/report remain anonymous pipe bytes.
     static func runBounded(
         _ input: Data, executable: URL, arguments: [String], directory: URL,
-        timeout: TimeInterval, maximumOutputBytes: Int
+        timeout: TimeInterval, maximumOutputBytes: Int, isCancelled: () -> Bool = { Task.isCancelled }
     ) throws -> Data {
         let process = Process()
         let stdin = Pipe(), stdout = Pipe(), stderr = Pipe()
@@ -132,7 +135,7 @@ enum ScannerProcess {
         var result = Data()
         var buffer = [UInt8](repeating: 0, count: 64 * 1024)
         while !outputClosed || !errorsClosed || process.isRunning {
-            if Task.isCancelled { throw DetectorFailure.cancelled }
+            if isCancelled() { throw DetectorFailure.cancelled }
             guard ProcessInfo.processInfo.systemUptime < deadline else { throw DetectorFailure.timedOut }
             if !inputClosed, written == input.count {
                 try? writer.close()
@@ -141,7 +144,9 @@ enum ScannerProcess {
             var descriptors = [pollfd(fd: inputClosed ? -1 : inputFD, events: Int16(POLLOUT), revents: 0),
                                pollfd(fd: outputClosed ? -1 : outputFD, events: Int16(POLLIN), revents: 0),
                                pollfd(fd: errorsClosed ? -1 : errorFD, events: Int16(POLLIN), revents: 0)]
-            let remaining = max(1, min(25, Int((deadline - ProcessInfo.processInfo.systemUptime) * 1000)))
+            // With every pipe closed, only the exit is left to observe.
+            let interval = inputClosed && outputClosed && errorsClosed ? 1 : 25
+            let remaining = max(1, min(interval, Int((deadline - ProcessInfo.processInfo.systemUptime) * 1000)))
             let status = poll(&descriptors, nfds_t(descriptors.count), Int32(remaining))
             if status < 0 { if errno == EINTR { continue }; throw DetectorFailure.unavailable }
             if !inputClosed, descriptors[0].revents & Int16(POLLOUT) != 0 {
@@ -177,7 +182,8 @@ enum ScannerProcess {
                 try? writer.close()
             }
         }
-        process.waitUntilExit()
+        // The loop ends only after the exit is observed, so the status is ready. `waitUntilExit()`
+        // would spin the run loop for another ~70 ms per launch.
         guard process.terminationStatus == 0 else { throw DetectorFailure.executionFailed(code: process.terminationStatus) }
         guard written == input.count else { throw DetectorFailure.executionFailed(code: -1) }
         return result

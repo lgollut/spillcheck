@@ -35,11 +35,14 @@ private struct ChildHookFixture {
     let parentSession = "parent-session"
     let agentID = "child-worker"
 
-    init(distinctSession: Bool = true) throws {
+    /// `workflowRun` places the child where Claude writes a workflow agent:
+    /// subagents/workflows/<run>/agent-<id>.jsonl instead of subagents/agent-<id>.jsonl.
+    init(distinctSession: Bool = true, workflowRun: String? = nil) throws {
         root = FileManager.default.temporaryDirectory
             .appendingPathComponent("spillcheck-child-hooks-\(UUID())").resolvingSymlinksInPath()
         parent = root.appendingPathComponent("parent-session.jsonl")
-        child = root.appendingPathComponent("parent-session/subagents/agent-child-worker.jsonl")
+        child = root.appendingPathComponent(workflowRun.map { "parent-session/subagents/workflows/\($0)/agent-child-worker.jsonl" }
+            ?? "parent-session/subagents/agent-child-worker.jsonl")
         childSession = distinctSession ? "child-session" : "parent-session"
         try FileManager.default.createDirectory(at: child.deletingLastPathComponent(),
             withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -132,6 +135,119 @@ struct ClaudeChildHookRoutingTests {
             await cache.save(replay.checkpoints)
         }
         #expect(try Data(contentsOf: fixture.child) == originalBytes)
+    }
+
+    @Test(arguments: ChildToolHook.allCases)
+    fileprivate func workflowChildToolHooksReadTheRunFolderHoldingTheAgent(hook: ChildToolHook) async throws {
+        // Workflow agents' tool hooks carry the same fields as an ordinary child's: the parent
+        // session and path plus agent_id, with no run folder and no agent_transcript_path.
+        let fixture = try ChildHookFixture(workflowRun: "wf_run-2")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let workflows = fixture.child.deletingLastPathComponent().deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: workflows.appendingPathComponent("wf_run-1"), withIntermediateDirectories: true)
+        let sibling = workflows.appendingPathComponent("wf_run-3/agent-sibling.jsonl")
+        try FileManager.default.createDirectory(at: sibling.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try fixture.resultRow(hook, text: "sibling decoy").write(to: sibling)
+        let cache = ChildHookCheckpoints()
+        let adapter = try ClaudeAdapter(profileID: "test", agentVersion: "2.1.296",
+            allowedTranscriptRoots: [fixture.root], checkpointLookup: { await cache.get($0) })
+        let crypto = try BackgroundCryptography.ephemeralForTesting()
+        let batch = try await adapter.normalize(fixture.packet(hook), capturedAt: Date(), cryptography: crypto)
+        #expect(batch.coverageGaps.isEmpty && batch.continuation == nil)
+        #expect(batch.sources.count == 2)
+        #expect(batch.sources.allSatisfy { $0.context?.transcriptPath == fixture.child.path })
+        #expect(batch.sources.contains { $0.record.metadata.identity.itemID == "tool:\(hook.toolID)" })
+        await cache.save(batch.checkpoints)
+        // The monitor polls the same file by its declared path. Both routes share one checkpoint,
+        // so the poll reads only what was appended after the hook.
+        let handle = try FileHandle(forWritingTo: fixture.child)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: fixture.resultRow(.success, toolID: "later-child-call"))
+        try handle.close()
+        let poll = try CapturePacket(metadata: .init(agent: .claudeCode, interface: .standaloneCLI, profileID: "test"),
+            eventJSON: JSONSerialization.data(withJSONObject: ["hook_event_name": "SpillcheckTranscriptPoll",
+                "session_id": fixture.parentSession, "transcript_path": fixture.parent.path,
+                "agent_transcript_path": fixture.child.path], options: [.sortedKeys]))
+        let polled = try await adapter.normalize(poll, capturedAt: Date(), cryptography: crypto)
+        #expect(polled.coverageGaps.isEmpty)
+        #expect(polled.sources.map(\.record.metadata.identity.itemID) == ["tool:later-child-call"])
+    }
+
+    @Test func workflowChildSelectionKeepsTheFlatPathUnlessOneRealRunFolderHoldsTheAgent() throws {
+        let fixture = try ChildHookFixture(workflowRun: "wf_run-1")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let subagents = fixture.root.appendingPathComponent("parent-session/subagents")
+        let workflows = subagents.appendingPathComponent("workflows")
+        let flat = subagents.appendingPathComponent("agent-child-worker.jsonl")
+        let adapter = try ClaudeAdapter(profileID: "test", agentVersion: "2.1.296", allowedTranscriptRoots: [fixture.root])
+        let confinedParent = try #require(adapter.confinedTranscriptURL(path: fixture.parent.path))
+        func selected(confined: Bool = true) throws -> String {
+            try ClaudeToolHookSelection.toolHookChildPath(parentPath: fixture.parent.path,
+                agentID: fixture.agentID, declaredChildPath: nil, confinedParent: confined ? confinedParent : nil)
+        }
+        #expect(try selected() == fixture.child.path)
+        // Without the reader's root-checked location nothing is listed.
+        #expect(try selected(confined: false) == flat.path)
+        // An existing flat transcript keeps its identity even if a run folder also holds the ID.
+        try FileManager.default.copyItem(at: fixture.child, to: flat)
+        #expect(try selected() == flat.path)
+        try FileManager.default.removeItem(at: flat)
+        // A second holder makes the choice ambiguous.
+        let second = workflows.appendingPathComponent("wf_run-2/agent-child-worker.jsonl")
+        try FileManager.default.createDirectory(at: second.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: fixture.child, to: second)
+        #expect(try selected() == flat.path)
+        try FileManager.default.removeItem(at: second.deletingLastPathComponent())
+        // A linked run folder or a linked transcript is never selected.
+        let elsewhere = fixture.root.appendingPathComponent("elsewhere")
+        try FileManager.default.moveItem(at: fixture.child.deletingLastPathComponent(), to: elsewhere)
+        try FileManager.default.createSymbolicLink(at: workflows.appendingPathComponent("wf_run-1"), withDestinationURL: elsewhere)
+        #expect(try selected() == flat.path)
+        try FileManager.default.removeItem(at: workflows.appendingPathComponent("wf_run-1"))
+        try FileManager.default.createDirectory(at: workflows.appendingPathComponent("wf_run-1"), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: fixture.child, withDestinationURL: elsewhere.appendingPathComponent("agent-child-worker.jsonl"))
+        #expect(try selected() == flat.path)
+        try FileManager.default.removeItem(at: fixture.child)
+        try FileManager.default.moveItem(at: elsewhere.appendingPathComponent("agent-child-worker.jsonl"), to: fixture.child)
+        #expect(try selected() == fixture.child.path)
+        // Past the monitor's 128-entry folder bound nothing is selected.
+        for index in 0..<128 {
+            try FileManager.default.createDirectory(at: workflows.appendingPathComponent("wf_empty-\(index)"),
+                withIntermediateDirectories: true)
+        }
+        #expect(try selected() == flat.path)
+    }
+
+    @Test func workflowChildOfAParentOutsideTheRootsIsNotLookedUp() async throws {
+        let fixture = try ChildHookFixture(workflowRun: "wf_run-1")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let other = FileManager.default.temporaryDirectory.appendingPathComponent("spillcheck-other-root-\(UUID())")
+        try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: other) }
+        let adapter = try ClaudeAdapter(profileID: "test", agentVersion: "2.1.296", allowedTranscriptRoots: [other])
+        let batch = try await adapter.normalize(fixture.packet(.success), capturedAt: Date(), cryptography: .ephemeralForTesting())
+        #expect(batch.sources.isEmpty && batch.coverageGaps.map(\.reason) == [.unresolvedCorrelation])
+    }
+
+    @Test func workflowChildIsNotGuessedWhenTwoRunsHoldTheAgentOrTheRunIsALink() async throws {
+        let fixture = try ChildHookFixture(workflowRun: "wf_run-1")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let workflows = fixture.child.deletingLastPathComponent().deletingLastPathComponent()
+        let adapter = try ClaudeAdapter(profileID: "test", agentVersion: "2.1.296", allowedTranscriptRoots: [fixture.root])
+        let second = workflows.appendingPathComponent("wf_run-2/agent-child-worker.jsonl")
+        try FileManager.default.createDirectory(at: second.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: fixture.child, to: second)
+        await #expect(throws: ClaudeCollectionError.awaitingTranscript) {
+            try await adapter.normalize(fixture.packet(.success), capturedAt: Date(), cryptography: .ephemeralForTesting())
+        }
+        // A linked run folder is not followed, even when it is the only one holding the agent.
+        let elsewhere = fixture.root.appendingPathComponent("elsewhere")
+        try FileManager.default.moveItem(at: fixture.child.deletingLastPathComponent(), to: elsewhere)
+        try FileManager.default.removeItem(at: second.deletingLastPathComponent())
+        try FileManager.default.createSymbolicLink(at: workflows.appendingPathComponent("wf_run-1"), withDestinationURL: elsewhere)
+        await #expect(throws: ClaudeCollectionError.awaitingTranscript) {
+            try await adapter.normalize(fixture.packet(.success), capturedAt: Date(), cryptography: .ephemeralForTesting())
+        }
     }
 
     @Test(arguments: ["../escape", "child/../../escape", "/absolute", "child\0suffix", ""])

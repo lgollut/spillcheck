@@ -2101,7 +2101,8 @@ final class AppRuntime {
                     let route = CollectionCaptureRoute(scope: .init(provider: .claudeCode,
                         profileID: configuration.profileID, interface: interface, path: .versionedTranscript),
                         readerVersion: configuration.agentVersion,
-                        hostVersion: interface == .t3 ? selected.first(where: { $0.provider == .claudeCode })?.t3Version : nil)
+                        hostVersion: interface == .t3 ? selected.first(where: { $0.provider == .claudeCode })?.t3Version : nil,
+                        transcriptLocator: { [adapter] in adapter.confinedTranscriptURL(path: $0) })
                     allowedRoutes[metadata] = route
                     sourceProducers[route.scope] = (route, AuthorizedHistoricalCaptureProducer(producer: adapter,
                         provider: .claudeCode, profileID: configuration.profileID, interface: interface))

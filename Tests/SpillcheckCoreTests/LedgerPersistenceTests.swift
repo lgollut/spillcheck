@@ -451,23 +451,23 @@ struct LedgerPersistenceTests {
         #expect(header.binding != version1 && header.binding.ownerID == manifest.vaultID)
         #expect((try? JSONDecoder().decode(InventorySnapshot.self, from: plaintext)) == nil)
 
-        // Only the new tables remain: the vault still counts as holding protected data.
-        let directory = try copyVault(vault.directory)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        try withDatabase(directory) { db in
-            for table in ["store_state", "protection_manifest", "protected_payloads", "captures", "capture_receipts",
-                          "source_checkpoints", "coverage_gaps", "notification_outbox", "collection_authorities",
-                          "historical_progress", "protected_preferences", "historical_notification_outbox",
-                          "coverage_omissions", "collection_health_incidents", "collection_work",
-                          "successful_collection_reads", "codex_hook_content_slots"] {
-                try db.execute(sql: "DELETE FROM \(table)")
+        // Either new table alone still counts as protected data.
+        for (kept, removed) in [("ledger_parts", "ledger_buckets"), ("ledger_buckets", "ledger_parts")] {
+            let directory = try copyVault(vault.directory)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            try withDatabase(directory) { db in
+                for table in ["store_state", "protection_manifest", "protected_payloads", "captures", "capture_receipts",
+                              "source_checkpoints", "coverage_gaps", "notification_outbox", "collection_authorities",
+                              "historical_progress", "protected_preferences", "historical_notification_outbox",
+                              "coverage_omissions", "collection_health_incidents", "collection_work",
+                              "successful_collection_reads", "codex_hook_content_slots", removed] {
+                    try db.execute(sql: "DELETE FROM \(table)")
+                }
             }
+            #expect(try ProtectedStore.probe(at: directory).state == .protectedDataPresent, "\(kept) alone")
+            try withDatabase(directory) { try $0.execute(sql: "DELETE FROM \(kept)") }
+            #expect(try ProtectedStore.probe(at: directory).state == .empty)
         }
-        #expect(try ProtectedStore.probe(at: directory).state == .protectedDataPresent)
-        try withDatabase(directory) { try $0.execute(sql: "DELETE FROM ledger_buckets") }
-        #expect(try ProtectedStore.probe(at: directory).state == .protectedDataPresent)
-        try withDatabase(directory) { try $0.execute(sql: "DELETE FROM ledger_parts") }
-        #expect(try ProtectedStore.probe(at: directory).state == .empty)
     }
 }
 
@@ -554,6 +554,31 @@ struct LedgerCompactionTests {
         try await vault.close()
         try await vault.open()
         #expect(await vault.store.snapshot().sourceKinds.count == 50)
+        try await vault.close()
+    }
+
+    @Test func aRepairRequestedWhileACommitSealsStillRewritesEveryBucket() async throws {
+        let vault = try await vaultWithStaleSources(0, recent: 40)
+        defer { vault.remove() }
+        try await vault.close()
+        let blocking = BlockingStoreCryptography(vault.crypto)
+        try await vault.open(cryptography: blocking)
+        let store: ProtectedStore = vault.store
+        let analysis = try SourceAnalysis(source: sourceRecord(session: "session-1", item: "sealing"), detectorVersion: "1", detections: [])
+        let payloads = try await ledgerTestPayloads(for: analysis, crypto: vault.crypto)
+        let permit = try #require(await store.processingPermit())
+        await blocking.blockNext(.ledgerSnapshot)
+        let sealing = Task { try await store.commit(analysis, payloads: payloads, permit: permit) }
+        await blocking.waitUntilBlocked()
+        // The commit planned already. Compaction now finds a mismatch, and with nothing to prune it
+        // only asks the next write to rewrite every bucket.
+        #expect(await store.damageSourceMirrorForTesting())
+        #expect(try await store.compactProcessedSources() == false)
+        await blocking.release()
+        _ = try await sealing.value
+        let before = try await vault.store.persistedLayoutForTesting()
+        try await vault.quiet("after", session: "session-1")
+        #expect(changedBuckets(before, try await vault.store.persistedLayoutForTesting()) == 64)
         try await vault.close()
     }
 

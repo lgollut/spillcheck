@@ -21,7 +21,8 @@ The ledger is stored as segments, each sealed on its own:
   labels), the notification decisions, and the conversation labels;
 - 64 buckets in `ledger_buckets` holding the per-source bookkeeping. A source
   lives in the bucket chosen by HMAC-SHA256 under the salt over its length-framed
-  identity.
+  identity, each field in its canonical decomposition (NFD), because identities
+  compare by canonical equivalence.
 
 `InventoryLedger` and `InventorySnapshot` are unchanged. Bookkeeping mutates
 through `SourceBookkeeping`, which journals each source it touches. A write seals

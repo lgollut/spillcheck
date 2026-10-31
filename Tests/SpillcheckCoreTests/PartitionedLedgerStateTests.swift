@@ -54,11 +54,11 @@ struct PartitionedLedgerStateTests {
     private let salt = Data(0..<32)
 
     @Test func bucketPlacementGoldenVectors() throws {
-        // Independently computed: HMAC-SHA256(salt = 00 01 .. 1f, length-framed domain and identity) mod 64.
+        // Independently computed: HMAC-SHA256(salt = 00 01 .. 1f, length-framed domain and NFD identity) mod 64.
         let vectors: [(AgentProvider, String, String, String, Int)] = [
             (.codex, "profile-a", "session-1", "item-1", 28), (.codex, "profile-a", "session-1", "item-2", 3),
             (.claudeCode, "profile-b", "s", "turn-7", 63), (.codex, "p", "s", "x", 59),
-            (.claudeCode, "héllo", "sess/ü", "item 9", 56), (.codex, "profile-a", "session-2", "item-1", 47),
+            (.claudeCode, "héllo", "sess/ü", "item 9", 62), (.codex, "profile-a", "session-2", "item-1", 47),
         ]
         for (provider, profile, session, item, expected) in vectors {
             let source = try SourceIdentity(session: SessionIdentity(provider: provider, profileID: profile, sessionID: session), itemID: item)
@@ -67,6 +67,28 @@ struct PartitionedLedgerStateTests {
         let source = try SourceIdentity(session: SessionIdentity(provider: .codex, profileID: "profile-a", sessionID: "session-1"), itemID: "item-1")
         #expect(LedgerPlacement.bucket(of: source, salt: Data(repeating: 7, count: 32)) != 28
             || LedgerPlacement.bucket(of: source, salt: Data(repeating: 8, count: 32)) != 28)
+    }
+
+    @Test func thePartsAndBucketsHoldEverySnapshotField() {
+        // A snapshot field that no part or bucket holds would be dropped by every write.
+        func fields(_ value: Any) -> Set<String> { Set(Mirror(reflecting: value).children.compactMap(\.label)) }
+        let empty = InventorySnapshot()
+        let held = fields(LedgerCore(empty)).union(fields(LedgerNotifications(empty))).union(fields(LedgerConversations(empty)))
+        #expect(fields(empty) == held.union(["analysisReceipts", "sourceKinds", "sourceTimes"]))
+        #expect(fields(LedgerCore(empty)).isDisjoint(with: fields(LedgerNotifications(empty)).union(fields(LedgerConversations(empty)))))
+    }
+
+    @Test func canonicallyEqualIdentitiesShareABucket() throws {
+        // Swift compares identities by canonical equivalence, so both spellings are one source.
+        let composed = try SourceIdentity(session: SessionIdentity(provider: .claudeCode, profileID: "caf\u{e9}",
+                                                                    sessionID: "s\u{fc}"), itemID: "\u{c5}ngstr\u{f6}m")
+        let decomposed = try SourceIdentity(session: SessionIdentity(provider: .claudeCode, profileID: "cafe\u{301}",
+                                                                      sessionID: "su\u{308}"), itemID: "A\u{30a}ngstro\u{308}m")
+        #expect(composed == decomposed)
+        for byte in UInt8(0)..<16 {
+            let salt = Data(repeating: byte, count: 32)
+            #expect(LedgerPlacement.bucket(of: composed, salt: salt) == LedgerPlacement.bucket(of: decomposed, salt: salt))
+        }
     }
 
     @Test func segmentBindingsAreDeterministicDistinctAndOwnedByTheVault() throws {

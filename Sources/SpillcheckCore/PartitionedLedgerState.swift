@@ -143,9 +143,11 @@ struct LedgerBucketSegment: Codable, Equatable, Sendable {
 enum LedgerPlacement {
     /// HMAC-SHA256 under the vault's bucket salt over the length-framed identity. The salt keeps
     /// the bucket of a known identity unpredictable to anyone who can only see which rows change.
+    /// Identities compare by canonical equivalence, so each field is hashed in its canonical
+    /// decomposition: both spellings of one source must land in the same bucket.
     static func bucket(of source: SourceIdentity, salt: Data, count: Int = LedgerLayout.bucketCount) -> Int {
         let message = framedFields(["spillcheck-ledger-bucket", source.session.provider.rawValue,
-            source.session.profileID, source.session.sessionID, source.itemID])
+            source.session.profileID, source.session.sessionID, source.itemID].map(\.decomposedStringWithCanonicalMapping))
         let mac = HMAC<SHA256>.authenticationCode(for: message, using: SymmetricKey(data: salt))
         return Int(mac.prefix(8).reduce(UInt64(0)) { $0 << 8 | UInt64($1) } % UInt64(count))
     }

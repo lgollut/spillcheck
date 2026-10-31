@@ -978,7 +978,7 @@ public actor ProtectedStore {
                 try injector?(.beforeProcessingCommit)
             }
             ledger = next
-            layout = sealedLedger.layout
+            adopt(sealedLedger)
             revision = expectedRevision + 1
             try Self.restrictFileModes(in: directory)
             try injector?(.afterProcessingCommit)
@@ -2145,7 +2145,7 @@ public actor ProtectedStore {
                 }
             }
             ledger = next
-            layout = sealedLedger.layout
+            adopt(sealedLedger)
             revision = expectedRevision + 1
             if removal { generation = UUID() }
             try await verifyPersistedLedger()
@@ -2158,6 +2158,14 @@ public actor ProtectedStore {
         guard !closed else { throw StorageError.databaseUnavailable }
         guard monitoringEnabled else { throw StorageError.monitoringPaused }
         guard generation == permit.generation else { throw StorageError.staleProcessingPermit }
+    }
+
+    /// Takes the layout a successful write leaves behind. A repair that compaction asked for while that
+    /// write was sealing still applies, unless the write already rewrote every bucket.
+    private func adopt(_ sealed: SealedLedgerWrite) {
+        let repairPending = layout.rewriteAllBuckets && sealed.buckets.count < LedgerLayout.bucketCount
+        layout = sealed.layout
+        if repairPending { layout.rewriteAllBuckets = true }
     }
 
     /// Plans which ledger segments `next` changes and seals only those. A conversion from version 1

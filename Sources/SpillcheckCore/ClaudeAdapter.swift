@@ -152,12 +152,13 @@ public struct ClaudeAdapter: CaptureNormalizer, Sendable {
         var paths = [mainPath]
         var correlationPath = mainPath
         if ClaudeToolHookSelection.toolEvents.contains(event), hook.has("agent_id") {
-            // Ordinary child tool hooks carry the parent session/path and an agent ID,
-            // not agent_transcript_path. Correlate against that exact native child only.
+            // Child tool hooks, a workflow agent's too, carry the parent session/path and an
+            // agent ID, not agent_transcript_path. Correlate against that exact native child only.
             guard let agentID = hook["agent_id"].nonemptyString,
                   !hook.has("agent_transcript_path") || hook["agent_transcript_path"].nonemptyString != nil,
-                  let child = try? ClaudeToolHookSelection.childPath(parentPath: mainPath, agentID: agentID,
-                      declaredChildPath: hook["agent_transcript_path"].string),
+                  let child = try? ClaudeToolHookSelection.toolHookChildPath(parentPath: mainPath, agentID: agentID,
+                      declaredChildPath: hook["agent_transcript_path"].string,
+                      confinedParent: try? transcriptURL(path: mainPath)),
                   (try? transcriptURL(path: child)) != nil else {
                 return CollectionBatch(sources: [], coverageGaps: [gap(.unresolvedCorrelation)])
             }
@@ -601,6 +602,9 @@ public struct ClaudeAdapter: CaptureNormalizer, Sendable {
         let b = Array(bytes.prefix(16))
         return UUID(uuid: (b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7],b[8],b[9],b[10],b[11],b[12],b[13],b[14],b[15]))
     }
+
+    /// The reader's location for a transcript path inside its allowed roots, or nil outside them.
+    public func confinedTranscriptURL(path: String) -> URL? { try? transcriptURL(path: path) }
 
     func transcriptURL(path: String) throws -> URL {
         guard path.hasPrefix("/"), !path.utf8.contains(0) else { throw ClaudeCollectionError.unsafeTranscriptPath }

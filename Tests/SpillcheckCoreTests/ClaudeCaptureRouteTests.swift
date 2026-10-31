@@ -37,6 +37,38 @@ struct ClaudeCaptureRouteTests {
     }
 
     @Test(arguments: ["PostToolUse", "PostToolUseFailure", "PostToolBatch"])
+    func workflowChildToolCaptureRetainsTheRunFolderHoldingTheAgent(event: String) throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("spillcheck-claude-route-\(UUID())").resolvingSymlinksInPath()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let parent = root.appendingPathComponent("parent.jsonl")
+        let child = root.appendingPathComponent("parent/subagents/workflows/wf_run/agent-worker.jsonl")
+        try FileManager.default.createDirectory(at: child.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("{}\n".utf8).write(to: parent)
+        try Data("{}\n".utf8).write(to: child)
+        let flat = root.appendingPathComponent("parent/subagents/agent-worker.jsonl")
+        let adapter = try ClaudeAdapter(profileID: "test", agentVersion: "2.1.296", allowedTranscriptRoots: [root])
+        let route = CollectionCaptureRoute(scope: claudeCaptureScope,
+            transcriptLocator: { adapter.confinedTranscriptURL(path: $0) })
+        let context = try route.context(for: claudeRoutePacket(event,
+            extra: ["transcript_path": parent.path, "agent_id": "worker"]), trigger: .helperDelivery)
+        #expect(context.retry?.sourceURL == child && context.retry?.session == nil)
+        // Without the reader's root check, or outside its roots, the route does not look.
+        for unconfined in [CollectionCaptureRoute(scope: claudeCaptureScope),
+                           CollectionCaptureRoute(scope: claudeCaptureScope, transcriptLocator: { _ in nil })] {
+            let kept = try unconfined.context(for: claudeRoutePacket(event,
+                extra: ["transcript_path": parent.path, "agent_id": "worker"]), trigger: .helperDelivery)
+            #expect(kept.retry?.sourceURL == flat)
+        }
+        // With two holders the route cannot choose, so it keeps the flat child as before.
+        let second = root.appendingPathComponent("parent/subagents/workflows/wf_other/agent-worker.jsonl")
+        try FileManager.default.createDirectory(at: second.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("{}\n".utf8).write(to: second)
+        let ambiguous = try route.context(for: claudeRoutePacket(event,
+            extra: ["transcript_path": parent.path, "agent_id": "worker"]), trigger: .helperDelivery)
+        #expect(ambiguous.retry?.sourceURL == flat)
+    }
+
+    @Test(arguments: ["PostToolUse", "PostToolUseFailure", "PostToolBatch"])
     func invalidChildToolHintsCannotFallBackToParentRecovery(event: String) throws {
         let route = CollectionCaptureRoute(scope: claudeCaptureScope)
         let invalid: [[String: Any]] = [

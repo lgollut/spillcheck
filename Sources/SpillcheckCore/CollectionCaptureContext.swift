@@ -6,9 +6,14 @@ public struct CollectionCaptureRoute: Sendable {
     public let scope: CollectionScope
     public let readerVersion: String?
     public let hostVersion: String?
+    /// The reader's root check for a transcript path. Only with it may a child tool hook's
+    /// workflow run folder be looked up; otherwise the route never touches the filesystem.
+    public let transcriptLocator: (@Sendable (String) -> URL?)?
 
-    public init(scope: CollectionScope, readerVersion: String? = nil, hostVersion: String? = nil) {
+    public init(scope: CollectionScope, readerVersion: String? = nil, hostVersion: String? = nil,
+                transcriptLocator: (@Sendable (String) -> URL?)? = nil) {
         self.scope = scope; self.readerVersion = readerVersion; self.hostVersion = hostVersion
+        self.transcriptLocator = transcriptLocator
     }
 
     public func context(for packet: CapturePacket, trigger: CollectionWorkTrigger,
@@ -45,8 +50,9 @@ public struct CollectionCaptureRoute: Sendable {
         if ClaudeToolHookSelection.toolEvents.contains(name), event["agent_id"] != nil {
             guard let agentID = event["agent_id"] as? String,
                   event["agent_transcript_path"] == nil || event["agent_transcript_path"] is String,
-                  let selected = try? ClaudeToolHookSelection.childPath(parentPath: parent, agentID: agentID,
-                      declaredChildPath: event["agent_transcript_path"] as? String) else { return nil }
+                  let selected = try? ClaudeToolHookSelection.toolHookChildPath(parentPath: parent, agentID: agentID,
+                      declaredChildPath: event["agent_transcript_path"] as? String,
+                      confinedParent: transcriptLocator?(parent)) else { return nil }
             child = selected
         } else if ClaudeToolHookSelection.pollEvents.contains(name), event["agent_transcript_path"] != nil {
             guard let declared = event["agent_transcript_path"] as? String,

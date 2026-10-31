@@ -349,7 +349,7 @@ struct DisposableRecoveryConfigurationTests {
 
         let final = try await ProtectedStore.open(at: selected.store, cryptography: crypto, limits: .init(maxQueueAge: 5))
         let finalPermit = try #require(await final.processingPermit())
-        #expect(try await final.enqueue(packet.body, id: id, capturedAt: now, permit: finalPermit) == .alreadyProcessed(id))
+        #expect(try await final.enqueue(packet.body, id: id, capturedAt: now, permit: finalPermit, at: now) == .alreadyProcessed(id))
         #expect(try await final.captureIdentitiesForTesting().pending.isEmpty)
         #expect(try await final.captureIdentitiesForTesting().consumed == [id])
         await #expect(throws: StorageError.invalidPayload) { try await final.captureIdentitiesForTesting(limit: 0) }

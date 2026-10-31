@@ -133,6 +133,7 @@ public actor ProtectedStore {
     private var ledger: InventoryLedger
     /// What the ledger rows on disk look like, so a write seals only the segments it changed.
     private var layout: LedgerLayoutState
+    private var expectsMirrorRepair = false
     private var revision: Int64
     private var monitoringEnabled = true
     private var generation = UUID()
@@ -692,6 +693,17 @@ public actor ProtectedStore {
             sourceCount: snapshot.sourceKinds.count, receiptCount: snapshot.analysisReceipts.count)
     }
 
+    /// Makes the in-memory copy of one bucket entry disagree with the ledger while leaving every count
+    /// intact, as a missed journal entry would. Returns false when no source exists to damage.
+    @_spi(Testing) public func damageSourceMirrorForTesting() -> Bool {
+        guard layout.isPartitioned, let source = ledger.bookkeeping.kinds.keys.first,
+              var entry = layout.mirror.entries[source] else { return false }
+        entry.kind = ContentType.allCases.first { $0 != entry.kind } ?? entry.kind
+        layout.mirror.set(entry, for: source)
+        expectsMirrorRepair = true
+        return true
+    }
+
     /// What a build before the partitioned ledger stores for `snapshot`: the whole snapshot under the
     /// vault-wide ledger binding. Tests install it to simulate a vault that has not converted yet.
     @_spi(Testing) public static func legacyLedgerRowForTesting(
@@ -786,6 +798,13 @@ public actor ProtectedStore {
     @discardableResult
     public func compactProcessedSources(at now: Date = Date()) async throws -> Bool {
         guard !closed else { throw StorageError.databaseUnavailable }
+        // The mirror is what the buckets hold. A full comparison finds drift that the per-write count
+        // check cannot; it is linear in the sources, and this pass is idle and runs hourly. A mismatch
+        // costs performance only: the next write rewrites every bucket from the ledger.
+        if layout.isPartitioned, !layout.mirror.matches(ledger.bookkeeping) {
+            assert(expectsMirrorRepair, "the bucket mirror disagrees with the ledger bookkeeping")
+            layout.rewriteAllBuckets = true
+        }
         let cutoff = now.addingTimeInterval(-HistoricalAuditContext.receiptHorizon)
         guard ledger.needsProcessedSourceCompaction(before: cutoff) else { return false }
         _ = try await mutateLedger { ledger in ledger.pruneProcessedSources(before: cutoff, stampingUntimedAt: now) }
@@ -2145,6 +2164,7 @@ public actor ProtectedStore {
     /// proves, before anything is written, that the sealed rows read back as exactly `next`.
     private func sealLedger(committed: InventoryLedger, next: inout InventoryLedger, revision: Int64) async throws -> SealedLedgerWrite {
         let plan = try layout.plan(committed: committed, next: &next, revision: revision, maximumBytes: limits.maxProtectedStateBytes)
+        assert(!plan.repairedMirror || expectsMirrorRepair, "a ledger bookkeeping change was not journaled")
         let sealed = try await Self.seal(plan, manifest: manifest, cryptography: cryptography)
         if plan.isConversion {
             let read = try await Self.readSegments(sealed.rows(revision: revision), manifest: manifest, cryptography: cryptography, limits: limits)

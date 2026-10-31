@@ -267,6 +267,8 @@ struct LedgerLayoutState: Sendable {
     /// Parts the next write must include although the ledger equals its committed copy: whatever
     /// opening normalized, and the notifications, so the outbox is resynchronized.
     var forced: Set<LedgerPart>
+    /// Set when the mirror is found to disagree with the ledger: the next write rebuilds and rewrites every bucket.
+    var rewriteAllBuckets = false
 
     /// A vault with no partitioned rows yet. The first write seals every segment.
     static func unpartitioned(revision: Int64) -> Self {
@@ -305,6 +307,9 @@ extension LedgerLayoutState {
         var dirtyBuckets: Set<Int> = []
         var repaired = false
         if conversion {
+            mirror = SourceLedgerMirror(salt: header.bucketSalt, entries: next.bookkeeping.entries)
+            dirtyBuckets = Set(0..<LedgerLayout.bucketCount)
+        } else if rewriteAllBuckets {
             mirror = SourceLedgerMirror(salt: header.bucketSalt, entries: next.bookkeeping.entries)
             dirtyBuckets = Set(0..<LedgerLayout.bucketCount)
         } else {

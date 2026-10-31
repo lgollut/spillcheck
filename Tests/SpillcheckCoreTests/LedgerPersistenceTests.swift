@@ -459,3 +459,59 @@ struct LedgerWriteScopeTests {
         try await vault.close()
     }
 }
+
+@Suite("Ledger compaction and its mirror")
+struct LedgerCompactionTests {
+    private func changedBuckets(_ before: ProtectedStore.PersistedLedgerLayout, _ after: ProtectedStore.PersistedLedgerLayout) -> Int {
+        changedSegments(before, after).filter { $0.hasPrefix("bucket-") }.count
+    }
+
+    private func vaultWithStaleSources(_ stale: Int, recent: Int) async throws -> LedgerVault {
+        let vault = try LedgerVault()
+        try await vault.open()
+        let old = Date().addingTimeInterval(-20 * 24 * 60 * 60)
+        for index in 0..<stale {
+            try await vault.commit(SourceAnalysis(source: sourceRecord(item: "stale-\(index)", contentTime: old),
+                detectorVersion: "1", detections: []))
+        }
+        for index in 0..<recent { try await vault.quiet("recent-\(index)", session: "session-\(index % 4)") }
+        return vault
+    }
+
+    @Test func compactionRewritesOnlyTheBucketsOfTheSourcesItPrunes() async throws {
+        let vault = try await vaultWithStaleSources(3, recent: 50)
+        defer { vault.remove() }
+        let before = try await vault.store.persistedLayoutForTesting()
+        #expect(try await vault.store.compactProcessedSources())
+        let after = try await vault.store.persistedLayoutForTesting()
+        #expect(await vault.store.snapshot().sourceKinds.count == 50)
+        #expect(changedBuckets(before, after) <= 3 && changedBuckets(before, after) >= 1)
+        #expect(!changedSegments(before, after).contains { $0.hasPrefix("part-") })
+        try await vault.close()
+        try await vault.open()
+        #expect(await vault.store.snapshot().sourceKinds.count == 50)
+        try await vault.close()
+    }
+
+    @Test func aMirrorThatDisagreesWithTheLedgerIsRewrittenInFullWhenCompactionRuns() async throws {
+        for pruning in [false, true] {
+            let vault = try await vaultWithStaleSources(pruning ? 2 : 0, recent: 40)
+            defer { vault.remove() }
+            #expect(await vault.store.damageSourceMirrorForTesting())
+            let before = try await vault.store.persistedLayoutForTesting()
+            #expect(try await vault.store.compactProcessedSources() == pruning)
+            if !pruning { try await vault.quiet("next", session: "session-1") }
+            let after = try await vault.store.persistedLayoutForTesting()
+            #expect(changedBuckets(before, after) == 64, "pruning: \(pruning)")
+            let expected = await vault.store.snapshot()
+            try await vault.close()
+            try await vault.open()
+            expectSnapshotsEqual(await vault.store.snapshot(), expected, "pruning: \(pruning)")
+            // The repaired mirror now follows the journal again.
+            let settled = try await vault.store.persistedLayoutForTesting()
+            try await vault.quiet("settled", session: "session-1")
+            #expect(changedBuckets(settled, try await vault.store.persistedLayoutForTesting()) == 1)
+            try await vault.close()
+        }
+    }
+}

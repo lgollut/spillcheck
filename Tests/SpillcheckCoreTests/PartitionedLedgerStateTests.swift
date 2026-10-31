@@ -179,6 +179,16 @@ struct PartitionedLedgerStateTests {
         #expect(try store.disk.reassemble().snapshot.matches(changed.snapshot))
     }
 
+    @Test func aFlaggedLayoutRewritesEveryBucketOnceAndThenFollowsTheJournalAgain() throws {
+        var store = try PlannedStore()
+        for index in 0..<5 { try store.write { _ = try $0.ingest(analysis(item: "item-\(index)")) } }
+        store.layout.rewriteAllBuckets = true
+        let rebuilt = try store.write { _ in }
+        #expect(rebuilt.buckets.count == LedgerLayout.bucketCount && !rebuilt.repairedMirror && !rebuilt.layout.rewriteAllBuckets)
+        #expect(try store.disk.reassemble().snapshot.matches(store.ledger.snapshot))
+        #expect(try store.write { _ = try $0.ingest(analysis(item: "next")) }.buckets.count == 1)
+    }
+
     @Test func theSumOfEverySegmentIsBoundedByTheStateLimit() throws {
         var store = try PlannedStore()
         let change: (inout InventoryLedger) throws -> Void = { _ = try $0.ingest(analysis()) }

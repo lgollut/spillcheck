@@ -26,6 +26,21 @@ private func withDatabase<T>(_ directory: URL, _ body: (Database) throws -> T) t
     return try database.write(body)
 }
 
+/// Opens a stored segment with its own binding, changes it and seals it again under the same binding,
+/// as a writer holding the keys could.
+private func rewriteSegment<Body: Codable>(
+    in directory: URL, crypto: BackgroundCryptography, table: String, key: String, slot: Int, id: LedgerSegmentID,
+    as type: Body.Type, _ change: (inout Body) -> Void
+) async throws {
+    let stored = try withDatabase(directory) { try Data.fetchOne($0, sql: "SELECT encoded FROM \(table) WHERE \(key) = ?", arguments: [slot]) }
+    let payload = try ProtectedPayload.decode(try #require(stored))
+    let binding = id.binding(vaultID: crypto.manifest.vaultID)
+    var body = try JSONDecoder().decode(type, from: await crypto.openBackground(payload, binding: binding))
+    change(&body)
+    let sealed = try await crypto.sealBackground(JSONEncoder().encode(body), binding: binding).encoded()
+    try withDatabase(directory) { try $0.execute(sql: "UPDATE \(table) SET encoded = ? WHERE \(key) = ?", arguments: [sealed, slot]) }
+}
+
 /// The bucket salt of a closed vault, read the way the store reads its header.
 private func bucketSalt(of directory: URL, crypto: BackgroundCryptography) async throws -> Data {
     let stored = try withDatabase(directory) { try #require(try Data.fetchOne($0, sql: "SELECT encoded FROM store_state")) }
@@ -253,22 +268,11 @@ struct LedgerPersistenceTests {
         let snapshot = await vault.store.snapshot()
         let total = try await vault.store.stateSizeBreakdownForTesting().totalBytes
         try await vault.close()
-        let vaultID = vault.crypto.manifest.vaultID
 
         func bucketNumber(_ id: String) -> Int { Int(id.dropFirst("bucket-".count))! }
         let salt = try await bucketSalt(of: vault.directory, crypto: vault.crypto)
         let misfiled = try #require(snapshot.sourceKinds.keys.first)
 
-        func rewrite<Body: Codable>(_ directory: URL, table: String, key: String, slot: Int, id: LedgerSegmentID,
-                                    as type: Body.Type, _ change: (inout Body) -> Void) async throws {
-            let stored = try withDatabase(directory) { try Data.fetchOne($0, sql: "SELECT encoded FROM \(table) WHERE \(key) = ?", arguments: [slot]) }
-            let payload = try ProtectedPayload.decode(try #require(stored))
-            let binding = id.binding(vaultID: vaultID)
-            var body = try JSONDecoder().decode(type, from: await vault.crypto.openBackground(payload, binding: binding))
-            change(&body)
-            let sealed = try await vault.crypto.sealBackground(JSONEncoder().encode(body), binding: binding).encoded()
-            try withDatabase(directory) { try $0.execute(sql: "UPDATE \(table) SET encoded = ? WHERE \(key) = ?", arguments: [sealed, slot]) }
-        }
         func row(_ directory: URL, _ table: String, _ key: String, _ slot: Int) throws -> Data {
             try withDatabase(directory) { try #require(try Data.fetchOne($0, sql: "SELECT encoded FROM \(table) WHERE \(key) = ?", arguments: [slot])) }
         }
@@ -308,21 +312,21 @@ struct LedgerPersistenceTests {
             }),
             ("entry filed under another bucket", { directory in
                 let wrong = (LedgerPlacement.bucket(of: misfiled, salt: salt) + 1) % LedgerLayout.bucketCount
-                try await rewrite(directory, table: "ledger_buckets", key: "bucket", slot: wrong, id: .bucket(wrong), as: LedgerBucketSegment.self) { moved in
+                try await rewriteSegment(in: directory, crypto: vault.crypto, table: "ledger_buckets", key: "bucket", slot: wrong, id: .bucket(wrong), as: LedgerBucketSegment.self) { moved in
                     moved.sessions = [LedgerBucketSegment.Session(session: misfiled.session,
                         items: [LedgerBucketSegment.Item(itemID: misfiled.itemID, kind: .toolOutput, time: nil, receipts: [])])]
                 }
             }),
             ("repeated session in a bucket", { directory in
-                try await rewrite(directory, table: "ledger_buckets", key: "bucket", slot: bucketNumber(touched), id: .bucket(bucketNumber(touched)),
+                try await rewriteSegment(in: directory, crypto: vault.crypto, table: "ledger_buckets", key: "bucket", slot: bucketNumber(touched), id: .bucket(bucketNumber(touched)),
                                   as: LedgerBucketSegment.self) { $0.sessions += $0.sessions }
             }),
             ("core written at another revision", { directory in
-                try await rewrite(directory, table: "ledger_parts", key: "part", slot: 1, id: .part(.core),
+                try await rewriteSegment(in: directory, crypto: vault.crypto, table: "ledger_parts", key: "part", slot: 1, id: .part(.core),
                                   as: LedgerPartSegment<LedgerCore>.self) { $0.writtenAtRevision -= 1 }
             }),
             ("core filed in another slot", { directory in
-                try await rewrite(directory, table: "ledger_parts", key: "part", slot: 1, id: .part(.core),
+                try await rewriteSegment(in: directory, crypto: vault.crypto, table: "ledger_parts", key: "part", slot: 1, id: .part(.core),
                                   as: LedgerPartSegment<LedgerCore>.self) { $0.part = 2 }
             }),
         ]
@@ -371,6 +375,38 @@ struct LedgerPersistenceTests {
         #expect(throws: DatabaseError.self) {
             try withDatabase(vault.directory) { try $0.execute(sql: "INSERT INTO ledger_parts (part, encoded) VALUES (4, x'00')") }
         }
+    }
+
+    @Test func labelsNormalizedAtOpenAreWrittenByTheNextWriteAndNeverRenumbered() async throws {
+        let vault = try await quietVault(6)
+        defer { vault.remove() }
+        try await vault.commit(analysis(session: "session-1", item: "first", fingerprintByte: 1))
+        try await vault.commit(analysis(session: "session-2", item: "second", fingerprintByte: 2))
+        let labelled = await vault.store.snapshot()
+        #expect(labelled.valueLabels.count == 2 && labelled.conversationLabels.count == 5)
+        try await vault.close()
+        // Rows as a writer that predates labels would have left them: opening assigns them.
+        try await rewriteSegment(in: vault.directory, crypto: vault.crypto, table: "ledger_parts", key: "part", slot: 3,
+            id: .part(.conversations), as: LedgerPartSegment<LedgerConversations>.self) { $0.body.conversationLabels = [:] }
+        try await rewriteSegment(in: vault.directory, crypto: vault.crypto, table: "ledger_parts", key: "part", slot: 1,
+            id: .part(.core), as: LedgerPartSegment<LedgerCore>.self) { $0.body.valueLabels = [:]; $0.body.nextValueLabel = 1 }
+        let rows = try rowDump(of: vault.directory)
+
+        try await vault.open()
+        #expect(try rowDump(of: vault.directory) == rows, "opening must not write")
+        let normalized = await vault.store.snapshot()
+        #expect(normalized.valueLabels.count == 2 && normalized.conversationLabels.count == 5 && normalized.nextValueLabel == 3)
+        let before = try await vault.store.persistedLayoutForTesting()
+        try await vault.quiet("ordinary", session: "session-1")
+        let changed = changedSegments(before, try await vault.store.persistedLayoutForTesting())
+        #expect(changed.isSuperset(of: ["header", "part-1", "part-2", "part-3"]), "the labels open assigned must be written once")
+        let written = await vault.store.snapshot()
+        try await vault.close()
+
+        try await vault.open()
+        expectSnapshotsEqual(await vault.store.snapshot(), written, "labels after the write")
+        #expect(await vault.store.snapshot().valueLabels == normalized.valueLabels)
+        try await vault.close()
     }
 
     @Test func olderBuildsCannotReadV2() async throws {

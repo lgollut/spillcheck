@@ -152,7 +152,7 @@ public enum ViewingAuthorizationError: Error, Equatable, Sendable {
     case cancelled, unavailable(code: Int), denied(code: Int), invalidated
 }
 
-private func framedFields(_ fields: [String]) -> Data {
+func framedFields(_ fields: [String]) -> Data {
     fields.reduce(into: Data()) { output, field in
         let bytes = Data(field.utf8)
         var count = UInt32(bytes.count).bigEndian

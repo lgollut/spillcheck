@@ -77,3 +77,60 @@ func analysis(
         )]
     )
 }
+
+/// Deterministic SplitMix64, so a failing script replays exactly.
+struct SeededRandom: RandomNumberGenerator {
+    private var state: UInt64
+    init(seed: UInt64) { state = seed }
+    mutating func next() -> UInt64 {
+        state &+= 0x9E37_79B9_7F4A_7C15
+        var z = state
+        z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+        z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+        return z ^ (z >> 31)
+    }
+}
+
+/// One random ledger operation drawn from a small pool of sessions, items and revisions, so that
+/// replays, kind conflicts, removals and pruning all occur within a few dozen steps.
+func randomLedgerOperation(_ ledger: inout InventoryLedger, using random: inout SeededRandom) throws {
+    let session = "session-\(Int.random(in: 0..<3, using: &random))"
+    let index = Int.random(in: 0..<10, using: &random)
+    let item = "item-\(index)"
+    let kind = ContentType.allCases[index % ContentType.allCases.count]
+    let age = [0.0, 2, 20].randomElement(using: &random)! * 24 * 60 * 60
+    let time = fixtureTime.addingTimeInterval(-age)
+    let revision = UInt8(Int.random(in: 1...3, using: &random))
+    switch Int.random(in: 0..<10, using: &random) {
+    case 0..<3:
+        let source = try sourceRecord(session: session, item: item, contentType: kind, revision: revision, contentTime: time)
+        _ = try ledger.ingest(SourceAnalysis(source: source, detectorVersion: "1", detections: []))
+    case 3..<5:
+        // One value per item: a second value at the same location would reject the batch.
+        let byte = UInt8(1 + index % 4)
+        let source = try sourceRecord(session: session, item: item, contentType: kind, revision: revision, contentTime: time)
+        _ = try ledger.ingest(SourceAnalysis(source: source, detectorVersion: "1",
+            detections: [detection(in: source, fingerprintByte: byte)]))
+    case 5:
+        // A new revision of a known source whose content type differs is rejected whole.
+        let known = try sourceRecord(session: session, item: item, contentType: kind, revision: revision, contentTime: time)
+        _ = try ledger.ingest(SourceAnalysis(source: known, detectorVersion: "1", detections: []))
+        let other = ContentType.allCases[(index + 1) % ContentType.allCases.count]
+        let source = try sourceRecord(session: session, item: item, contentType: other, revision: 9, contentTime: time)
+        _ = try? ledger.ingest(SourceAnalysis(source: source, detectorVersion: "1", detections: []))
+    case 6:
+        let audit = try HistoricalAuditContext(reason: .restart, endingAt: fixtureTime.addingTimeInterval(-60 * 24 * 60 * 60))
+        let source = try sourceRecord(session: session, item: item, contentType: kind, revision: revision,
+            provenance: .historical(audit), contentTime: time)
+        _ = try ledger.ingest(SourceAnalysis(source: source, detectorVersion: "1", detections: []))
+    case 7:
+        _ = try? ledger.removeContent(for: fingerprint(UInt8(Int.random(in: 1...4, using: &random))))
+    case 8:
+        let days = Double(Int.random(in: 1...15, using: &random))
+        ledger.pruneProcessedSources(before: fixtureTime.addingTimeInterval(-days * 24 * 60 * 60), stampingUntimedAt: fixtureTime)
+    default:
+        if let id = ledger.occurrences.keys.sorted(by: { $0.uuidString < $1.uuidString }).first {
+            try ledger.review(id, as: .falsePositive)
+        }
+    }
+}

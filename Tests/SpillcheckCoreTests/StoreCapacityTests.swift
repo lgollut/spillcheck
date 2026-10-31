@@ -22,8 +22,11 @@ private actor CapacityCryptoSpy: BackgroundStoreCryptography {
 
 private let capacityMarker = "SPILLCHECK_FAKE_CAPACITY_PRIVATE"
 private let capacityDate = Date(timeIntervalSince1970: 1_791_727_200)
-private func capacitySource(_ suffix: String = "first") throws -> SourceIdentity {
-    try .init(session: .init(provider: .codex, profileID: capacityMarker, sessionID: capacityMarker),
+/// The sealed ledger alone needs about 4 KB under a byte limit. Tests that lower the limit to the size
+/// of an authority or slot row therefore pad the session until those rows are larger than the ledger.
+private let capacityPadding = String(repeating: "p", count: 3500)
+private func capacitySource(_ suffix: String = "first", session: String = capacityMarker) throws -> SourceIdentity {
+    try .init(session: .init(provider: .codex, profileID: capacityMarker, sessionID: session),
         itemID: "codex-hook-v1:\(capacityMarker)-\(suffix)")
 }
 private func capacityChoice(_ source: SourceIdentity) throws -> CollectionAuthorityChoice {
@@ -104,18 +107,19 @@ struct StoreCapacityTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let crypto = try BackgroundCryptography.ephemeralForTesting()
         let store = try await ProtectedStore.open(at: directory, cryptography: crypto)
-        let permit = try #require(await store.processingPermit()), source = try capacitySource()
+        let padded = capacityMarker + capacityPadding
+        let permit = try #require(await store.processingPermit()), source = try capacitySource(session: padded)
         try await store.selectAuthority(capacityChoice(source), permit: permit)
         _ = try await store.bindCodexHookContent(source: source, revision: capacityRevision(),
             observedAt: capacityDate, permit: permit)
         let original = try await store.capacitySnapshot()
         let other = try SourceIdentity(session: .init(provider: .codex, profileID: capacityMarker,
-            sessionID: capacityMarker + "-second"), itemID: source.itemID)
+            sessionID: padded + "-second"), itemID: source.itemID)
         try await store.selectAuthority(capacityChoice(other), permit: permit)
         _ = try await store.bindCodexHookContent(source: other, revision: capacityRevision(),
             observedAt: capacityDate, permit: permit)
         try await store.close()
-        // The encrypted empty inventory is smaller than the source authority/slot envelopes.
+        // The sealed ledger is smaller than the padded source authority/slot envelopes.
         let byteLimit = min(original.sourceAuthorities.encryptedBytes, original.codexHookContentSlots.encryptedBytes) - 1
         let reopened = try await ProtectedStore.open(at: directory, cryptography: crypto,
             limits: .init(maxProtectedStateBytes: byteLimit, maxHookContentSlots: 1, maxSourceAuthorities: 1))
@@ -133,7 +137,7 @@ struct StoreCapacityTests {
             revision: ContentRevision(keyedDigest: Data(repeating: 48, count: 32)),
             observedAt: capacityDate, permit: nextPermit) == .conflict)
         await #expect(throws: StorageError.capacityExceeded(.codexHookContentSlots)) {
-            try await reopened.bindCodexHookContent(source: capacitySource("new"), revision: capacityRevision(),
+            try await reopened.bindCodexHookContent(source: capacitySource("new", session: padded), revision: capacityRevision(),
                 observedAt: capacityDate, permit: nextPermit)
         }
         let newSession = try SessionIdentity(provider: .claudeCode, profileID: "other", sessionID: "new")
@@ -150,7 +154,8 @@ struct StoreCapacityTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let crypto = try BackgroundCryptography.ephemeralForTesting()
         let store = try await ProtectedStore.open(at: directory, cryptography: crypto)
-        let permit = try #require(await store.processingPermit()), source = try capacitySource()
+        let padded = capacityMarker + capacityPadding
+        let permit = try #require(await store.processingPermit()), source = try capacitySource(session: padded)
         try await store.selectAuthority(capacityChoice(source), permit: permit)
         _ = try await store.bindCodexHookContent(source: source, revision: capacityRevision(),
             observedAt: capacityDate, permit: permit)
@@ -165,7 +170,7 @@ struct StoreCapacityTests {
             #expect(snapshot.codexHookContentSlots.remainingEncryptedBytes == limit - usedBytes)
             let nextPermit = try #require(await reopened.processingPermit())
             await #expect(throws: StorageError.capacityExceeded(.codexHookContentSlots)) {
-                try await reopened.bindCodexHookContent(source: capacitySource("new"), revision: capacityRevision(),
+                try await reopened.bindCodexHookContent(source: capacitySource("new", session: padded), revision: capacityRevision(),
                     observedAt: capacityDate, permit: nextPermit)
             }
             #expect(try await reopened.capacitySnapshot() == snapshot)

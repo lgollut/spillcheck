@@ -96,41 +96,6 @@ private func sealedInventoryPayloads(
     return payloads
 }
 
-private actor BlockingStoreCryptography: BackgroundStoreCryptography {
-    nonisolated let manifest: ProtectionManifest
-    let delegate: BackgroundCryptography
-    var nextBlockedKind: ProtectedPayloadKind?
-    var blocked = false
-    var blockedWaiters: [CheckedContinuation<Void, Never>] = []
-    var releaseContinuation: CheckedContinuation<Void, Never>?
-
-    init(_ delegate: BackgroundCryptography) { self.delegate = delegate; manifest = delegate.manifest }
-    func blockNext(_ kind: ProtectedPayloadKind) { nextBlockedKind = kind; blocked = false }
-    func waitUntilBlocked() async {
-        if blocked { return }
-        await withCheckedContinuation { blockedWaiters.append($0) }
-    }
-    func release() { releaseContinuation?.resume(); releaseContinuation = nil }
-    func sealBackground(_ plaintext: Data, binding: PayloadBinding) async throws -> ProtectedPayload {
-        if nextBlockedKind == binding.kind {
-            nextBlockedKind = nil
-            await withCheckedContinuation { continuation in
-                releaseContinuation = continuation
-                blocked = true
-                for waiter in blockedWaiters { waiter.resume() }
-                blockedWaiters.removeAll()
-            }
-        }
-        return try await delegate.sealBackground(plaintext, binding: binding)
-    }
-    func openBackground(_ payload: ProtectedPayload, binding: PayloadBinding) async throws -> Data {
-        try await delegate.openBackground(payload, binding: binding)
-    }
-    func revision(canonicalBytes: Data) async throws -> ContentRevision {
-        try await delegate.revision(canonicalBytes: canonicalBytes)
-    }
-}
-
 @Suite("Protected SQLite durability and transactional semantics")
 struct StorageTests {
     @Test(arguments: [StorageFailpoint.beforeEnqueueCommit, .afterEnqueueCommit,
@@ -188,6 +153,44 @@ struct StorageTests {
         for file in try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) {
             #expect(try Data(contentsOf: file).range(of: Data("SPILLCHECK_STORAGE_CRASH_SYNTHETIC_SECRET".utf8)) == nil)
         }
+    }
+
+    @Test(arguments: [StorageFailpoint.beforeProcessingCommit, .afterProcessingCommit])
+    func abruptChildSIGKILLOfTheFirstCommitAfterUpgradeLeavesVersion1OrACompleteConversion(_ failpoint: StorageFailpoint) async throws {
+        let directory = temporaryStoreDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        #expect(try runAcceptance(directory: directory, operation: "enqueue").status == 0)
+        // Return the vault to the layout of the previous build: the whole snapshot in store_state.
+        let manifest = try #require(try ProtectedStore.probe(at: directory).manifest)
+        let crypto = try BackgroundCryptography.deterministicForTesting(
+            seed: Data("spillcheck synthetic acceptance seed v1".utf8), manifest: manifest)
+        let seeded = try await ProtectedStore.open(at: directory, cryptography: crypto)
+        let snapshot = await seeded.snapshot()
+        try await seeded.close()
+        try await downgradeToLegacyLedger(at: directory, snapshot: snapshot, cryptography: crypto)
+        // The queue rows legitimately change when the child claims its capture; the ledger rows must not.
+        func ledgerRows() throws -> [String: [String]] {
+            try rowDump(of: directory).filter { ["store_state", "ledger_parts", "ledger_buckets", "notification_outbox",
+                "historical_notification_outbox", "protected_payloads"].contains($0.key) }
+        }
+        let version1 = try ledgerRows()
+
+        _ = try runAcceptance(directory: directory, operation: "process", failpoint: failpoint)
+        let recovered: AcceptanceReport
+        switch failpoint {
+        case .beforeProcessingCommit:
+            #expect(try ledgerRows() == version1, "a kill inside the conversion must leave version 1 untouched")
+            recovered = try #require(runAcceptance(directory: directory, operation: "process", advance: 181).report)
+        default:
+            #expect(try ledgerRows()["ledger_buckets"]?.count == 64, "a kill after it must leave a complete conversion")
+            recovered = try #require(runAcceptance(directory: directory, operation: "inspect").report)
+        }
+        #expect(recovered.queueCount == 0 && recovered.occurrenceCount == 1 && recovered.alertCount == 1)
+        #expect(recovered.checkpointOffset == 100)
+        let converted = try await ProtectedStore.open(at: directory, cryptography: crypto)
+        #expect(try await converted.persistedLayoutForTesting().format == 2)
+        #expect(await converted.snapshot().occurrences.count == 1)
+        try await converted.close()
     }
 
     @Test func separateProcessDeletionMarkerAppendReplacementAndForget() throws {
@@ -557,6 +560,33 @@ struct StorageTests {
         #expect(transition.insertedObsoleteAppearanceIDs.count == 1)
         #expect(await store.snapshot().records.values.first?.protectedValue == nil)
         #expect(try await store.payload(next.detections[0].protectedValue) == nil)
+        try await store.close()
+    }
+
+    @Test func deliveryCommittedWhileACommitSealsMakesThatCommitFailWithStateChanged() async throws {
+        let directory = temporaryStoreDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let crypto = try BackgroundCryptography.ephemeralForTesting()
+        let blocking = BlockingStoreCryptography(crypto)
+        let store = try await ProtectedStore.open(at: directory, cryptography: blocking)
+        let first = try analysis()
+        let permit = try #require(await store.processingPermit())
+        _ = try await store.commit(first, payloads: sealedInventoryPayloads(for: first, using: crypto), permit: permit)
+        let alert = try #require(await store.snapshot().alertDecisions.keys.first)
+        let next = try analysis(session: "other", item: "next", fingerprintByte: 2)
+        let payloads = try await sealedInventoryPayloads(for: next, using: crypto)
+        await blocking.blockNext(.ledgerSnapshot)
+        let work = Task { try await store.commit(next, payloads: payloads, permit: permit) }
+        await blocking.waitUntilBlocked()
+        try await store.recordAlertDelivery(alert, state: .delivered)
+        let revision = await store.stateRevision()
+        await blocking.release()
+        await #expect(throws: StorageError.stateChanged) { try await work.value }
+        let interim = await store.snapshot()
+        #expect(await store.stateRevision() == revision)
+        #expect(interim.alertDecisions[alert]?.delivery == .delivered && interim.occurrences.count == 1)
+        _ = try await store.commit(next, payloads: payloads, permit: permit)
+        #expect(await store.snapshot().occurrences.count == 2)
         try await store.close()
     }
 

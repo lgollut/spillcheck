@@ -423,4 +423,88 @@ struct InventoryTests {
         #expect(ledger.pruneProcessedSources(before: stampedAt.addingTimeInterval(1), stampingUntimedAt: stampedAt) > 0)
         #expect(ledger.analyzedRevisionCount == 0 && ledger.snapshot.sourceKinds.isEmpty)
     }
+
+    // MARK: Bookkeeping journal
+
+    private struct BookkeepingEntry: Equatable {
+        var kind: ContentType
+        var time: Date?
+        var receipts: Set<AnalysisReceipt>
+    }
+
+    private func bookkeepingEntry(_ source: SourceIdentity, in snapshot: InventorySnapshot) -> BookkeepingEntry? {
+        snapshot.sourceKinds[source].map {
+            BookkeepingEntry(kind: $0, time: snapshot.sourceTimes[source],
+                receipts: snapshot.analysisReceipts.filter { $0.source == source })
+        }
+    }
+
+    @Test func bookkeepingJournalRecordsExactlyTouchedSources() throws {
+        var ledger = InventoryLedger()
+        let first = try analysis(item: "a")
+        let identity = first.source.identity
+        #expect(try ledger.ingest(first).outcome == .processed)
+        #expect(ledger.takeBookkeepingChanges() == [identity])
+        #expect(ledger.takeBookkeepingChanges().isEmpty)
+
+        #expect(try ledger.ingest(first).outcome == .replay)
+        #expect(ledger.takeBookkeepingChanges().isEmpty)
+
+        let audit = try HistoricalAuditContext(reason: .restart, endingAt: fixtureTime.addingTimeInterval(-30 * 24 * 60 * 60))
+        let late = try analysis(item: "late", provenance: .historical(audit))
+        #expect(try ledger.ingest(late).outcome == .outsideHistoricalWindow)
+        #expect(ledger.takeBookkeepingChanges().isEmpty)
+
+        let conflicting = try SourceAnalysis(source: sourceRecord(item: "a", contentType: .userPrompt, revision: 2),
+            detectorVersion: "1", detections: [])
+        #expect(throws: ContractError.conflictingSourceMetadata) { try ledger.ingest(conflicting) }
+        #expect(ledger.takeBookkeepingChanges().isEmpty)
+
+        _ = try ledger.ingest(analysis(item: "a", revision: 2))
+        let second = try analysis(item: "b")
+        _ = try ledger.ingest(second)
+        #expect(ledger.takeBookkeepingChanges() == [identity, second.source.identity])
+
+        // Compaction stamps untimed sources, drops stale receipts and removes unreferenced sources.
+        var legacy = InventoryLedger()
+        _ = try legacy.ingest(SourceAnalysis(source: sourceRecord(item: "legacy"), detectorVersion: "1", detections: []))
+        var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(legacy.snapshot)) as? [String: Any])
+        object.removeValue(forKey: "sourceTimes")
+        legacy = try InventoryLedger(snapshot: JSONDecoder().decode(InventorySnapshot.self,
+            from: JSONSerialization.data(withJSONObject: object)))
+        #expect(legacy.takeBookkeepingChanges().isEmpty)
+        let old = fixtureTime.addingTimeInterval(-30 * 24 * 60 * 60)
+        _ = try legacy.ingest(analysis(item: "referenced", fingerprintByte: 2, contentTime: old))
+        _ = try legacy.ingest(SourceAnalysis(source: sourceRecord(item: "unreferenced", contentTime: old),
+            detectorVersion: "1", detections: []))
+        _ = try legacy.ingest(analysis(item: "recent", fingerprintByte: 3))
+        #expect(legacy.takeBookkeepingChanges().count == 3)
+        let removed = legacy.pruneProcessedSources(before: fixtureTime.addingTimeInterval(-60), stampingUntimedAt: fixtureTime)
+        #expect(removed > 0)
+        let touched = try Set(["legacy", "referenced", "unreferenced"].map { try sourceRecord(item: $0).metadata.identity })
+        #expect(legacy.takeBookkeepingChanges() == touched)
+        #expect(legacy.pruneProcessedSources(before: fixtureTime.addingTimeInterval(-60), stampingUntimedAt: fixtureTime) == 0)
+        #expect(legacy.takeBookkeepingChanges().isEmpty)
+    }
+
+    @Test func bookkeepingJournalReproducesTheFlatStateAfterRandomOperations() throws {
+        var shrank = false
+        for seed in 1...12 as ClosedRange<UInt64> {
+            var random = SeededRandom(seed: seed)
+            var ledger = InventoryLedger()
+            var model: [SourceIdentity: BookkeepingEntry] = [:]
+            for step in 0..<60 {
+                let before = ledger.snapshot.sourceKinds.count
+                try randomLedgerOperation(&ledger, using: &random)
+                let snapshot = ledger.snapshot
+                shrank = shrank || snapshot.sourceKinds.count < before
+                for source in ledger.takeBookkeepingChanges() { model[source] = bookkeepingEntry(source, in: snapshot) }
+                #expect(Set(model.keys) == Set(snapshot.sourceKinds.keys), "seed \(seed) step \(step)")
+                #expect(model.mapValues(\.kind) == snapshot.sourceKinds, "seed \(seed) step \(step)")
+                #expect(model.compactMapValues(\.time) == snapshot.sourceTimes, "seed \(seed) step \(step)")
+                #expect(Set(model.values.flatMap(\.receipts)) == snapshot.analysisReceipts, "seed \(seed) step \(step)")
+            }
+        }
+        #expect(shrank, "the script must exercise pruning")
+    }
 }

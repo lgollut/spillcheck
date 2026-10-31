@@ -640,4 +640,105 @@ struct DetectionPipelineTests {
         #expect(overlapped.text == "user=[other detected value]OWN_VALUE_2 tail")
         #expect(DetectionPipeline.excerpt(around: own, in: source).text == text)
     }
+
+    @Test func quietCaptureLedgerCostIsFlatInVaultSize() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("spillcheck-pipeline-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let crypto = try BackgroundCryptography.ephemeralForTesting()
+        let spy = LedgerSealSpy(crypto)
+        let store = try await ProtectedStore.open(at: directory, cryptography: spy)
+        let now = Date()
+        let permit = try #require(await store.processingPermit())
+        for index in 0..<1000 {
+            let seeded = try SourceAnalysis(source: sourceRecord(provider: .claudeCode, session: "seed-\(index % 20)",
+                item: "seed-\(index)", text: "nothing to find", contentTime: now),
+                detectorVersion: pipelineDetectorVersion, detections: [])
+            _ = try await store.commit(seeded, payloads: [], permit: permit)
+        }
+        _ = await spy.takeLedgerSeals()
+        let quiet = (0..<20).map { PipelineSourceSpec(session: "seed-0", item: "quiet-\($0)", contentTime: now, text: "nothing to find") }
+        let pipeline = DetectionPipeline(store: store, cryptography: crypto,
+            normalizer: PipelineNormalizer(["quiet": quiet]), detector: PipelineDetector(),
+            detectorVersion: pipelineDetectorVersion, liveSince: now.addingTimeInterval(-60))
+        try await enqueuePipeline("quiet", into: store)
+        #expect(try await pipeline.processNext() == .processed)
+        let sealed = await spy.takeLedgerSeals()
+        // Each source commit seals the header and one bucket, whatever the vault already holds.
+        #expect(await store.snapshot().analysisReceipts.count == 1020)
+        #expect(sealed.largest < 32 * 1024, "largest ledger segment sealed: \(sealed.largest) bytes")
+        #expect(sealed.bytes < 20 * 32 * 1024, "ledger bytes sealed for the capture: \(sealed.bytes)")
+        try await store.close()
+    }
+
+    @Test func deliveryCommittedWhileTheLedgerIsSealedRetriesTheCaptureAndKeepsBothChanges() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("spillcheck-pipeline-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let crypto = try BackgroundCryptography.ephemeralForTesting()
+        let blocking = BlockingStoreCryptography(crypto)
+        let store = try await ProtectedStore.open(at: directory, cryptography: blocking)
+        let now = Date()
+        let pipeline = DetectionPipeline(store: store, cryptography: crypto,
+            normalizer: PipelineNormalizer([
+                "first": [PipelineSourceSpec(item: "first", contentTime: now)],
+                "second": [PipelineSourceSpec(session: "second-session", item: "second", contentTime: now)]
+            ]), detector: PipelineDetector(), detectorVersion: pipelineDetectorVersion, liveSince: now.addingTimeInterval(-60))
+        try await enqueuePipeline("first", into: store)
+        #expect(try await pipeline.processNext() == .processed)
+        let delivered = try #require(await store.snapshot().alertDecisions.keys.first)
+        try await enqueuePipeline("second", into: store)
+        await blocking.blockNext(.ledgerSnapshot)
+        let work = Task { try await pipeline.processNext() }
+        await blocking.waitUntilBlocked()
+        try await store.recordAlertDelivery(delivered, state: .delivered)
+        await blocking.release()
+        #expect(try await work.value == .retryScheduled)
+        let interim = await store.snapshot()
+        #expect(interim.alertDecisions[delivered]?.delivery == .delivered && interim.occurrences.count == 1)
+        let database = try DatabaseQueue(path: directory.appendingPathComponent(ProtectedStore.databaseFilename).path)
+        defer { try? database.close() }
+        let retryCount = try await database.read { try Int.fetchOne($0, sql: "SELECT retry_count FROM captures") }
+        #expect(retryCount == 1)
+        #expect(try await pipeline.processNext(at: Date().addingTimeInterval(181)) == .processed)
+        let done = await store.snapshot()
+        #expect(done.occurrences.count == 2 && done.alertDecisions.count == 2)
+        #expect(done.alertDecisions[delivered]?.delivery == .delivered)
+        #expect(done.alertDecisions.values.filter { $0.delivery == .pending }.count == 1)
+        #expect(try await store.queueStatistics().count == 0)
+        try await store.close()
+    }
+
+    @Test func anInterruptedCaptureKeepsItsCommittedSourcesAndOnlyTheRestAreScannedAgain() async throws {
+        let fixture = try await PipelineFixture()
+        defer { fixture.remove() }
+        let now = Date()
+        let items = (1...5).map { PipelineSourceSpec(item: "item-\($0)", contentTime: now) }
+        func pipeline(_ store: ProtectedStore, _ detector: PipelineDetector) -> DetectionPipeline {
+            DetectionPipeline(store: store, cryptography: fixture.crypto, normalizer: PipelineNormalizer(["five": items]),
+                detector: detector, detectorVersion: pipelineDetectorVersion, liveSince: now.addingTimeInterval(-60))
+        }
+        let interrupted = PipelineDetector()
+        await interrupted.blockScanNumber(4)
+        try await enqueuePipeline("five", into: fixture.store)
+        let work = Task { try await pipeline(fixture.store, interrupted).processNext() }
+        await interrupted.waitUntilBlocked()
+        let afterThree = await fixture.store.snapshot()
+        let revision = await fixture.store.stateRevision()
+        #expect(afterThree.analysisReceipts.count == 3)
+        // The process ends here: the fourth source is never committed and nothing else is written.
+        work.cancel()
+        await interrupted.release()
+        await #expect(throws: CancellationError.self) { try await work.value }
+        try await fixture.store.close()
+
+        let reopened = try await ProtectedStore.open(at: fixture.directory, cryptography: fixture.crypto)
+        expectSnapshotsEqual(await reopened.snapshot(), afterThree)
+        #expect(await reopened.stateRevision() == revision)
+        let detector = PipelineDetector()
+        #expect(try await pipeline(reopened, detector).processNext(at: Date().addingTimeInterval(181)) == .processed)
+        #expect(await detector.observed.map(\.identity.itemID) == ["item-4", "item-5"])
+        let final = await reopened.snapshot()
+        #expect(final.analysisReceipts.count == 5 && final.occurrences.count == 5 && final.alertDecisions.count == 1)
+        #expect(try await reopened.queueStatistics().count == 0)
+        try await reopened.close()
+    }
 }

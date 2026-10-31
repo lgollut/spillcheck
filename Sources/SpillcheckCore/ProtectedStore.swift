@@ -928,8 +928,10 @@ public actor ProtectedStore {
         } else { checkpointPayload = nil }
         try check(permit)
         guard revision == expectedRevision else { throw StorageError.stateChanged }
-        let required = try Self.requiredPayloads(in: next.snapshot)
-        let inserts = try checkedPayloads(payloads, required: required)
+        // Only the core holds payload references, and payload rows are deleted only by a write that
+        // changes the core, so a commit that leaves the core alone has nothing to insert or confirm.
+        let required = sealedLedger.coreChanged ? try Self.requiredPayloads(in: next.snapshot) : [:]
+        let inserts = sealedLedger.coreChanged ? try checkedPayloads(payloads, required: required) : []
         let injector = failureInjector
         let nextSnapshot = next.snapshot
         let linkedIDs = Set(analysis.detections.compactMap { nextSnapshot.records[$0.fingerprint]?.id })
@@ -2874,6 +2876,9 @@ public actor ProtectedStore {
                 guard db.changesCount == 1 else { throw StorageError.corruptProtectedState }
             }
         }
+        // Both outbox tables are a function of the notifications part. The first write after open
+        // includes that part, so any drift is repaired once.
+        guard sealed.notificationsChanged else { return }
         try db.execute(sql: "DELETE FROM notification_outbox")
         for alert in snapshot.alertDecisions.values {
             try db.execute(sql: "INSERT INTO notification_outbox (id, value_id, delivery) VALUES (?, ?, ?)",

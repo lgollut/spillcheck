@@ -406,3 +406,56 @@ struct LedgerPersistenceTests {
         #expect(try ProtectedStore.probe(at: directory).state == .empty)
     }
 }
+
+@Suite("Ledger writes that leave parts alone")
+struct LedgerWriteScopeTests {
+    @Test func aCommitThatLeavesTheCoreAloneSkipsThePayloadPresenceCheck() async throws {
+        let vault = try LedgerVault()
+        defer { vault.remove() }
+        try await vault.open()
+        try await vault.commit(analysis(session: "session", item: "finding"))
+        // An excerpt row lost behind the store's back is found by a commit that references payloads,
+        // not by one that cannot: only the core holds payload references.
+        try withDatabase(vault.directory) { try $0.execute(sql: "DELETE FROM protected_payloads WHERE kind = 'excerpt'") }
+        try await vault.quiet("quiet", session: "session")
+        #expect(await vault.store.snapshot().sourceKinds.count == 2)
+        await #expect(throws: StorageError.payloadMissing) {
+            try await vault.commit(analysis(session: "session", item: "second", fingerprintByte: 2))
+        }
+        #expect(await vault.store.snapshot().sourceKinds.count == 2)
+        try await vault.close()
+    }
+
+    @Test func outboxTablesAreRewrittenOnlyWhenNotificationsChange() async throws {
+        let vault = try LedgerVault()
+        defer { vault.remove() }
+        try await vault.open()
+        try await vault.commit(analysis(session: "session", item: "finding"))
+        let alert = try #require(await vault.store.snapshot().alertDecisions.keys.first)
+        try withDatabase(vault.directory) { db in
+            try db.execute(sql: "CREATE TABLE outbox_log (id INTEGER PRIMARY KEY AUTOINCREMENT)")
+            try db.execute(sql: """
+                CREATE TRIGGER outbox_rewritten AFTER DELETE ON notification_outbox BEGIN INSERT INTO outbox_log (id) VALUES (NULL); END
+                """)
+        }
+        func rewrites() throws -> Int { try withDatabase(vault.directory) { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM outbox_log") ?? 0 } }
+
+        try await vault.quiet("quiet", session: "session")
+        try await vault.commit(analysis(session: "session", item: "second", fingerprintByte: 1))
+        #expect(try rewrites() == 0, "writes that leave the notifications part alone must not rewrite the outbox")
+        try await vault.store.recordAlertDelivery(alert, state: .delivered)
+        #expect(try rewrites() == 1)
+        #expect(try outboxRows(in: vault.directory) == expectedOutbox(for: await vault.store.snapshot()))
+
+        // The first write after open resynchronizes the outbox, as every write did before.
+        try await vault.close()
+        try withDatabase(vault.directory) { try $0.execute(sql: "UPDATE notification_outbox SET delivery = 'pending'") }
+        try await vault.open()
+        try await vault.quiet("after-open", session: "session")
+        #expect(try outboxRows(in: vault.directory) == expectedOutbox(for: await vault.store.snapshot()))
+        let resynchronized = try rewrites()
+        try await vault.quiet("later", session: "session")
+        #expect(try rewrites() == resynchronized)
+        try await vault.close()
+    }
+}

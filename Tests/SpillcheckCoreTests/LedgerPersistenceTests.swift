@@ -409,6 +409,34 @@ struct LedgerPersistenceTests {
         try await vault.close()
     }
 
+    @Test func aCommitThatWouldExceedTheStateLimitSealsAndWritesNothing() async throws {
+        let crypto = try BackgroundCryptography.ephemeralForTesting()
+        let spy = LedgerSealSpy(crypto)
+        let vault = try LedgerVault(crypto: crypto)
+        defer { vault.remove() }
+        try await vault.open(cryptography: spy)
+        let floor = try await vault.store.stateSizeBreakdownForTesting().totalBytes
+        try await vault.close()
+        try await vault.open(cryptography: spy, limits: .init(maxProtectedStateBytes: floor + 600))
+        var accepted = 0
+        while true {
+            _ = await spy.takeLedgerSeals()
+            let before = (try await vault.store.persistedLayoutForTesting(), try rowDump(of: vault.directory))
+            do { try await vault.quiet("item-\(accepted)", session: "session-1") } catch {
+                #expect(error as? StorageError == .stateTooLarge)
+                #expect(await spy.takeLedgerSeals().count == 0, "the bound is checked before anything is sealed")
+                #expect(try await vault.store.persistedLayoutForTesting() == before.0)
+                #expect(try rowDump(of: vault.directory) == before.1)
+                #expect(await vault.store.snapshot().sourceKinds.count == accepted)
+                break
+            }
+            accepted += 1
+            try #require(accepted < 50, "the limit never applied")
+        }
+        #expect(accepted > 0)
+        try await vault.close()
+    }
+
     @Test func olderBuildsCannotReadV2() async throws {
         let vault = try await quietVault(10)
         defer { vault.remove() }

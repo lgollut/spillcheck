@@ -306,10 +306,7 @@ extension LedgerLayoutState {
         var mirror = self.mirror
         var dirtyBuckets: Set<Int> = []
         var repaired = false
-        if conversion {
-            mirror = SourceLedgerMirror(salt: header.bucketSalt, entries: next.bookkeeping.entries)
-            dirtyBuckets = Set(0..<LedgerLayout.bucketCount)
-        } else if rewriteAllBuckets {
+        if conversion || rewriteAllBuckets {
             mirror = SourceLedgerMirror(salt: header.bucketSalt, entries: next.bookkeeping.entries)
             dirtyBuckets = Set(0..<LedgerLayout.bucketCount)
         } else {

@@ -1854,15 +1854,18 @@ public actor ProtectedStore {
     /// A report for the app's frequent refresh. Building one decrypts up to a few thousand rows,
     /// so while nothing has been written it reuses the last one for up to `maximumAge`; that
     /// report's window ends when it was built. Every write goes through this store's one
-    /// connection, whose count of written rows tells whether anything changed. Exports and
-    /// other callers use `coverageReport`, which is always fresh.
-    public func recentCoverageReport(at now: Date = Date(), maximumAge: TimeInterval = 60) async throws -> CoverageReport {
+    /// connection, whose count of written rows tells whether anything changed. While captures
+    /// are processed something is written almost every second, so a caller that can tolerate
+    /// a lagging report also passes a `minimumInterval`: a report built more recently than that
+    /// is reused despite writes. Exports and other callers use `coverageReport`, which is always fresh.
+    public func recentCoverageReport(at now: Date = Date(), maximumAge: TimeInterval = 60,
+                                     minimumInterval: TimeInterval = 0) async throws -> CoverageReport {
         guard !closed else { throw StorageError.databaseUnavailable }
         let writes: Int
         do { writes = try Self.read(database) { $0.totalChangesCount } }
         catch { throw StorageError.databaseUnavailable }
-        if let recent = recentReport, recent.writes == writes,
-           now >= recent.builtAt, now.timeIntervalSince(recent.builtAt) < maximumAge { return recent.report }
+        if let recent = recentReport, now >= recent.builtAt, now.timeIntervalSince(recent.builtAt) < maximumAge,
+           recent.writes == writes || now.timeIntervalSince(recent.builtAt) < minimumInterval { return recent.report }
         // A write while this report decrypts raises the count again, so the next refresh rebuilds.
         let report = try await coverageReport(endingAt: now)
         recentReport = (report, writes, now)

@@ -2420,12 +2420,7 @@ public actor ProtectedStore {
     private static func metadataRecoveryRows(locationID: UUID, at now: Date, limit: Int = 256,
                                              in db: Database) throws -> [MetadataRecoveryRow] {
         guard (1...256).contains(limit) else { throw StorageError.invalidPayload }
-        let rows = try Row.fetchAll(db, sql: """
-            SELECT id, location_id, encoded, state, created_at, content_at, incident_key, resolved_at
-            FROM coverage_omissions WHERE location_id = ? AND state IN (?, ?)
-                AND COALESCE(content_at, created_at) >= ? AND COALESCE(content_at, created_at) <= ?
-            ORDER BY id LIMIT ?
-            """, arguments: [locationID.uuidString, CoverageOmissionState.blocked.rawValue,
+        let rows = try Row.fetchAll(db, sql: HotQueries.recoverableOmissionsAtLocation, arguments: [locationID.uuidString, CoverageOmissionState.blocked.rawValue,
                 CoverageOmissionState.retryable.rawValue,
                 now.addingTimeInterval(-HistoricalAuditContext.lookback).timeIntervalSince1970,
                 now.timeIntervalSince1970, limit + 1])
@@ -2610,11 +2605,7 @@ public actor ProtectedStore {
             }
         }
         for locationID in prepared.recoveredLocations {
-            try db.execute(sql: """
-                UPDATE coverage_omissions SET state = ?, resolved_at = ?
-                WHERE location_id = ? AND state IN (?, ?) AND COALESCE(content_at, created_at) >= ?
-                    AND COALESCE(content_at, created_at) <= ?
-                """, arguments: [CoverageOmissionState.recovered.rawValue, now.timeIntervalSince1970,
+            try db.execute(sql: HotQueries.recoverOmissionsAtLocation, arguments: [CoverageOmissionState.recovered.rawValue, now.timeIntervalSince1970,
                     locationID.uuidString, CoverageOmissionState.blocked.rawValue, CoverageOmissionState.retryable.rawValue,
                     cutoff, now.timeIntervalSince1970])
             // Clearing one item cannot resolve the incident while another item remains omitted.
@@ -2966,6 +2957,19 @@ extension ProtectedStore {
         static let expireRecoverableOmissions = """
             UPDATE coverage_omissions SET state = ?
             WHERE COALESCE(content_at, created_at) < ? AND state IN (?, ?)
+            """
+        /// A location has at most a few omissions. Without statistics SQLite preferred the
+        /// state-and-age index, which reads every recoverable omission of the week per location.
+        static let recoverableOmissionsAtLocation = """
+            SELECT id, location_id, encoded, state, created_at, content_at, incident_key, resolved_at
+            FROM coverage_omissions INDEXED BY coverage_omissions_location WHERE location_id = ? AND state IN (?, ?)
+                AND COALESCE(content_at, created_at) >= ? AND COALESCE(content_at, created_at) <= ?
+            ORDER BY id LIMIT ?
+            """
+        static let recoverOmissionsAtLocation = """
+            UPDATE coverage_omissions INDEXED BY coverage_omissions_location SET state = ?, resolved_at = ?
+            WHERE location_id = ? AND state IN (?, ?) AND COALESCE(content_at, created_at) >= ?
+                AND COALESCE(content_at, created_at) <= ?
             """
     }
 }

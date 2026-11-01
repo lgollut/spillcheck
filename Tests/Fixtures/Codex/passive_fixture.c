@@ -58,6 +58,12 @@ int main(int argc, char **argv) {
                 strcmp(mode, "missing-method") == 0 ? -32601 : -32602);
             fflush(stdout); continue;
         }
+        if (strcmp(mode, "large") == 0) {
+            /* One valid 6 MB reply line, written in pipe-sized pieces. */
+            printf("{\"id\":%d,\"result\":{\"thread\":{\"id\":\"synthetic\",\"padding\":\"", serial);
+            for (int i = 0; i < 6 * 1024 * 1024; i++) putchar('x');
+            puts("\"}}}"); fflush(stdout); continue;
+        }
         if (strcmp(mode, "flood") == 0) {
             printf("{\"id\":%d,\"result\":{\"padding\":\"", serial);
             for (int i = 0; i < 16384; i++) putchar('x');

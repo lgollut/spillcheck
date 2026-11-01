@@ -328,6 +328,8 @@ private final class CodexPassiveProcess {
     private let process = Process()
     private let stdin = Pipe(), stdout = Pipe(), stderr = Pipe()
     private var pending = Data()
+    /// Leading bytes of `pending` already searched for a line end, so each read searches only new bytes.
+    private var pendingSearched = 0
     private var serial = 0
     private var closed = false
     private var shutdownCompletedWithinDeadline: Bool?
@@ -396,8 +398,20 @@ private final class CodexPassiveProcess {
         while process.isRunning && ProcessInfo.processInfo.systemUptime < deadline { usleep(1_000) }
         let completed = !process.isRunning
         shutdownCompletedWithinDeadline = completed
-        pending.removeAll(keepingCapacity: false)
+        pending.removeAll(keepingCapacity: false); pendingSearched = 0
         return completed
+    }
+    /// The offset of the first newline in `pending`. A reply line can be several megabytes, read
+    /// in pipe-sized pieces; searching it from the start after every piece was quadratic.
+    private func nextLineEnd() -> Int? {
+        let searched = pendingSearched
+        let found = pending.withUnsafeBytes { bytes -> Int? in
+            guard let base = bytes.baseAddress, searched < bytes.count,
+                  let match = memchr(base + searched, 10, bytes.count - searched) else { return nil }
+            return base.distance(to: UnsafeRawPointer(match))
+        }
+        if found == nil { pendingSearched = pending.count }
+        return found.map { pending.startIndex + $0 }
     }
     private func writeNotification() throws {
         let bytes = Data("{\"method\":\"initialized\",\"params\":{}}\n".utf8)
@@ -416,8 +430,8 @@ private final class CodexPassiveProcess {
         while true {
             if Task.isCancelled { throw CodexHistoryError.cancelled }
             guard ProcessInfo.processInfo.systemUptime < deadline else { throw CodexHistoryError.timedOut }
-            while let newline = pending.firstIndex(of: 10) {
-                let line = Data(pending[..<newline]); pending.removeSubrange(...newline)
+            while let newline = nextLineEnd() {
+                let line = Data(pending[..<newline]); pending.removeSubrange(...newline); pendingSearched = 0
                 guard !line.isEmpty else { continue }
                 guard let row = try? JSONDecoder().decode(CodexJSON.self, from: line) else { throw CodexHistoryError.malformedResponse }
                 // An unexpected server request is never answered with an authorization/decision.

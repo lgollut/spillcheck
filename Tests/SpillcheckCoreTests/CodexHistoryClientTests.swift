@@ -68,6 +68,20 @@ struct CodexHistoryClientTests {
             await client.close()
         }
     }
+    @Test func aLargeReplyIsReadInTimeProportionalToItsSize() async throws {
+        // Item pages from the app-server reach several hundred kilobytes on one line. The reader
+        // searched the whole buffered reply for its end again after every piece it read.
+        let (client, directory) = try fixture("large", maximumBytes: 8 * 1024 * 1024)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        _ = try await client.readThread("synthetic")
+        let started = ProcessInfo.processInfo.systemUptime
+        let result = try await client.readThread("synthetic")
+        let elapsed = ProcessInfo.processInfo.systemUptime - started
+        #expect(result.thread["padding"].string?.utf8.count == 6 * 1024 * 1024)
+        #expect(result.bytesRead > 6 * 1024 * 1024)
+        #expect(elapsed < 1.5, "\(elapsed)")
+        await client.close()
+    }
     @Test func actualReaderVersionIsObservedAndOperationsAreAssessedSeparately() async throws {
         let (client, directory) = try fixture("new-version", configuredVersion: "0.1.0")
         defer { try? FileManager.default.removeItem(at: directory) }

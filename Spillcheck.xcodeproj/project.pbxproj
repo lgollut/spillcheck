@@ -57,12 +57,12 @@
 		0C645373F8A1C30BBBA9A13F /* ViewingController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewingController.swift; sourceTree = "<group>"; };
 		0DDA18D723E4AD8FA8BC3508 /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
 		1175CE1FD04074EAC791BAD8 /* CollectionConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CollectionConfiguration.swift; sourceTree = "<group>"; };
+		1364C82EBCF18ADE8922A47D /* sc-routes */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "sc-routes"; path = .; sourceTree = SOURCE_ROOT; };
 		161AAAA9BAF3B2006BED6B7D /* AgentSetupViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentSetupViews.swift; sourceTree = "<group>"; };
 		19ED623A19C443D332F0B3F2 /* CoverageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoverageView.swift; sourceTree = "<group>"; };
 		260373A8BD99A9BDBE97B235 /* OnboardingSteps.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingSteps.swift; sourceTree = "<group>"; };
 		4160819F63DB83EC741C221F /* SignedRecoveryVaultOwner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SignedRecoveryVaultOwner.swift; sourceTree = "<group>"; };
 		4443654EA8FD4A679416B077 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
-		4B8883194A9A1A966BD4733C /* spillcheck */ = {isa = PBXFileReference; lastKnownFileType = folder; name = spillcheck; path = .; sourceTree = SOURCE_ROOT; };
 		5BDF74FC031FD8FF2876AFDB /* NativeContentAcceptance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeContentAcceptance.swift; sourceTree = "<group>"; };
 		72754F890706FE3AC08E917C /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		74A3255C75EE42AE8E85AF2A /* spillcheck-hook */ = {isa = PBXFileReference; includeInIndex = 0; path = "spillcheck-hook"; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -181,7 +181,7 @@
 		F10847EA13B548C5C69D2AC9 /* Packages */ = {
 			isa = PBXGroup;
 			children = (
-				4B8883194A9A1A966BD4733C /* spillcheck */,
+				1364C82EBCF18ADE8922A47D /* sc-routes */,
 			);
 			name = Packages;
 			sourceTree = "<group>";

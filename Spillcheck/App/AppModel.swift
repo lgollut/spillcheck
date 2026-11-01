@@ -353,7 +353,10 @@ final class AppModel {
     /// Reader observations only. Durable omission limitations are derived in `routes` so a
     /// completed recovery can clear them without requiring another provider batch.
     var collectionAssessments: [CollectionScope: CollectionAssessment] = [:]
-    var collectionLimitations: [CoverageGap] = []
+    var collectionLimitations: [CoverageGap] = [] { didSet { collectionLimitationsRevision &+= 1 } }
+    /// Identifies the limitations for the routes cache. Observed, so a view reading cached routes
+    /// still redraws when they change.
+    private(set) var collectionLimitationsRevision = 0
     var lastReadDates: [CollectionScope: Date] = [:]
     var lastOperationReads: [CollectionScope: [CollectionOperation: Date]] = [:]
     var coverageReport: CoverageReport? {
@@ -656,7 +659,20 @@ final class AppModel {
 
     // MARK: Monitoring and coverage
 
+    /// Views read this several times per redraw, and building it filters every current limitation
+    /// for each agent and interface, so it is rebuilt only when one of its inputs changes.
     var routes: [AgentRoute] {
+        let inputs = CoveragePresentationCache.RouteInputs(setupStates: agentSetupStates, profiles: agentProfiles,
+            awaitingVerification: Set(verificationPrompts.keys), assessments: collectionAssessments,
+            limitationsRevision: collectionLimitationsRevision, lastReadDates: lastReadDates,
+            monitoringActive: monitoringEnabled)
+        if let cached = coverageCache.routes, cached.inputs == inputs { return cached.value }
+        let routes = buildRoutes()
+        coverageCache.routes = (inputs, routes)
+        return routes
+    }
+
+    private func buildRoutes() -> [AgentRoute] {
         AgentProvider.allCases.map { provider in
             let state = agentSetupStates[provider] ?? .notChecked
             let profile = agentProfiles[provider]

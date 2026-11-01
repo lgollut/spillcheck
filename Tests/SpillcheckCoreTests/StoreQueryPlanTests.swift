@@ -40,6 +40,26 @@ struct StoreQueryPlanTests {
         }
     }
 
+    @Test func recoveriesFindTheirOmissionsByLocation() async throws {
+        // Without statistics SQLite chose the state-and-age index for these, then read every blocked
+        // or retryable omission in the last week to compare its location. A history pass recovers
+        // thousands of locations, so a capture's settlement read millions of rows from disk.
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("spillcheck-location-plans-\(UUID())").resolvingSymlinksInPath()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try await ProtectedStore.open(at: directory, cryptography: try BackgroundCryptography.ephemeralForTesting())
+        try await store.close()
+        let database = try DatabaseQueue(path: directory.appendingPathComponent(ProtectedStore.databaseFilename).path)
+        defer { try? database.close() }
+        typealias Queries = ProtectedStore.HotQueries
+        for (name, sql) in [("recoverable omissions at a location", Queries.recoverableOmissionsAtLocation),
+                            ("recovering a location", Queries.recoverOmissionsAtLocation)] {
+            let plan = try await database.read { db in try Self.plan(of: sql, in: db) }
+            #expect(plan.contains { $0.hasPrefix("SEARCH coverage_omissions USING INDEX coverage_omissions_location (location_id=?") },
+                    "\(name) does not search by location: \(plan)")
+        }
+    }
+
     private static func plan(of sql: String, in db: Database) throws -> [String] {
         let statement = try db.makeStatement(sql: "EXPLAIN QUERY PLAN " + sql)
         // Unbound parameters are NULL; the plan does not depend on them.

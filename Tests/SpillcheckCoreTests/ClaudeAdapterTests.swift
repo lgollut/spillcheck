@@ -191,6 +191,131 @@ struct ClaudeAdapterTests {
         #expect(outside.sources.isEmpty && outside.coverageGaps.isEmpty)
     }
 
+    /// One row of each attachment kind that puts text in front of the model or the user, with the
+    /// field shapes of Claude Code 2.1.29x to 2.1.31x transcripts and synthetic values.
+    private static var contentAttachments: [(uuid: String, attachment: [String: Any])] { [
+        ("hook-context", ["type": "hook_additional_context", "hookName": "SubagentStart", "hookEvent": "SubagentStart",
+                          "toolUseID": "toolu_hook", "content": ["FAKE_HOOK_CONTEXT_ONE", "FAKE_HOOK_CONTEXT_TWO"]]),
+        ("edited-file", ["type": "edited_text_file", "filename": "/tmp/fixture/FAKE_EDITED_PATH.swift",
+                         "snippet": "     1\tlet token = \"FAKE_EDITED_SNIPPET\""]),
+        ("edited-file-shown", ["type": "edited_text_file", "filename": "/tmp/fixture/b.swift", "displayPath": "b.swift",
+                               "snippet": "FAKE_EDITED_DISPLAYED"]),
+        ("mentioned-file", ["type": "file", "filename": "/tmp/fixture/FAKE_FILE_PATH.txt", "displayPath": "FAKE_FILE_PATH.txt",
+                            "content": ["type": "text", "file": ["filePath": "/tmp/fixture/FAKE_FILE_PATH.txt",
+                                "content": "FAKE_MENTIONED_FILE", "numLines": 1, "startLine": 1, "totalLines": 1]]]),
+        ("diagnostics", ["type": "diagnostics", "isNew": true, "files": [["uri": "file:///tmp/FAKE_DIAGNOSTIC_URI.swift",
+            "diagnostics": [["message": "FAKE_DIAGNOSTIC_ONE", "severity": "Error", "source": "FAKE_DIAGNOSTIC_SOURCE",
+                             "range": ["start": ["line": 1, "character": 2], "end": ["line": 1, "character": 9]]],
+                            ["message": "FAKE_DIAGNOSTIC_TWO", "severity": "Warning", "source": "swift", "code": "FAKE_DIAGNOSTIC_CODE",
+                             "range": ["start": ["line": 3, "character": 0], "end": ["line": 3, "character": 4]]]]]]]),
+        ("task-notification", ["type": "queued_command", "commandMode": "task-notification",
+            "prompt": "<task-notification>FAKE_TASK_NOTIFICATION</task-notification>",
+            "origin": ["kind": "task-notification", "producer": "session-task"], "delivery_id": "delivery",
+            "runId": "run", "source_uuid": "source", "timestamp": "2026-10-31T10:00:00Z",
+            "usage": ["durationMs": 1200, "toolUses": 3, "totalTokens": 4096]]),
+        ("hook-error", ["type": "hook_non_blocking_error", "hookName": "PostToolUse:Bash", "hookEvent": "PostToolUse",
+                        "toolUseID": "toolu_hook", "command": "FAKE_HOOK_COMMAND", "exitCode": 1, "durationMs": 40,
+                        "stdout": "", "stderr": "FAKE_HOOK_STDERR", "accountMemoryBatch": false]),
+    ] }
+
+    private static func attachmentRow(_ uuid: String, _ attachment: [String: Any]) throws -> Data {
+        // Newer versions also save what the model was shown; it repeats the fields already read.
+        try JSONSerialization.data(withJSONObject: ["type": "attachment", "uuid": uuid, "sessionId": "session",
+            "timestamp": "2026-10-31T10:00:00Z", "version": "2.1.312", "renderedRole": "system",
+            "rendered": [["content": "FAKE_RENDERED_COPY"]], "attachment": attachment]) + Data([10])
+    }
+
+    @Test func attachmentsThatShowTextAreAnalyzedFromTheirContentFields() async throws {
+        let crypto = try BackgroundCryptography.ephemeralForTesting()
+        let adapter = try ClaudeAdapter(profileID: "test", agentVersion: "2.1.312", allowedTranscriptRoots: [])
+        var data = Data()
+        for row in Self.contentAttachments { data += try Self.attachmentRow(row.uuid, row.attachment) }
+        // A cancelled hook and an edit notice without a snippet carry no text.
+        data += try Self.attachmentRow("hook-cancelled", ["type": "hook_cancelled", "hookName": "PostToolUse:Bash",
+            "hookEvent": "PostToolUse", "toolUseID": "toolu_hook"])
+        data += try Self.attachmentRow("hook-timed-out", ["type": "hook_cancelled", "hookName": "Stop", "hookEvent": "Stop",
+            "toolUseID": "toolu_hook", "command": "fixture-hook", "durationMs": 60000, "timedOut": true, "timeoutMs": 60000,
+            "accountMemoryBatch": false])
+        data += try Self.attachmentRow("edited-empty", ["type": "edited_text_file", "filename": "/tmp/fixture/c.swift", "snippet": ""])
+        let batch = try await adapter.importTranscript(data, documentID: UUID(), interface: .t3,
+            observedAt: Date(), cryptography: crypto)
+        #expect(batch.coverageGaps.isEmpty)
+        #expect(batch.recoveredReferences.count == Self.contentAttachments.count + 3)
+        let sources = Dictionary(uniqueKeysWithValues: batch.sources.map { ($0.record.metadata.identity.itemID, $0) })
+        func analyzed(_ uuid: String) -> (ContentType?, [String]) {
+            guard let source = sources["attachment:\(uuid)"] else { return (nil, []) }
+            return (source.record.metadata.contentType, source.record.segments.map { String(decoding: $0.utf8, as: UTF8.self) })
+        }
+        #expect(sources.count == Self.contentAttachments.count)
+        #expect(analyzed("hook-context") == (.userPrompt, ["FAKE_HOOK_CONTEXT_ONE", "FAKE_HOOK_CONTEXT_TWO"]))
+        #expect(analyzed("edited-file") == (.toolOutput, ["     1\tlet token = \"FAKE_EDITED_SNIPPET\""]))
+        #expect(analyzed("edited-file-shown") == (.toolOutput, ["FAKE_EDITED_DISPLAYED"]))
+        #expect(analyzed("mentioned-file") == (.userPrompt, ["FAKE_MENTIONED_FILE"]))
+        #expect(analyzed("diagnostics") == (.toolOutput, ["FAKE_DIAGNOSTIC_ONE", "FAKE_DIAGNOSTIC_TWO"]))
+        #expect(analyzed("task-notification") == (.toolOutput, ["<task-notification>FAKE_TASK_NOTIFICATION</task-notification>"]))
+        #expect(analyzed("hook-error") == (.toolError, ["FAKE_HOOK_STDERR"]))
+        #expect(sources["attachment:hook-context"]?.record.segments.map(\.id) == ["/attachment/content/0", "/attachment/content/1"])
+        #expect(sources["attachment:mentioned-file"]?.record.segments.map(\.id) == ["/attachment/content/file/content"])
+        #expect(sources["attachment:diagnostics"]?.record.segments.map(\.id)
+            == ["/attachment/files/0/diagnostics/0/message", "/attachment/files/0/diagnostics/1/message"])
+        // Paths, commands, diagnostic labels and the rendered copy are not analyzed.
+        let text = batch.sources.map(claudeText).joined()
+        for unanalyzed in ["FAKE_EDITED_PATH", "FAKE_FILE_PATH", "FAKE_DIAGNOSTIC_URI", "FAKE_DIAGNOSTIC_SOURCE",
+                           "FAKE_DIAGNOSTIC_CODE", "FAKE_HOOK_COMMAND", "FAKE_RENDERED_COPY"] {
+            #expect(!text.contains(unanalyzed), "\(unanalyzed)")
+        }
+        #expect(batch.sources.allSatisfy { $0.record.metadata.identity.session.sessionID == "session" })
+    }
+
+    @Test func changedOrUncorrelatedContentAttachmentsRemainVisibleGaps() async throws {
+        let crypto = try BackgroundCryptography.ephemeralForTesting()
+        let adapter = try ClaudeAdapter(profileID: "test", agentVersion: "2.1.312", allowedTranscriptRoots: [])
+        func changed(_ uuid: String, _ change: (inout [String: Any]) -> Void) -> (String, [String: Any]) {
+            var attachment = Self.contentAttachments.first { $0.uuid == uuid }!.attachment
+            change(&attachment)
+            return (uuid, attachment)
+        }
+        let shapes: [(String, [String: Any])] = [
+            changed("hook-context") { $0["content"] = [42] },
+            changed("hook-context") { $0["extra"] = "new text" },
+            changed("edited-file") { $0["snippet"] = ["FAKE"] },
+            changed("edited-file") { $0.removeValue(forKey: "filename") },
+            changed("mentioned-file") { $0["content"] = ["type": "image", "file": ["base64": "AAAA"]] },
+            changed("mentioned-file") { $0["content"] = "FAKE_FLAT_CONTENT" },
+            changed("diagnostics") { $0["files"] = [["uri": "file:///a", "diagnostics": [["message": 7]]]] },
+            changed("diagnostics") { $0["files"] = [["uri": "file:///a", "notes": "new text", "diagnostics": []]] },
+            changed("task-notification") { $0["isMeta"] = true },
+            changed("task-notification") { $0["commandMode"] = "new-mode" },
+            changed("task-notification") { $0["origin"] = ["kind": "task-notification", "body": "new text"] },
+            changed("hook-error") { $0.removeValue(forKey: "stderr") },
+            changed("hook-error") { $0["stdout"] = ["FAKE"] },
+            ("hook-cancelled", ["type": "hook_cancelled", "hookName": "Stop", "hookEvent": "Stop",
+                                "toolUseID": "toolu_hook", "stderr": "new text"]),
+        ]
+        for (uuid, attachment) in shapes {
+            let batch = try await adapter.importTranscript(Self.attachmentRow(uuid, attachment), documentID: UUID(),
+                interface: .t3, observedAt: Date(), cryptography: crypto)
+            #expect(batch.sources.isEmpty && batch.recoveredReferences.isEmpty, "\(uuid)")
+            #expect(batch.coverageGaps.map(\.reason) == [.unsupportedContent], "\(uuid)")
+        }
+        // Content needs the row's identity and time like any message.
+        for removed in ["uuid", "sessionId", "timestamp"] {
+            var row = try #require(try JSONSerialization.jsonObject(
+                with: Self.attachmentRow("edited-file", Self.contentAttachments[1].attachment)) as? [String: Any])
+            row.removeValue(forKey: removed)
+            let batch = try await adapter.importTranscript(JSONSerialization.data(withJSONObject: row) + Data([10]),
+                documentID: UUID(), interface: .t3, observedAt: Date(), cryptography: crypto)
+            #expect(batch.sources.isEmpty && batch.recoveredReferences.isEmpty, "\(removed)")
+            #expect(batch.coverageGaps.count == 1 && batch.coverageGaps.allSatisfy { $0.isRequiredFormatFailure == true
+                && $0.contentType == .toolOutput }, "\(removed)")
+        }
+        // An audit reads only content inside its window.
+        let audit = try HistoricalAuditContext(reason: .resume, endingAt: ISO8601DateFormatter().date(from: "2026-10-08T00:00:00Z")!)
+        let outside = try await adapter.importTranscript(Self.attachmentRow("edited-file", Self.contentAttachments[1].attachment),
+            documentID: UUID(), interface: .t3, observedAt: Date(), provenance: .historical(audit), cryptography: crypto)
+        #expect(outside.sources.isEmpty && outside.coverageGaps.isEmpty)
+    }
+
     @Test func observedNormalModeControlsRecoverWithoutContent() async throws {
         let crypto = try BackgroundCryptography.ephemeralForTesting()
         let adapter = try ClaudeAdapter(profileID: "test", agentVersion: "2.1.296", allowedTranscriptRoots: [])
@@ -298,21 +423,24 @@ struct ClaudeAdapterTests {
         }
     }
 
-    @Test func queuedPromptsAreCollectedAndContentBearingAttachmentsStayVisible() async throws {
+    @Test func queuedPromptsNotificationsAndMentionedFilesAreCollectedAndHookOutputStaysVisible() async throws {
         let crypto = try BackgroundCryptography.ephemeralForTesting()
         let adapter = try ClaudeAdapter(profileID: "test", agentVersion: "2.1.295", allowedTranscriptRoots: [])
         let batch = try await adapter.importTranscript(claudeFixture("claude-attachment-envelopes"), documentID: UUID(),
             interface: .standaloneCLI, observedAt: Date(), cryptography: crypto)
         let prompts = batch.sources.filter { $0.record.metadata.contentType == .userPrompt }
-        #expect(prompts.map(claudeText) == ["SPILLCHECK_ATTACHMENT_PROMPT", "SPILLCHECK_QUEUED_PROMPT", "SPILLCHECK_QUEUED_BLOCK"])
+        #expect(prompts.map(claudeText) == ["SPILLCHECK_ATTACHMENT_PROMPT", "SPILLCHECK_QUEUED_PROMPT", "SPILLCHECK_QUEUED_BLOCK",
+                                            "SPILLCHECK_MENTIONED_FILE"])
         #expect(prompts.map(\.record.metadata.identity.itemID)
-            == ["prompt:prompt-row:block:0", "prompt:queued-string:block:0", "prompt:queued-blocks:block:0"])
+            == ["prompt:prompt-row:block:0", "prompt:queued-string:block:0", "prompt:queued-blocks:block:0",
+                "attachment:mentioned-file"])
         #expect(batch.sources.contains { $0.record.metadata.contentType == .finalResponse && claudeText($0) == "SPILLCHECK_ATTACHMENT_FINAL" })
-        // Context is recognized without content; notification, file and hook payloads stay unscanned gaps.
+        #expect(batch.sources.contains { $0.record.metadata.contentType == .toolOutput && claudeText($0) == "SPILLCHECK_TASK_NOTIFICATION" })
+        // Context is recognized without content. A successful hook's output stays an unscanned gap.
         #expect(!batch.sources.contains { claudeText($0).contains("SPILLCHECK_CONTEXT") })
-        #expect(batch.coverageGaps.count == 3)
+        #expect(batch.coverageGaps.count == 1)
         #expect(batch.coverageGaps.allSatisfy { $0.reason == .unsupportedContent && $0.isRequiredFormatFailure != true })
-        #expect(batch.recoveredReferences.count == 6)
+        #expect(batch.recoveredReferences.count == 8)
     }
 
     @Test func numericBudgetAttachmentsAreMetadataButChangedPayloadsStayVisible() async throws {

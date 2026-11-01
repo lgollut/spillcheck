@@ -286,7 +286,8 @@ DIAGNOSTIC_SUBTYPES = {"init", "turn_duration", "compact_boundary", "api_error",
 DIAGNOSTIC_ATTACHMENTS = {"agent_listing_delta", "mcp_instructions_delta", "environment", "model", "auto_mode",
     "total_tokens_reminder", "session_context", "date", "credential_org", "remote_session_change", "prompt_snapshot",
     "ultramemory_snapshot", "todo", "queued_command", "file", "selected_lines", "invoked_skills", "diagnostics",
-    "hook_additional_context", "budget_usd", "output_style"}
+    "hook_additional_context", "budget_usd", "output_style", "edited_text_file", "hook_non_blocking_error",
+    "hook_cancelled", "hook_success", "structured_output"}
 
 def diagnostic_label(value, allowed):
     return value if isinstance(value, str) and value in allowed else ("missing" if value is None else "other")

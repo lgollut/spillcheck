@@ -130,15 +130,20 @@ struct CardArtBackground: View {
 
 /// Seconds since the view appeared, redrawn every frame. With Reduce Motion on, `time` is nil and
 /// nothing is redrawn, so each animation shows a still frame instead. Pausing does the same while
-/// keeping the content's identity, so its own animations aren't interrupted.
+/// keeping the content's identity, so its own animations aren't interrupted. `minimumInterval` caps
+/// the redraw rate for decoration that doesn't need every frame of a fast display.
+///
+/// Whatever it contains is redrawn from layout's point of view too, so anything inside a scrolling
+/// page belongs in an `.overlay` of a view with a fixed size, which keeps the page from re-measuring.
 struct MotionClock<Content: View>: View {
     var paused = false
+    var minimumInterval: TimeInterval?
     @ViewBuilder let content: (_ time: Double?) -> Content
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var start = Date.now
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: nil, paused: reduceMotion || paused)) { context in
+        TimelineView(.animation(minimumInterval: minimumInterval, paused: reduceMotion || paused)) { context in
             content(reduceMotion || paused ? nil : context.date.timeIntervalSince(start))
         }
     }
@@ -225,21 +230,27 @@ struct RadarSweep: View {
     }
 }
 
-/// A small ring spinner for hooks being added and history being read.
+/// A small ring spinner for hooks being added and history being read. It sits in an overlay of a
+/// fixed square, so turning never asks the surrounding page to measure again.
 struct RingSpinner: View {
     var size: CGFloat = 14
+    /// Caps the redraw rate, as on pages that keep several spinners turning for minutes.
+    var minimumInterval: TimeInterval?
 
     var body: some View {
-        MotionClock { time in
-            ZStack {
-                Circle().stroke(Brand.greenDeep.opacity(0.2), lineWidth: 2)
-                Circle().trim(from: 0, to: 0.25).stroke(Brand.greenDeep, lineWidth: 2)
-                    .rotationEffect(.degrees(-135 + (time ?? 0) / 0.8 * 360))
+        Color.clear
+            .frame(width: size + 2, height: size + 2)
+            .overlay {
+                MotionClock(minimumInterval: minimumInterval) { time in
+                    ZStack {
+                        Circle().stroke(Brand.greenDeep.opacity(0.2), lineWidth: 2)
+                        Circle().trim(from: 0, to: 0.25).stroke(Brand.greenDeep, lineWidth: 2)
+                            .rotationEffect(.degrees(-135 + (time ?? 0) / 0.8 * 360))
+                    }
+                    .frame(width: size, height: size)
+                }
             }
-            .frame(width: size, height: size)
-        }
-        .frame(width: size + 2, height: size + 2)
-        .accessibilityHidden(true)
+            .accessibilityHidden(true)
     }
 }
 

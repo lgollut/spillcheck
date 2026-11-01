@@ -145,6 +145,13 @@ public struct CoverageReport: Sendable {
     /// work `queue.historicalCount` counts. Work beyond this report's bound is not attributed.
     public var providersReadingHistory: Set<AgentProvider> { lookup.providersReadingHistory }
 
+    /// Whether this report was built before recent-history work that the live queue now shows:
+    /// none was queued then, or an agent the app already knows is reading is missing. The
+    /// periodic refresh rebuilds such a report instead of letting it erase that agent.
+    public func predatesHistoryWork(queued: Int, knownProviders: Set<AgentProvider>) -> Bool {
+        queued > 0 && (queue.historicalCount == 0 || !knownProviders.isSubset(of: providersReadingHistory))
+    }
+
     /// Whether queued or in-progress work already reads this source.
     public func hasPendingWork(for source: CoverageSourceRetryDescriptor) -> Bool {
         guard let key = Lookup.SourceKey(source) else { return false }

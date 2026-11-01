@@ -446,7 +446,7 @@ final class AppRuntime {
             refreshTask = Task { [weak self] in
                 while !Task.isCancelled {
                     do { try await Task.sleep(for: .seconds(1)) } catch { break }
-                    await self?.refresh()
+                    await self?.refresh(periodic: true)
                 }
             }
         } catch is CancellationError {
@@ -1100,7 +1100,9 @@ final class AppRuntime {
         }
     }
 
-    func refresh() async {
+    /// The once-a-second `periodic` refresh may show a coverage report up to a few seconds old;
+    /// every other caller has just changed something and gets an up-to-date one.
+    func refresh(periodic: Bool = false) async {
         guard let store, !terminating else { holdAnalysisActivity(false); return }
         do {
             #if DEBUG
@@ -1124,14 +1126,28 @@ final class AppRuntime {
             #endif
             _ = try await store.maintainQueue()
             try await store.expireCoverageRecovery(at: .now)
-            let report = try await store.recentCoverageReport()
+            var minimumInterval: TimeInterval = periodic ? 5 : 0
+            #if DEBUG
+            // Acceptance runs act on the report as soon as their control file appears.
+            if acceptanceRecovery != nil { minimumInterval = 0 }
+            #endif
+            // The queue's size drives the shown activity, so it is read every second rather than
+            // taken from a report that may be a few seconds old. Activity holds must use `queue`,
+            // never `report.queue`.
+            let queue = try await store.queueStatistics()
+            var report = try await store.recentCoverageReport(minimumInterval: minimumInterval)
+            // History work queued since the kept report was built would otherwise be missing from
+            // its agents, and the "Catching up" label would disappear until the next rebuild.
+            if minimumInterval > 0, report.predatesHistoryWork(queued: queue.historicalCount, knownProviders: model.catchingUpProviders) {
+                report = try await store.recentCoverageReport()
+            }
             // Unchanged records are not reassigned, so views reading the report aren't invalidated
             // every second. The kept report's window ends earlier; exports query a fresh report.
             if model.coverageReport?.hasSameRecords(as: report) != true { model.coverageReport = report }
             if model.historyProgress != report.history.items { model.historyProgress = report.history.items }
-            model.updateQueue(count: report.queue.count)
-            holdAnalysisActivity(model.monitoringEnabled && report.queue.count > 0)
-            model.updateHistoryWork(queued: report.queue.historicalCount, providers: report.providersReadingHistory)
+            model.updateQueue(count: queue.count)
+            holdAnalysisActivity(model.monitoringEnabled && queue.count > 0)
+            model.updateHistoryWork(queued: queue.historicalCount, providers: report.providersReadingHistory)
             model.refreshCollectionLimitations()
             await refreshSetup()
             #if DEBUG
@@ -1165,7 +1181,7 @@ final class AppRuntime {
             await publishSnapshot(from: store)
             await deliverNotifications()
             #if DEBUG
-            await writeAcceptanceReport(statistics: report.queue, gaps: model.unresolvedCoverageGaps)
+            await writeAcceptanceReport(statistics: queue, gaps: model.unresolvedCoverageGaps)
             #endif
         } catch {
             model.storageMessage = Self.storageFailureMessage(error)

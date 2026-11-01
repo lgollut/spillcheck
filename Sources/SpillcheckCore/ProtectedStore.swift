@@ -549,6 +549,16 @@ public actor ProtectedStore {
         catch { throw StorageError.databaseUnavailable }
     }
 
+    /// Whether a queued capture is still waiting for its first attempt.
+    public func isAwaitingFirstAttempt(_ id: UUID) throws -> Bool {
+        do {
+            return try Self.read(database) { db in
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM captures WHERE id = ? AND state = 0 AND retry_count = 0",
+                                 arguments: [id.uuidString]) == 1
+            }
+        } catch { throw StorageError.databaseUnavailable }
+    }
+
     public func queueStatistics() throws -> StoreQueueStatistics {
         do {
             return try Self.read(database) { try Self.queueStatistics(in: $0) }

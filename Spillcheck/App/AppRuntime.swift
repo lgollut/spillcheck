@@ -2074,13 +2074,19 @@ final class AppRuntime {
             var allowedRoutes: [CaptureMetadata: CollectionCaptureRoute] = [:]
             var codexRouters: [CaptureMetadata: CodexEnrolledSessionRouter] = [:]
             let admission = admission
+            // Polls of a source whose read is still waiting are already covered by that read.
+            let reads = ActiveReadCoalescer { id in try await store.isAwaitingFirstAttempt(id) }
             let enqueue: @Sendable (CapturePacket, Date) async throws -> Void = { packet, date in
                 guard let permit = await store.processingPermit(), let scope = await admission.currentScope() else {
                     throw StorageError.monitoringPaused
                 }
-                let context = try await admission.context(for: packet, trigger: .activePoll,
-                    recordAuthority: { try await store.selectAuthority($0, permit: permit) })
-                _ = try await store.enqueue(packet.body, capturedAt: date, permit: permit, scope: scope, workContext: context)
+                try await reads.enqueue(packet) { packet in
+                    let context = try await admission.context(for: packet, trigger: .activePoll,
+                        recordAuthority: { try await store.selectAuthority($0, permit: permit) })
+                    switch try await store.enqueue(packet.body, capturedAt: date, permit: permit, scope: scope, workContext: context) {
+                    case .inserted(let id), .alreadyQueued(let id), .alreadyProcessed(let id): return id
+                    }
+                }
             }
             if let configuration = claudeConfiguration {
                 let adapter = try ClaudeAdapter(profileID: configuration.profileID, agentVersion: configuration.agentVersion,

@@ -92,6 +92,7 @@ private struct ObservedCodexNormalizer: CaptureNormalizer {
     let adapter: CodexAdapter
     let onSelection: @Sendable ([CodexActiveSource]) async -> Void
     let onObservation: @Sendable (CollectionBatch, CodexCollectionAuthority) async -> Void
+    let onPollOutcome: @Sendable (String, Date, Bool) async -> Void
     let onBatch: @Sendable (CollectionBatch, CaptureMetadata) async -> Void
     func normalize(_ packet: CapturePacket, capturedAt: Date,
                    cryptography: BackgroundCryptography) async throws -> CollectionBatch {
@@ -115,7 +116,22 @@ private struct ObservedCodexNormalizer: CaptureNormalizer {
             }
             await onSelection(selections)
         }
-        let batch = try await adapter.normalize(packet, capturedAt: capturedAt, cryptography: cryptography)
+        // The monitor backs off a thread whose polls keep failing, such as one its app deleted.
+        let polled = (try? JSONSerialization.jsonObject(with: packet.eventJSON) as? [String: Any]).flatMap { event in
+            ["SpillcheckHistoryPoll", "LeakretHistoryPoll"].contains(event["hook_event_name"] as? String ?? "")
+                ? event["session_id"] as? String : nil
+        }
+        let batch: CollectionBatch
+        do { batch = try await adapter.normalize(packet, capturedAt: capturedAt, cryptography: cryptography) }
+        catch {
+            // Cancellation and the pipeline's controlled pause errors say nothing about the thread. The
+            // pipeline retries a failed poll, so the monitor counts attempts of one poll (same capturedAt) once.
+            let inconclusive = Task.isCancelled || error is CancellationError
+                || [.monitoringPaused, .staleProcessingPermit, .staleClaim].contains(error as? StorageError)
+            if let polled, !inconclusive { await onPollOutcome(polled, capturedAt, false) }
+            throw error
+        }
+        if let polled { await onPollOutcome(polled, capturedAt, true) }
         await onBatch(batch, packet.metadata)
         if !batch.sources.isEmpty { await onObservation(batch, adapter.authority) }
         return batch
@@ -2137,6 +2153,7 @@ final class AppRuntime {
                 let normalizer = ObservedCodexNormalizer(adapter: adapter,
                     onSelection: { [weak self] sources in await self?.selectCodexSources(sources) },
                     onObservation: { [weak self] batch, authority in await self?.markCodexObserved(batch, authority: authority) },
+                    onPollOutcome: { [weak self] thread, polledAt, succeeded in await self?.recordCodexPoll(thread, polledAt: polledAt, succeeded: succeeded) },
                     onBatch: { [weak self] batch, metadata in await self?.observeCollection(batch, metadata: metadata,
                         path: configuration.authority.collectionPath) })
                 let metadata = try CaptureMetadata(agent: .codex, interface: interface, profileID: configuration.profileID)
@@ -2321,6 +2338,11 @@ final class AppRuntime {
     private func markCodexObserved(_ batch: CollectionBatch, authority: CodexCollectionAuthority) async {
         collectionObserved = true
         await codexMonitor?.observe(batch, authority: authority)
+    }
+
+    private func recordCodexPoll(_ thread: String, polledAt: Date, succeeded: Bool) async {
+        if succeeded { await codexMonitor?.recordPollSuccess(thread: thread) }
+        else { await codexMonitor?.recordPollFailure(thread: thread, polledAt: polledAt) }
     }
 
     private func selectCodexSources(_ sources: [CodexActiveSource]) async {

@@ -256,16 +256,31 @@ struct CoverageView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             // History is read by conversation, not by day, so no single day is shown as current.
             // While catching up, a wave crosses the days that may still gain content.
-            MotionClock(paused: !reading) { time in
-                HStack(spacing: 3) {
-                    ForEach(Array(zip(days, cells).enumerated()), id: \.element.0) { index, cell in
-                        let pending = reading && cell.1 != .read
-                        DayCell(kind: cell.1, pending: pending ? DayCell.wave(at: time, index: index) : nil)
-                            .frame(width: 18, height: 24)
-                            .clipShape(DayCell.segment(index, of: cells.count))
-                            .help("\(cell.0.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day())) · \(pending ? "Nothing seen yet" : cell.1.label)")
+            // The cells are laid out once at a fixed size; only their tint is redrawn every frame, in an
+            // overlay, so the wave never asks the page to measure again.
+            HStack(spacing: DayCell.spacing) {
+                ForEach(Array(zip(days, cells).enumerated()), id: \.element.0) { index, cell in
+                    let pending = reading && cell.1 != .read
+                    DayCell(kind: cell.1)
+                        .frame(width: DayCell.size.width, height: DayCell.size.height)
+                        .clipShape(DayCell.segment(index, of: cells.count))
+                        .help("\(cell.0.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day())) · \(pending ? "Nothing seen yet" : cell.1.label)")
+                }
+            }
+            .frame(width: DayCell.rowWidth(cells.count), height: DayCell.size.height)
+            .overlay {
+                MotionClock(paused: !reading, minimumInterval: DayCell.motionInterval) { time in
+                    HStack(spacing: DayCell.spacing) {
+                        ForEach(Array(cells.enumerated()), id: \.offset) { index, kind in
+                            // From 0 to 1, how strongly an unread day shows that its agent is still catching up.
+                            let pending = reading && kind != .read ? DayCell.wave(at: time, index: index) : nil
+                            Rectangle().fill(Palette.readCell.opacity(pending.map { 0.08 + 0.32 * $0 } ?? 0))
+                                .frame(width: DayCell.size.width, height: DayCell.size.height)
+                                .clipShape(DayCell.segment(index, of: cells.count))
+                        }
                     }
                 }
+                .allowsHitTesting(false)
             }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("\(route.name): \(status.text). Content analyzed on \(read) of the last 7 days\(reading ? " so far" : "").")
@@ -358,7 +373,7 @@ struct CoverageView: View {
     private func indicator(_ kind: Indicator) -> some View {
         ZStack {
             switch kind {
-            case .reading: RingSpinner()
+            case .reading: RingSpinner(minimumInterval: DayCell.motionInterval)
             case .attention, .settled:
                 RoundedRectangle(cornerRadius: 2).fill(kind == .attention ? Palette.amber : Palette.quaternary)
                     .frame(width: 8, height: 8)
@@ -504,7 +519,7 @@ struct CoverageView: View {
 private struct ReadingHistoryLabel: View {
     var body: some View {
         HStack(spacing: 5) {
-            RingSpinner(size: 10)
+            RingSpinner(size: 10, minimumInterval: DayCell.motionInterval)
             Text("Catching up")
         }
         .font(.system(size: 11.5, weight: .medium)).foregroundStyle(Brand.greenText)
@@ -527,9 +542,16 @@ struct DayCell: View {
         }
     }
     let kind: Kind
-    /// From 0 to 1, how strongly an unread day shows that its agent is still catching up.
-    var pending: Double?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    static let size = CGSize(width: 18, height: 24)
+    static let spacing: CGFloat = 3
+    /// The fixed width of a row of `count` days, so the row's size never depends on its motion.
+    static func rowWidth(_ count: Int) -> CGFloat {
+        CGFloat(count) * size.width + CGFloat(max(0, count - 1)) * spacing
+    }
+    /// Catch-up motion on this page is decoration and doesn't need every frame of a fast display.
+    static let motionInterval: TimeInterval = 1.0 / 30
 
     /// A narrow crest that crosses the week from left to right every 2.4 s, then rests.
     /// Under Reduce Motion the days hold a still tint instead.
@@ -554,7 +576,6 @@ struct DayCell: View {
             } else {
                 Rectangle().fill(Color(hex: 0xe3e8e5, dark: 0x3a3e3c))
             }
-            if let pending { Rectangle().fill(Palette.readCell.opacity(0.08 + 0.32 * pending)) }
             // A day that gains content fills up from the bottom.
             Rectangle().fill(Palette.readCell)
                 .scaleEffect(x: 1, y: kind == .read || reduceMotion ? 1 : 0.05, anchor: .bottom)

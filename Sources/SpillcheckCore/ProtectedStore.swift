@@ -1847,9 +1847,32 @@ public actor ProtectedStore {
     }
 
     /// The UI and every bounded diagnostic query share the same seven calendar days.
+    @_spi(Testing) public private(set) var coverageReportBuilds = 0
+    /// The last report built for the app's refresh, with the connection's write count and time then.
+    private var recentReport: (report: CoverageReport, writes: Int, builtAt: Date)?
+
+    /// A report for the app's frequent refresh. Building one decrypts up to a few thousand rows,
+    /// so while nothing has been written it reuses the last one for up to `maximumAge`; that
+    /// report's window ends when it was built. Every write goes through this store's one
+    /// connection, whose count of written rows tells whether anything changed. Exports and
+    /// other callers use `coverageReport`, which is always fresh.
+    public func recentCoverageReport(at now: Date = Date(), maximumAge: TimeInterval = 60) async throws -> CoverageReport {
+        guard !closed else { throw StorageError.databaseUnavailable }
+        let writes: Int
+        do { writes = try Self.read(database) { $0.totalChangesCount } }
+        catch { throw StorageError.databaseUnavailable }
+        if let recent = recentReport, recent.writes == writes,
+           now >= recent.builtAt, now.timeIntervalSince(recent.builtAt) < maximumAge { return recent.report }
+        // A write while this report decrypts raises the count again, so the next refresh rebuilds.
+        let report = try await coverageReport(endingAt: now)
+        recentReport = (report, writes, now)
+        return report
+    }
+
     public func coverageReport(endingAt requestedEnd: Date? = nil, limit: Int = 1000,
                                calendar: Calendar = .current) async throws -> CoverageReport {
         guard !closed else { throw StorageError.databaseUnavailable }
+        coverageReportBuilds += 1
         guard limit > 0, limit <= 10_000 else { throw StorageError.invalidPayload }
         let now = requestedEnd ?? Date()
         guard now.timeIntervalSince1970.isFinite else { throw StorageError.invalidTime }

@@ -1117,7 +1117,7 @@ final class AppRuntime {
             #endif
             _ = try await store.maintainQueue()
             try await store.expireCoverageRecovery(at: .now)
-            let report = try await store.coverageReport()
+            let report = try await store.recentCoverageReport()
             // Unchanged records are not reassigned, so views reading the report aren't invalidated
             // every second. The kept report's window ends earlier; exports query a fresh report.
             if model.coverageReport?.hasSameRecords(as: report) != true { model.coverageReport = report }

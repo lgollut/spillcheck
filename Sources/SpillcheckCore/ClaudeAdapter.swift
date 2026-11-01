@@ -46,7 +46,7 @@ public struct ClaudeAdapter: CaptureNormalizer, Sendable {
     public static let validatedAgentVersion = "2.1.293"
     public static let adapterVersion = "2"
     /// Cursor interpretation changes independently of native identities and canonical content.
-    public static let parserContractVersion = "claude-transcript-12"
+    public static let parserContractVersion = "claude-transcript-13"
     /// Location of a whole-source availability warning, not an upstream item. A readable source
     /// settles only that warning, never another whole-source gap on the same file.
     static let sourceAvailabilityItemID = "claude-source-availability"
@@ -446,6 +446,25 @@ public struct ClaudeAdapter: CaptureNormalizer, Sendable {
                     }
                     continue
                 }
+                if type == "attachment", let read = try Self.contentAttachment(row["attachment"]) {
+                    guard case .content(let contentType, let segments) = read else {
+                        if case .changed(let contentType) = read { rowContentType = contentType }
+                        addGap(.unsupportedContent, required: true); continue
+                    }
+                    rowContentType = contentType
+                    guard let sessionID = row["sessionId"].nonemptyString, let uuid = row["uuid"].nonemptyString,
+                          canonicalSession == nil || canonicalSession == sessionID else {
+                        addGap(.unresolvedCorrelation, required: true); continue
+                    }
+                    guard let date = rowTime else { addGap(.missingTimestamp, required: true); continue }
+                    if case .historical(let audit) = provenance, !audit.includes(contentTime: date) { continue }
+                    fullyRecognized = true
+                    if !segments.isEmpty {
+                        try await collect(itemID: "attachment:\(uuid)", contentType: contentType,
+                            basis: .exclusiveAuthority, sessionID: sessionID, date: date, segments: segments)
+                    }
+                    continue
+                }
                 if type == "attachment" {
                     // Attachment payloads sit under "attachment", so the subtype decides.
                     if Self.contextAttachmentTypes.contains(row["attachment"]["type"].string ?? "")
@@ -581,12 +600,103 @@ public struct ClaudeAdapter: CaptureNormalizer, Sendable {
         return attachment["prompt"].array
     }
 
+    private enum ContentAttachmentRead {
+        case content(ContentType, [SourceSegment])
+        /// A content attachment kind whose fields differ from the observed ones.
+        case changed(ContentType)
+    }
+
+    /// Attachments that put text in front of the model or the user, observed in Claude Code
+    /// 2.1.29x to 2.1.31x and recognized only with their observed fields. Only the fields that
+    /// carry that text are analyzed: paths, hook commands and diagnostic labels are harness
+    /// configuration, and the row's `rendered` copy repeats these same fields. Nil for any other kind.
+    private static func contentAttachment(_ attachment: ClaudeJSON) throws -> ContentAttachmentRead? {
+        guard case .object = attachment else { return nil }
+        func shaped(_ value: ClaudeJSON, _ required: Set<String>, _ optional: Set<String> = []) -> Bool {
+            guard case .object(let fields) = value else { return false }
+            let keys = Set(fields.keys)
+            return required.isSubset(of: keys) && keys.isSubset(of: required.union(optional))
+        }
+        func strings(_ value: ClaudeJSON, _ keys: [String]) -> Bool {
+            keys.allSatisfy { !value.has($0) || value[$0].string != nil }
+        }
+        func counts(_ value: ClaudeJSON, _ keys: [String]) -> Bool {
+            keys.allSatisfy { !value.has($0) || value[$0].nonnegativeFiniteNumber != nil }
+        }
+        let a = attachment
+        switch a["type"].string {
+        case "hook_additional_context":
+            guard shaped(a, ["type", "hookName", "hookEvent", "toolUseID", "content"]),
+                  strings(a, ["hookName", "hookEvent", "toolUseID"]),
+                  a["content"].array?.allSatisfy({ $0.string != nil }) == true else { return .changed(.userPrompt) }
+            return .content(.userPrompt, try textSegments(a["content"], pointer: "/attachment/content"))
+        case "edited_text_file":
+            // A file changed outside the conversation, re-read and shown to the model.
+            guard shaped(a, ["type", "filename", "snippet"], ["displayPath"]),
+                  strings(a, ["filename", "snippet", "displayPath"]) else { return .changed(.toolOutput) }
+            return .content(.toolOutput, try textSegments(a["snippet"], pointer: "/attachment/snippet"))
+        case "file":
+            // A file the user mentioned in a prompt, attached to it.
+            let file = a["content"]["file"]
+            guard shaped(a, ["type", "filename", "displayPath", "content"]), strings(a, ["filename", "displayPath"]),
+                  shaped(a["content"], ["type", "file"]), a["content"]["type"].string == "text",
+                  shaped(file, ["filePath", "content", "numLines", "startLine", "totalLines"]),
+                  file["filePath"].string != nil, file["content"].string != nil,
+                  counts(file, ["numLines", "startLine", "totalLines"]) else { return .changed(.userPrompt) }
+            return .content(.userPrompt, try textSegments(file["content"], pointer: "/attachment/content/file/content"))
+        case "diagnostics":
+            var segments: [SourceSegment] = []
+            guard shaped(a, ["type", "files", "isNew"]), a["isNew"].bool != nil, let files = a["files"].array else {
+                return .changed(.toolOutput)
+            }
+            for (fileIndex, file) in files.enumerated() {
+                guard shaped(file, ["uri", "diagnostics"]), file["uri"].string != nil,
+                      let diagnostics = file["diagnostics"].array else { return .changed(.toolOutput) }
+                for (index, diagnostic) in diagnostics.enumerated() {
+                    guard shaped(diagnostic, ["message", "severity", "range", "source"], ["code"]),
+                          diagnostic["message"].string != nil, diagnostic["severity"].string != nil,
+                          diagnostic["source"].string != nil, strings(diagnostic, ["code"]),
+                          case .object = diagnostic["range"] else { return .changed(.toolOutput) }
+                    segments += try textSegments(diagnostic["message"],
+                        pointer: "/attachment/files/\(fileIndex)/diagnostics/\(index)/message")
+                }
+            }
+            return .content(.toolOutput, segments)
+        case "queued_command" where a["commandMode"].string == "task-notification":
+            // A background task's result, delivered to the model when the task ends.
+            guard shaped(a, ["type", "commandMode", "prompt"], ["origin", "delivery_id", "runId", "source_uuid", "timestamp", "usage"]),
+                  a["prompt"].string != nil, strings(a, ["delivery_id", "runId", "source_uuid", "timestamp"]),
+                  !a.has("origin") || (shaped(a["origin"], [], ["kind", "producer"]) && strings(a["origin"], ["kind", "producer"])),
+                  !a.has("usage") || (shaped(a["usage"], [], ["durationMs", "toolUses", "totalTokens"])
+                    && counts(a["usage"], ["durationMs", "toolUses", "totalTokens"])) else { return .changed(.toolOutput) }
+            return .content(.toolOutput, try textSegments(a["prompt"], pointer: "/attachment/prompt"))
+        case "hook_non_blocking_error":
+            guard shaped(a, ["type", "hookName", "hookEvent", "toolUseID", "command", "stdout", "stderr", "exitCode", "durationMs"],
+                         ["accountMemoryBatch"]),
+                  strings(a, ["hookName", "hookEvent", "toolUseID", "command", "stdout", "stderr"]),
+                  counts(a, ["exitCode", "durationMs"]), !a.has("accountMemoryBatch") || a["accountMemoryBatch"].bool != nil else {
+                return .changed(.toolError)
+            }
+            return .content(.toolError, try textSegments(a["stderr"], pointer: "/attachment/stderr")
+                + textSegments(a["stdout"], pointer: "/attachment/stdout"))
+        default: return nil
+        }
+    }
+
     /// Observed Claude 2.1.296 control records, recognized by payload shape rather than version.
     /// A successful hook may return real text, so its type alone never excludes its output.
     private static func isContentFreeControlAttachment(_ attachment: ClaudeJSON) -> Bool {
         guard case .object(let fields) = attachment else { return false }
         let keys = Set(fields.keys)
         switch attachment["type"].string {
+        case "hook_cancelled":
+            // A hook stopped before it finished. A timed-out one also records its command and limits.
+            let required: Set<String> = ["type", "hookName", "hookEvent", "toolUseID"]
+            return required.isSubset(of: keys)
+                && keys.isSubset(of: required.union(["command", "durationMs", "timedOut", "timeoutMs", "accountMemoryBatch"]))
+                && ["hookName", "hookEvent", "toolUseID", "command"].allSatisfy { !attachment.has($0) || attachment[$0].string != nil }
+                && ["durationMs", "timeoutMs"].allSatisfy { !attachment.has($0) || attachment[$0].nonnegativeFiniteNumber != nil }
+                && ["timedOut", "accountMemoryBatch"].allSatisfy { !attachment.has($0) || attachment[$0].bool != nil }
         case "budget_usd":
             return keys == ["type", "used", "total", "remaining"]
                 && ["used", "total", "remaining"].allSatisfy { attachment[$0].nonnegativeFiniteNumber != nil }

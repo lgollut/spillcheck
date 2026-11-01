@@ -2,8 +2,8 @@ import Foundation
 import Testing
 @_spi(Testing) @testable import SpillcheckCore
 
-@Suite("Reusing an unchanged coverage report")
-struct CoverageReportReuseTests {
+@Suite("The refresh report of an unchanged vault")
+struct RecentCoverageReportTests {
     @Test func anUnchangedVaultReusesItsReportUntilAWriteOrAMinutePasses() async throws {
         // The app rebuilt this report every second, decrypting up to a few thousand rows each
         // time, even while nothing changed.

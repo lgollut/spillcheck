@@ -275,7 +275,12 @@ public actor CodexAppServerHistoryClient: CodexHistoryReading {
                 throw CodexHistoryReadFailure(reason: error, bytesRead: accounting.bytesRead)
             }
         } catch {
-            close()
+            // An error reply is a complete answer to this request, so the reader stays usable. Any
+            // other failure can leave a partial reply, an unexpected request or a stuck reader.
+            switch error {
+            case CodexHistoryError.remoteFailure, CodexHistoryError.missingMethod, CodexHistoryError.rejectedParameters: break
+            default: close()
+            }
             // A prior successful call is no longer evidence that this method is currently usable.
             // Only a fresh validated response may restore it and settle an operation incident.
             usableMethods.remove(method)

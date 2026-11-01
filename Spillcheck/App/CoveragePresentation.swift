@@ -102,9 +102,19 @@ struct CoveragePresentationCache {
         /// Row details name today and yesterday.
         let day: Date
     }
+    struct RouteInputs: Equatable {
+        let setupStates: [AgentProvider: AgentSetupState]
+        let profiles: [AgentProvider: AgentProfileDraft]
+        let awaitingVerification: Set<AgentProvider>
+        let assessments: [CollectionScope: CollectionAssessment]
+        let limitationsRevision: Int
+        let lastReadDates: [CollectionScope: Date]
+        let monitoringActive: Bool
+    }
     var observations: (inputs: ObservationInputs, value: [AppModel.CoverageObservation])?
     var rows: (inputs: RowInputs, value: [AppModel.CoverageGapRow])?
     var issues: (inputs: RowInputs, value: [AppModel.CoverageIssue])?
+    var routes: (inputs: RouteInputs, value: [AgentRoute])?
 }
 
 struct CoverageGroupKey: Hashable {

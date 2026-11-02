@@ -2007,19 +2007,41 @@ public actor ProtectedStore {
         return try await decodeCoverageOmissions(rows: rows, count: count)
     }
 
-    private static func coverageOmissionRows(in db: Database, from: Double, through: Double, limit: Int,
-                                             includeRecovered: Bool) throws -> (rows: [Row], count: Int) {
-        let count = try Int.fetchOne(db, sql: """
-            SELECT COUNT(*) FROM coverage_omissions WHERE COALESCE(content_at, created_at) >= ?
-            AND COALESCE(content_at, created_at) <= ? AND (? OR state != ?)
-            """, arguments: [from, through, includeRecovered, CoverageOmissionState.recovered.rawValue]) ?? 0
-        let rows = try Row.fetchAll(db, sql: """
-            SELECT id, encoded, state, resolved_at FROM coverage_omissions
-            WHERE COALESCE(content_at, created_at) >= ? AND COALESCE(content_at, created_at) <= ?
-                AND (? OR state != ?)
-            ORDER BY (state = ?) ASC, created_at DESC, id LIMIT ?
-            """, arguments: [from, through, includeRecovered, CoverageOmissionState.recovered.rawValue,
-                CoverageOmissionState.recovered.rawValue, limit])
+    /// The page is unresolved omissions first, then recovered, each newest first. Each state is
+    /// walked through `coverage_omissions_report`, which holds the order and the window columns, so
+    /// only the keys of the page are read before its encrypted rows are fetched by id.
+    static func coverageOmissionRows(in db: Database, from: Double, through: Double, limit: Int,
+                                     includeRecovered: Bool) throws -> (rows: [Row], count: Int) {
+        typealias Key = (id: String, createdAt: Double)
+        func keys(_ state: CoverageOmissionState, limit: Int) throws -> [Key] {
+            try Row.fetchAll(db, sql: HotQueries.omissionKeys, arguments: [state.rawValue, from, through, limit])
+                .map { ($0["id"], $0["created_at"]) }
+        }
+        // Every state but recovered, so a state added later is listed first as well. A row whose state
+        // is no case at all is not listed; before, it failed the whole report as corrupt.
+        let unresolved = CoverageOmissionState.allCases.filter { $0 != .recovered }
+        let states = includeRecovered ? unresolved + [.recovered] : unresolved
+        var count = 0
+        for state in states {
+            count += try Int.fetchOne(db, sql: HotQueries.omissionCount, arguments: [state.rawValue, from, through]) ?? 0
+        }
+        // Merging the states' first `limit` keys sorts at most three pages, never the window. The
+        // id tie-break is a byte comparison, as it is in SQLite.
+        var chosen = try unresolved.flatMap { try keys($0, limit: limit) }.sorted {
+            $0.createdAt != $1.createdAt ? $0.createdAt > $1.createdAt : $0.id.utf8.lexicographicallyPrecedes($1.id.utf8)
+        }
+        chosen = Array(chosen.prefix(limit))
+        if includeRecovered, chosen.count < limit {
+            chosen += try keys(.recovered, limit: limit - chosen.count)
+        }
+        var rows: [Row] = []
+        rows.reserveCapacity(chosen.count)
+        for key in chosen {
+            guard let row = try Row.fetchOne(db.cachedStatement(sql: HotQueries.omissionRow), arguments: [key.id]) else {
+                throw StorageError.corruptProtectedState
+            }
+            rows.append(row)
+        }
         return (rows, count)
     }
 
@@ -3164,6 +3186,13 @@ public actor ProtectedStore {
                 CREATE TABLE ledger_buckets (bucket INTEGER PRIMARY KEY CHECK (bucket BETWEEN 0 AND 63), encoded BLOB NOT NULL);
                 """)
         }
+        migrator.registerMigration("v11-omission-report-index") { db in
+            // The coverage report pages omissions by state and creation time; this lets it find the
+            // newest ones and test their window without reading the encrypted rows.
+            try db.execute(sql: """
+                CREATE INDEX coverage_omissions_report ON coverage_omissions (state, created_at DESC, id, content_at)
+                """)
+        }
         try migrator.migrate(database)
     }
 
@@ -3226,6 +3255,20 @@ extension ProtectedStore {
             WHERE state NOT IN ('queued', 'processing', 'stalled') AND updated_at >= ? AND updated_at <= ?
             ORDER BY updated_at DESC, id LIMIT ?
             """
+        /// One state's omissions in the window, counted from `coverage_omissions_expiry` alone.
+        static let omissionCount = """
+            SELECT COUNT(*) FROM coverage_omissions INDEXED BY coverage_omissions_expiry
+            WHERE state = ? AND COALESCE(content_at, created_at) >= ? AND COALESCE(content_at, created_at) <= ?
+            """
+        /// The newest keys of one state in the window. `coverage_omissions_report` is ordered by
+        /// state, creation time and id and carries `content_at`, so the window test, the order and
+        /// the limit all run on the index without a sort or a read of the table.
+        static let omissionKeys = """
+            SELECT id, created_at FROM coverage_omissions INDEXED BY coverage_omissions_report
+            WHERE state = ? AND COALESCE(content_at, created_at) >= ? AND COALESCE(content_at, created_at) <= ?
+            ORDER BY created_at DESC, id LIMIT ?
+            """
+        static let omissionRow = "SELECT id, encoded, state, resolved_at FROM coverage_omissions WHERE id = ?"
         static let expiringCaptures = """
             SELECT id, encoded, captured_at, expires_at, retry_count FROM captures
             WHERE expires_at <= ? ORDER BY expires_at LIMIT ?

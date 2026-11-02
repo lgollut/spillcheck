@@ -176,7 +176,7 @@ public struct CoverageRecoveryReference: Hashable, Codable, Sendable {
     }
 }
 
-public enum CoverageOmissionState: String, Codable, Sendable {
+public enum CoverageOmissionState: String, Codable, Sendable, CaseIterable {
     case retryable, blocked, recovered, unrecoverable
 }
 

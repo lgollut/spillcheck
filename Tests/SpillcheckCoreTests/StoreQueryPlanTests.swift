@@ -171,6 +171,140 @@ struct StoreQueryPlanTests {
         #expect((activeInWindow ?? 0) > 20 && (activeInWindow ?? 0) < 150)
     }
 
+    @Test func theCoverageReportFindsItsOmissionsThroughTheKeyIndex() async throws {
+        // The window holds tens of thousands of omissions with large encrypted columns, and the
+        // report rebuilds every few seconds. Scanning and sorting all of them to return a page was
+        // most of its build time.
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("spillcheck-omission-plans-\(UUID())").resolvingSymlinksInPath()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try await ProtectedStore.open(at: directory, cryptography: try BackgroundCryptography.ephemeralForTesting())
+        try await store.close()
+        let database = try DatabaseQueue(path: directory.appendingPathComponent(ProtectedStore.databaseFilename).path)
+        defer { try? database.close() }
+        typealias Queries = ProtectedStore.HotQueries
+        for (name, sql) in [("omission count", Queries.omissionCount), ("omission keys", Queries.omissionKeys),
+                          ("omission row", Queries.omissionRow)] {
+            let plan = try await database.read { db in try Self.plan(of: sql, in: db) }
+            #expect(!plan.contains { $0.hasPrefix("SCAN ") && !$0.contains("COVERING INDEX") },
+                    "\(name) reads every row: \(plan)")
+            #expect(!plan.contains("USE TEMP B-TREE FOR ORDER BY"), "\(name) sorts the whole window: \(plan)")
+        }
+        // The merge of the states' first pages is the only sort, and it happens in Swift over at
+        // most three pages, so no statement sorts the window.
+        let keys = try await database.read { db in try Self.plan(of: Queries.omissionKeys, in: db) }
+        #expect(keys.contains { $0.hasPrefix("SEARCH coverage_omissions USING COVERING INDEX coverage_omissions_report (state=?") },
+                "omission keys are not read from the report index alone: \(keys)")
+        let count = try await database.read { db in try Self.plan(of: Queries.omissionCount, in: db) }
+        #expect(count.contains { $0.hasPrefix("SEARCH coverage_omissions USING COVERING INDEX coverage_omissions_expiry (state=?") },
+                "omission count does not range over the expiry index: \(count)")
+    }
+
+    @Test func pagedOmissionRowsMatchSortingTheWholeWindow() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("spillcheck-omission-pages-\(UUID())").resolvingSymlinksInPath()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try await ProtectedStore.open(at: directory, cryptography: try BackgroundCryptography.ephemeralForTesting())
+        try await store.close()
+        let database = try DatabaseQueue(path: directory.appendingPathComponent(ProtectedStore.databaseFilename).path)
+        defer { try? database.close() }
+        let states = ["blocked", "retryable", "unrecoverable", "recovered"]
+        let (from, through) = (1_000.0, 2_000.0)
+        // Few distinct times so many rows tie. The bounds, rows just outside them, content times
+        // inside the window of rows created outside it, and the reverse are all present.
+        let created: [Double] = [500, 999, 1_000, 1_000, 1_500, 1_500, 1_500, 1_999, 2_000, 2_000, 2_001, 3_000]
+        let content: [Double?] = [nil, nil, nil, 999, 1_000, 1_500, 1_700, 2_000, 2_001, nil]
+        try await database.write { db in
+            for n in 0..<480 {
+                // Upper and lower case sort differently by byte than by letter.
+                let id = String(format: n % 3 == 0 ? "ID-%04d" : "id-%04d", (n * 37) % 1000)
+                try db.execute(sql: """
+                    INSERT INTO coverage_omissions (id, location_id, incident_key, created_at, content_at, state, resolved_at, encoded)
+                    VALUES (?, ?, NULL, ?, ?, ?, ?, ?)
+                    """, arguments: [id, "location-\(n % 17)", created[(n * 5 + n / 9) % created.count],
+                                     content[(n * 7 + n / 13) % content.count], states[(n * 3 + n / 5) % states.count],
+                                     n % 4 == 0 ? Double(n) : nil, Data([UInt8(n % 256)])])
+            }
+        }
+        let reference = """
+            SELECT id, encoded, state, resolved_at FROM coverage_omissions
+            WHERE COALESCE(content_at, created_at) >= ? AND COALESCE(content_at, created_at) <= ?
+                AND (? OR state != ?)
+            ORDER BY (state = ?) ASC, created_at DESC, id LIMIT ?
+            """
+        let referenceCount = """
+            SELECT COUNT(*) FROM coverage_omissions WHERE COALESCE(content_at, created_at) >= ?
+            AND COALESCE(content_at, created_at) <= ? AND (? OR state != ?)
+            """
+        for includeRecovered in [false, true] {
+            let inWindow = try await database.read { db in
+                try Int.fetchOne(db, sql: referenceCount, arguments: [from, through, includeRecovered, "recovered"])
+            } ?? 0
+            #expect(inWindow > 100)
+            // Under one state's share of the window, between states, exactly the window, and beyond it.
+            for limit in [1, 2, 5, 20, 40, 100, 150, 250, inWindow, 1_000] {
+                let (expected, actual) = try await database.read { db in
+                    (try Row.fetchAll(db, sql: reference,
+                                      arguments: [from, through, includeRecovered, "recovered", "recovered", limit]).map(\.description),
+                     try Self.omissionPage(in: db, from: from, through: through, limit: limit, includeRecovered: includeRecovered))
+                }
+                #expect(actual.count == inWindow, "count differs at limit \(limit), recovered \(includeRecovered)")
+                #expect(actual.rows == expected, "rows differ at limit \(limit), recovered \(includeRecovered)")
+                #expect(!expected.isEmpty)
+            }
+        }
+        // Without bounds nothing is filtered by time.
+        let all = try await database.read { db in
+            try Self.omissionPage(in: db, from: -.greatestFiniteMagnitude, through: .greatestFiniteMagnitude,
+                                  limit: 1_000, includeRecovered: true)
+        }
+        #expect(all.count == 480 && all.rows.count == 480)
+    }
+
+    @Test func openingAnEarlierVaultAddsTheOmissionReportIndex() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("spillcheck-omission-migration-\(UUID())").resolvingSymlinksInPath()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let crypto = try BackgroundCryptography.ephemeralForTesting()
+        try await ProtectedStore.open(at: directory, cryptography: crypto).close()
+        let path = directory.appendingPathComponent(ProtectedStore.databaseFilename).path
+        let dump = "SELECT * FROM coverage_omissions ORDER BY id"
+        // A vault from before v11: its omissions, no report index, and no record of the migration.
+        let before = try DatabaseQueue(path: path)
+        let rows = try await before.write { db -> [String] in
+            for n in 0..<12 {
+                try db.execute(sql: """
+                    INSERT INTO coverage_omissions (id, location_id, created_at, content_at, state, encoded)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """, arguments: ["id-\(n)", "location-\(n)", Double(1_000 + n), n % 2 == 0 ? nil : Double(n),
+                                     n % 3 == 0 ? "recovered" : "retryable", Data([UInt8(n)])])
+            }
+            try db.execute(sql: "DROP INDEX coverage_omissions_report")
+            try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = 'v11-omission-report-index'")
+            return try Row.fetchAll(db, sql: dump).map(\.description)
+        }
+        try before.close()
+        #expect(rows.count == 12)
+
+        try await ProtectedStore.open(at: directory, cryptography: crypto).close()
+        let after = try DatabaseQueue(path: path)
+        defer { try? after.close() }
+        try await after.read { db in
+            let index = try db.indexes(on: "coverage_omissions").first { $0.name == "coverage_omissions_report" }
+            #expect(index?.columns == ["state", "created_at", "id", "content_at"])
+            #expect(try Bool.fetchOne(db, sql: "SELECT EXISTS (SELECT 1 FROM grdb_migrations WHERE identifier = 'v11-omission-report-index')") == true)
+            #expect(try Row.fetchAll(db, sql: dump).map(\.description) == rows)
+        }
+    }
+
+    /// Rows are not Sendable, so they leave the read as their descriptions.
+    private static func omissionPage(in db: Database, from: Double, through: Double, limit: Int,
+                                     includeRecovered: Bool) throws -> (rows: [String], count: Int) {
+        let page = try ProtectedStore.coverageOmissionRows(in: db, from: from, through: through, limit: limit,
+                                                           includeRecovered: includeRecovered)
+        return (page.rows.map(\.description), page.count)
+    }
+
     private static func plan(of sql: String, in db: Database) throws -> [String] {
         let statement = try db.makeStatement(sql: "EXPLAIN QUERY PLAN " + sql)
         // Unbound parameters are NULL; the plan does not depend on them.

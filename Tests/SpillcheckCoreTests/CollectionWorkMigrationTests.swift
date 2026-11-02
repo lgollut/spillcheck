@@ -215,9 +215,9 @@ struct CollectionWorkMigrationTests {
         let store = try await ProtectedStore.open(at: fixture.directory, cryptography: fixture.crypto)
         #expect(try legacyRows(fixture.directory) == before)
         try readDatabase(fixture.directory) { db throws -> Void in
-            #expect(try String.fetchAll(db, sql: "SELECT identifier FROM grdb_migrations ORDER BY identifier")
-                == (Self.predecessorMigrations + [Self.currentMigration, "v7-codex-hook-content-slots", "v8-certified-source-recovery",
-                    "v9-indexed-queue-maintenance", "v10-partitioned-ledger"]).sorted())
+            #expect(Set(try String.fetchAll(db, sql: "SELECT identifier FROM grdb_migrations"))
+                == Set(Self.predecessorMigrations + [Self.currentMigration, "v7-codex-hook-content-slots", "v8-certified-source-recovery",
+                    "v9-indexed-queue-maintenance", "v10-partitioned-ledger", "v11-omission-report-index"]))
             #expect(try db.tableExists("collection_work"))
             #expect(try db.tableExists("successful_collection_reads"))
         }

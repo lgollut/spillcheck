@@ -44,6 +44,8 @@ public actor CodexActiveHistoryMonitor {
     private var pollFailures: [String: PollFailures] = [:]
     /// One gap per continuous capacity failure. Bounded by the configured source set.
     private var capacityFailureReported: Set<String> = []
+    /// Retry pacing for enqueue failures, which the pipeline's poll failures above do not cover.
+    private var deliveryBackoff = DeliveryBackoff()
     private var nextIndex = 0
     private struct PollFailures {
         var count: Int
@@ -149,6 +151,7 @@ public actor CodexActiveHistoryMonitor {
                 let removed = sources.remove(at: stalest)
                 lastActivity.removeValue(forKey: removed.threadID); nextPoll.removeValue(forKey: removed.threadID)
                 pollFailures.removeValue(forKey: removed.threadID)
+                deliveryBackoff.recordSuccess(removed.threadID)
                 capacityFailureReported.remove(removed.threadID)
                 if let url = removed.transcriptURL { signatures.removeValue(forKey: url.path) }
                 if nextIndex > stalest { nextIndex -= 1 }
@@ -169,9 +172,21 @@ public actor CodexActiveHistoryMonitor {
             guard permit == generation, !Task.isCancelled else { return count }
             let source = sources[(nextIndex + inspected) % sources.count]
             inspected += 1
-            do { if try await isHookOwned(source) { continue } }
+            // Before the lookup too, so a source whose lookup keeps failing is not retried every pass.
+            guard !deliveryBackoff.isWaiting(source.threadID, at: date) else { continue }
+            do {
+                if try await isHookOwned(source) {
+                    // The hook path owns it now, so a failure recorded for polling no longer applies.
+                    deliveryBackoff.recordSuccess(source.threadID)
+                    continue
+                }
+            }
             catch {
-                if !Task.isCancelled { await onGap(gap(.deliveryUncertain, source: source, at: date)) }
+                if !Task.isCancelled {
+                    if deliveryBackoff.recordFailure(source.threadID, base: deliveryBase(source, at: date), at: date) {
+                        await onGap(gap(.deliveryUncertain, source: source, at: date))
+                    }
+                }
                 failure = failure ?? error
                 continue
             }
@@ -208,11 +223,16 @@ public actor CodexActiveHistoryMonitor {
                 continue
             }
             catch {
-                if !Task.isCancelled { await onGap(gap(.deliveryUncertain, source: source, at: date)) }
+                if !Task.isCancelled {
+                    if deliveryBackoff.recordFailure(source.threadID, base: deliveryBase(source, at: date), at: date) {
+                        await onGap(gap(.deliveryUncertain, source: source, at: date))
+                    }
+                }
                 failure = failure ?? error
                 continue
             }
             guard permit == generation, !Task.isCancelled else { return count }
+            deliveryBackoff.recordSuccess(source.threadID)
             capacityFailureReported.remove(source.threadID)
             if let url = source.transcriptURL, let signature { signatures[url.path] = signature }
             // The enqueue awaited, so a failure may have been recorded since the delay was chosen.
@@ -239,6 +259,10 @@ public actor CodexActiveHistoryMonitor {
         let pending = task; task = nil
         pending?.cancel(); await pending?.value
         await historyClient?.close()
+    }
+    /// A failing source backs off from its own cadence; a public thread's follows its activity.
+    private func deliveryBase(_ source: CodexActiveSource, at date: Date) -> TimeInterval {
+        Self.publicPollDelay(idle: date.timeIntervalSince(lastActivity[source.threadID] ?? date)) ?? 1
     }
     private func isHookOwned(_ source: CodexActiveSource) async throws -> Bool {
         guard let authorityLookup else { return false }

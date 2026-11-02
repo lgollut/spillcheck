@@ -34,6 +34,9 @@ public actor ClaudeActiveTranscriptMonitor {
     private var nextCheck: [String: Date] = [:]
     private var task: Task<Void, Never>?
     private var generation: UUID = UUID()
+    private var deliveryBackoff = DeliveryBackoff()
+    /// The polling interval, which a failing source's retries back off from.
+    private static let cadence: TimeInterval = 0.25
     private struct Signature: Equatable, Sendable {
         let device: UInt64, inode: UInt64, size: Int64, modifiedSeconds: Int64, modifiedNanos: Int64
     }
@@ -86,6 +89,8 @@ public actor ClaudeActiveTranscriptMonitor {
                 modifiedSeconds: Int64(info.st_mtimespec.tv_sec), modifiedNanos: Int64(info.st_mtimespec.tv_nsec))
             guard signatures[key] != signature else { continue }
             changed.insert((selection.parent ?? source).transcriptURL.path)
+            // The file did change, so its idle time resets; only the retry waits out the backoff.
+            guard !deliveryBackoff.isWaiting(key, at: date) else { continue }
             var event: [String: String] = ["hook_event_name": "SpillcheckTranscriptPoll", "session_id": source.sessionID,
                                           "transcript_path": source.transcriptURL.path]
             if let parent = selection.parent {
@@ -100,11 +105,16 @@ public actor ClaudeActiveTranscriptMonitor {
                 try await enqueue(packet, date)
             } catch {
                 // Report and skip this source so it cannot hold back the rest of the pass.
-                if !Task.isCancelled { await onGap(gap(.deliveryUncertain, source: source, parent: selection.parent, at: date)) }
+                if !Task.isCancelled {
+                    if deliveryBackoff.recordFailure(key, base: Self.cadence, at: date) {
+                        await onGap(gap(.deliveryUncertain, source: source, parent: selection.parent, at: date))
+                    }
+                }
                 failure = failure ?? error
                 continue
             }
             guard permit == generation, !Task.isCancelled else { return count }
+            deliveryBackoff.recordSuccess(key)
             signatures[key] = signature; count += 1
         }
         for parent in due {

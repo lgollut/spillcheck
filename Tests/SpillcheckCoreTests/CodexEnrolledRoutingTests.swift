@@ -305,7 +305,9 @@ struct CodexEnrolledRoutingTests {
             await #expect(throws: StorageError.databaseUnavailable) { try await monitor.pollOnce(at: now.addingTimeInterval(step)) }
         }
         let gaps = await captured.gaps
-        #expect(gaps.count == 2 && gaps.allSatisfy {
+        // A failing source is backed off and reports its gap once per outage, so the second pass
+        // is a quiet retry.
+        #expect(gaps.count == 1 && gaps.allSatisfy {
             $0.reason == .deliveryUncertain && $0.recovery?.session?.sessionID == "broken" })
         let polled = try await captured.packets.map {
             try JSONDecoder().decode(CodexJSON.self, from: $0.eventJSON)["session_id"].string }

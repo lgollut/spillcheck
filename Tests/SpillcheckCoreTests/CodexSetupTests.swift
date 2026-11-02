@@ -116,10 +116,14 @@ struct CodexMonitorTests {
         #expect(try await monitor.pollOnce() == 0)
         try Data("{}\n{}\n".utf8).write(to: path)
         await sink.rejecting(true)
-        await #expect(throws: CodexCollectionError.awaitingHistory) { try await monitor.pollOnce() }
+        let failedAt = Date()
+        await #expect(throws: CodexCollectionError.awaitingHistory) { try await monitor.pollOnce(at: failedAt) }
         await sink.rejecting(false)
-        #expect(try await monitor.pollOnce() == 1)
-        #expect(try await monitor.pollOnce() == 0)
+        // A failed enqueue is retried with backoff, so the retry waits out its delay.
+        #expect(try await monitor.pollOnce(at: failedAt) == 0)
+        let retryAt = failedAt.addingTimeInterval(2)
+        #expect(try await monitor.pollOnce(at: retryAt) == 1)
+        #expect(try await monitor.pollOnce(at: retryAt) == 0)
         #expect(await sink.count() == 2)
     }
     @Test func publicPollingUsesOnlyAdmittedExactSourcesAndKeepsSameSecondUpdatesObservable() async throws {

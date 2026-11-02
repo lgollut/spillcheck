@@ -501,7 +501,18 @@ final class AppRuntime {
     private func configureWorkflow(store: ProtectedStore, services: ProtectionServices, directory: URL) async throws {
         let controller = ViewingController(session: services.viewingSession,
             loadPayload: { reference in try await store.payload(reference) },
-            selectionIsCurrent: { selection in selection.isCurrent(in: await store.snapshot()) })
+            selectionIsCurrent: { selection in selection.isCurrent(in: await store.snapshot()) },
+            lookUpToolCall: { id, context in
+                // Kept before tool calls were: look in the agent's own history, which may be gone.
+                guard let path = context.transcriptPath else { return nil }
+                let snapshot = await store.snapshot()
+                guard let source = snapshot.occurrences[id]?.source ?? snapshot.unlocatedResults[id]?.source,
+                      source.contentType == .toolOutput || source.contentType == .toolError else { return nil }
+                let provider = source.identity.session.provider, item = source.identity.itemID, locator = source.locator
+                return await Task.detached(priority: .userInitiated) {
+                    ToolCallLookup.find(provider: provider, itemID: item, transcriptPath: path, locator: locator)
+                }.value
+            })
         viewing = controller
         controller.onChange = { [weak self] in self?.publishViewing() }
         services.viewingSession.onInvalidate = { [weak self] reason in

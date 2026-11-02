@@ -80,6 +80,14 @@ struct ClaudeSetupTests {
     }
 }
 
+private func monitorAgent(_ folder: URL, _ name: String, modified: Date) throws {
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    try Data("{}\n".utf8).write(to: folder.appendingPathComponent("agent-\(name).jsonl"))
+    try monitorTouch(folder, name, modified: modified)
+}
+private func monitorTouch(_ folder: URL, _ name: String, modified: Date) throws {
+    try FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: folder.appendingPathComponent("agent-\(name).jsonl").path)
+}
 private actor ClaudeMonitorSink {
     var packets:[CapturePacket] = []
     var gaps: [CoverageGap] = []
@@ -161,25 +169,137 @@ struct ClaudeMonitorTests {
         let directory = try claudeSetupDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
         let parent = directory.appendingPathComponent("parent.jsonl")
         let subagents = directory.appendingPathComponent("parent/subagents")
-        func agent(_ folder: URL, _ name: String, modified: Date) throws {
-            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            let file = folder.appendingPathComponent("agent-\(name).jsonl")
-            try Data("{}\n".utf8).write(to: file)
-            try FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: file.path)
-        }
         // subagents/ is listed before any workflow run, so finished agents there come first.
-        for index in 0..<40 { try agent(subagents, "finished-\(index)", modified: Date(timeIntervalSinceNow: -3600)) }
-        try agent(subagents.appendingPathComponent("workflows/wf_live"), "wf_live-0", modified: Date())
+        // Distinct ages keep the polled set deterministic: finished-0 ... finished-8 are the unpolled ones.
+        for index in 0..<40 { try monitorAgent(subagents, "finished-\(index)", modified: Date(timeIntervalSinceNow: -7200 + Double(index) * 10)) }
+        try monitorAgent(subagents.appendingPathComponent("workflows/wf_live"), "wf_live-0", modified: Date())
+        let sink = ClaudeMonitorSink()
+        let monitor = try ClaudeActiveTranscriptMonitor(profileID: "test", sources: [.init(sessionID: "parent", transcriptURL: parent)],
+            enqueue: { packet, _ in try await sink.accept(packet) }, onGap: { await sink.recordGap($0) })
+        let start = Date()
+        _ = try await monitor.pollOnce(at: start)
+        let polled = await sink.recorded().compactMap {
+            (try? JSONSerialization.jsonObject(with: $0.eventJSON) as? [String: Any])?["agent_transcript_path"] as? String
+        }
+        // The live run is polled although readdir may list the finished run first.
+        #expect(polled.count == 32 && polled.contains { $0.hasSuffix("/wf_live/agent-wf_live-0.jsonl") })
+        // Nothing unpolled has changed since the first look, so nothing is reported yet.
+        #expect(await sink.observedGaps().filter { $0.reason == .budgetExhausted }.isEmpty)
+        // A change to an agent the monitor left unpolled is what costs coverage, and is reported.
+        try monitorTouch(subagents, "finished-0", modified: Date(timeIntervalSinceNow: -7195))
+        _ = try await monitor.pollOnce(at: start.addingTimeInterval(1))
+        #expect(await sink.observedGaps().filter { $0.reason == .budgetExhausted }.count == 1)
+    }
+
+    @Test func finishedChildrenBeyondTheBudgetRecordNoGapOverManyPasses() async throws {
+        let directory = try claudeSetupDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let parent = directory.appendingPathComponent("parent.jsonl")
+        let subagents = directory.appendingPathComponent("parent/subagents")
+        for index in 0..<9 { try monitorAgent(subagents, "direct-\(index)", modified: Date(timeIntervalSinceNow: -3600 - Double(index))) }
+        for run in 0..<5 {
+            for index in 0..<10 {
+                try monitorAgent(subagents.appendingPathComponent("workflows/wf_\(run)"), "wf_\(run)-\(index)",
+                    modified: Date(timeIntervalSinceNow: -3000 - Double(run * 10 + index)))
+            }
+        }
+        let sink = ClaudeMonitorSink()
+        let monitor = try ClaudeActiveTranscriptMonitor(profileID: "test", sources: [.init(sessionID: "parent", transcriptURL: parent)],
+            enqueue: { packet, _ in try await sink.accept(packet) }, onGap: { await sink.recordGap($0) })
+        let start = Date()
+        for pass in 0..<40 { _ = try await monitor.pollOnce(at: start.addingTimeInterval(Double(pass) * 30)) }
+        #expect(await sink.count() == 32)
+        #expect(await sink.observedGaps().filter { $0.reason == .budgetExhausted }.isEmpty)
+    }
+
+    @Test func changesToUnpolledChildrenAreReportedAtMostOncePerFiveMinutes() async throws {
+        let directory = try claudeSetupDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let parent = directory.appendingPathComponent("parent.jsonl")
+        let subagents = directory.appendingPathComponent("parent/subagents")
+        for index in 0..<40 { try monitorAgent(subagents, "finished-\(index)", modified: Date(timeIntervalSinceNow: -7200 + Double(index) * 10)) }
+        let sink = ClaudeMonitorSink()
+        let monitor = try ClaudeActiveTranscriptMonitor(profileID: "test", sources: [.init(sessionID: "parent", transcriptURL: parent)],
+            enqueue: { packet, _ in try await sink.accept(packet) }, onGap: { await sink.recordGap($0) })
+        let start = Date()
+        func gaps() async -> Int { await sink.observedGaps().filter { $0.reason == .budgetExhausted }.count }
+        func change(_ index: Int, at seconds: Double) async throws {
+            // Still older than every polled child (finished-8 and up), so it stays unpolled.
+            try monitorTouch(subagents, "finished-\(index)", modified: Date(timeIntervalSinceNow: -7200 + Double(index) * 10 + 5))
+            _ = try await monitor.pollOnce(at: start.addingTimeInterval(seconds))
+        }
+        _ = try await monitor.pollOnce(at: start)
+        #expect(await gaps() == 0)
+        try await change(0, at: 1)
+        #expect(await gaps() == 1)
+        try await change(1, at: 60)
+        try await change(2, at: 200)
+        #expect(await gaps() == 1)
+        try await change(3, at: 400)
+        #expect(await gaps() == 2)
+    }
+
+    @Test func manyChildrenWrittenAtOnceAreStillReported() async throws {
+        let directory = try claudeSetupDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let parent = directory.appendingPathComponent("parent.jsonl")
+        let subagents = directory.appendingPathComponent("parent/subagents")
+        for index in 0..<40 { try monitorAgent(subagents, "busy-\(index)", modified: Date(timeIntervalSinceNow: -100 - Double(index))) }
+        let sink = ClaudeMonitorSink()
+        let monitor = try ClaudeActiveTranscriptMonitor(profileID: "test", sources: [.init(sessionID: "parent", transcriptURL: parent)],
+            enqueue: { packet, _ in try await sink.accept(packet) }, onGap: { await sink.recordGap($0) })
+        let start = Date()
+        _ = try await monitor.pollOnce(at: start)
+        // Every agent is rewritten, the unpolled ones too.
+        for index in 0..<40 { try monitorTouch(subagents, "busy-\(index)", modified: Date(timeIntervalSinceNow: -50 - Double(index))) }
+        _ = try await monitor.pollOnce(at: start.addingTimeInterval(1))
+        #expect(await sink.observedGaps().filter { $0.reason == .budgetExhausted }.count == 1)
+    }
+
+    @Test func cutOffListingIsReportedAtMostOncePerFiveMinutes() async throws {
+        let directory = try claudeSetupDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let parent = directory.appendingPathComponent("parent.jsonl")
+        let subagents = directory.appendingPathComponent("parent/subagents")
+        // More than 128 entries in one folder cut the listing off.
+        for index in 0..<140 { try monitorAgent(subagents, "finished-\(index)", modified: Date(timeIntervalSinceNow: -3600)) }
+        let sink = ClaudeMonitorSink()
+        let monitor = try ClaudeActiveTranscriptMonitor(profileID: "test", sources: [.init(sessionID: "parent", transcriptURL: parent)],
+            enqueue: { packet, _ in try await sink.accept(packet) }, onGap: { await sink.recordGap($0) })
+        let start = Date()
+        for pass in 0..<30 { _ = try await monitor.pollOnce(at: start.addingTimeInterval(Double(pass) * 10)) }
+        #expect(await sink.observedGaps().filter { $0.reason == .budgetExhausted }.count == 1)
+        // The condition lasts, so it is reported again once the five minutes are over.
+        _ = try await monitor.pollOnce(at: start.addingTimeInterval(301))
+        #expect(await sink.observedGaps().filter { $0.reason == .budgetExhausted }.count == 2)
+    }
+
+    @Test func symlinkedWorkflowFoldersAndAgentFilesAreNeverFollowed() async throws {
+        let directory = try claudeSetupDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let parent = directory.appendingPathComponent("parent.jsonl")
+        let subagents = directory.appendingPathComponent("parent/subagents")
+        let outside = directory.appendingPathComponent("outside")
+        try monitorAgent(outside.appendingPathComponent("wf_outside"), "outside-run", modified: Date())
+        try monitorAgent(outside.appendingPathComponent("run_target"), "outside-linked-run", modified: Date())
+        try monitorAgent(outside, "outside-file", modified: Date())
+        try FileManager.default.createDirectory(at: subagents, withIntermediateDirectories: true)
+        // The whole workflows folder is a link ...
+        try FileManager.default.createSymbolicLink(at: subagents.appendingPathComponent("workflows"), withDestinationURL: outside)
+        // ... and an agent transcript is a link.
+        try FileManager.default.createSymbolicLink(at: subagents.appendingPathComponent("agent-linked.jsonl"),
+            withDestinationURL: outside.appendingPathComponent("agent-outside-file.jsonl"))
         let sink = ClaudeMonitorSink()
         let monitor = try ClaudeActiveTranscriptMonitor(profileID: "test", sources: [.init(sessionID: "parent", transcriptURL: parent)],
             enqueue: { packet, _ in try await sink.accept(packet) }, onGap: { await sink.recordGap($0) })
         _ = try await monitor.pollOnce()
+        #expect(await sink.count() == 0)
+        // A single run folder that is a link is skipped while a real sibling is still read.
+        try FileManager.default.removeItem(at: subagents.appendingPathComponent("workflows"))
+        let workflows = subagents.appendingPathComponent("workflows")
+        try monitorAgent(workflows.appendingPathComponent("wf_real"), "real", modified: Date())
+        try FileManager.default.createSymbolicLink(at: workflows.appendingPathComponent("wf_linked"),
+            withDestinationURL: outside.appendingPathComponent("run_target"))
+        #expect(try await monitor.pollOnce() == 1)
         let polled = await sink.recorded().compactMap {
             (try? JSONSerialization.jsonObject(with: $0.eventJSON) as? [String: Any])?["agent_transcript_path"] as? String
         }
-        // The live run is polled although readdir may list the finished run first; the rest is reported.
-        #expect(polled.count == 32 && polled.contains { $0.hasSuffix("/wf_live/agent-wf_live-0.jsonl") })
-        #expect(await sink.observedGaps().contains { $0.reason == .budgetExhausted })
+        #expect(polled.count == 1 && polled[0].hasSuffix("/wf_real/agent-real.jsonl"))
     }
 
     @Test(arguments: ["parent", "distinct-child"])

@@ -28,6 +28,11 @@ public actor ClaudeActiveTranscriptMonitor {
     private var signatures: [String: Signature] = [:]
     private var task: Task<Void, Never>?
     private var generation: UUID = UUID()
+    /// What each parent's previous scan saw: every candidate child's modification time, and when a
+    /// budget gap was last recorded for it. Both are in memory only; a restart looks afresh.
+    private struct ChildHistory { var modified: [String: Int64]; var lastGap: Date? }
+    private var childHistory: [String: ChildHistory] = [:]
+    private static let gapInterval: TimeInterval = 300
     private struct Signature: Equatable, Sendable {
         let device: UInt64, inode: UInt64, size: Int64, modifiedSeconds: Int64, modifiedNanos: Int64
     }
@@ -46,7 +51,7 @@ public actor ClaudeActiveTranscriptMonitor {
         let permit = generation
         var count = 0
         var failure: (any Error)?
-        let selected = selectedSources()
+        let selected = selectedSources(at: date)
         for source in selected.exhaustedSources {
             await onGap(gap(.budgetExhausted, source: source, at: date))
         }
@@ -125,7 +130,7 @@ public actor ClaudeActiveTranscriptMonitor {
             diagnosticCode: reason.defaultDiagnosticCode, observedAt: date)
     }
 
-    private func selectedSources() -> (sources: [SelectedSource], exhaustedSources: [ClaudeActiveSource]) {
+    private func selectedSources(at date: Date) -> (sources: [SelectedSource], exhaustedSources: [ClaudeActiveSource]) {
         var result = sources.map { SelectedSource(source: $0, parent: nil) }, exhaustedSources: [ClaudeActiveSource] = []
         // Claude 2.1.293 native Agent sidechains are in the selected conversation's own
         // <session>/subagents directory, and workflow agents in its subagents/workflows/<run>
@@ -136,13 +141,15 @@ public actor ClaudeActiveTranscriptMonitor {
             let subagents = project.appendingPathComponent(parent.transcriptURL.deletingPathExtension().lastPathComponent).appendingPathComponent("subagents")
             // Every child is listed before any is polled, so the 32 most recently written ones are
             // polled whichever folder holds them and a finished run can't crowd out a live one.
-            // The rest are reported as exhausted; their modification time only orders polling.
-            var candidates: [(url: URL, modified: timespec)] = [], runs: [URL] = []
-            var inspected = 0, exhausted = false
-            // Collects agent transcripts, or with `listingRuns` only the workflow run folders.
-            func scan(_ directory: URL, listingRuns: Bool = false) {
-                guard !exhausted, let fd = try? claudeOpenDirectory(directory.path) else { return }
-                guard let stream = fdopendir(fd) else { close(fd); return }
+            // The rest are not polled; their modification time only orders polling and shows change.
+            var candidates: [(url: URL, modified: timespec)] = [], runs: [String] = []
+            var inspected = 0, cutOff = false
+            // Collects agent transcripts, or with `listingRuns` only the workflow run folders. The
+            // descriptor stays the caller's; the stream reads a duplicate of it.
+            func scan(_ directoryFD: Int32, _ directory: URL, listingRuns: Bool = false) {
+                guard !cutOff else { return }
+                let fd = dup(directoryFD)
+                guard fd >= 0, let stream = fdopendir(fd) else { if fd >= 0 { close(fd) }; return }
                 defer { closedir(stream) }
                 var listed = 0
                 while let entry = readdir(stream) {
@@ -151,30 +158,66 @@ public actor ClaudeActiveTranscriptMonitor {
                     }
                     guard name != ".", name != ".." else { continue }
                     listed += 1; inspected += 1
-                    if listed > 128 || inspected > 512 { exhausted = true; return }
+                    if listed > 128 || inspected > 512 { cutOff = true; return }
                     if listingRuns {
                         guard ClaudeToolHookSelection.isSafeIdentifier(name) else { continue }
                     } else {
                         guard name.hasPrefix("agent-"), name.hasSuffix(".jsonl"), !name.contains("/") else { continue }
                     }
                     var info = stat()
-                    guard fstatat(fd, name, &info, AT_SYMLINK_NOFOLLOW) == 0, info.st_uid == getuid(),
+                    guard fstatat(directoryFD, name, &info, AT_SYMLINK_NOFOLLOW) == 0, info.st_uid == getuid(),
                           (info.st_mode & S_IFMT) == (listingRuns ? S_IFDIR : S_IFREG) else { continue }
-                    if listingRuns { runs.append(directory.appendingPathComponent(name)) }
+                    if listingRuns { runs.append(name) }
                     else { candidates.append((directory.appendingPathComponent(name), info.st_mtimespec)) }
                 }
             }
-            scan(subagents)
-            scan(subagents.appendingPathComponent("workflows"), listingRuns: true)
-            for run in runs { scan(run) }
+            // Open the conversation's subagents folder once, safely from "/"; the workflows folder and
+            // each run are then opened relative to it, without following links, so no step re-walks the path.
+            func openChild(_ parentFD: Int32, _ name: String) -> Int32? {
+                let fd = name.withCString { openat(parentFD, $0, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC) }
+                return fd >= 0 ? fd : nil
+            }
+            if let subagentsFD = try? claudeOpenDirectory(subagents.path) {
+                defer { close(subagentsFD) }
+                scan(subagentsFD, subagents)
+                if let workflowsFD = openChild(subagentsFD, "workflows") {
+                    defer { close(workflowsFD) }
+                    let workflows = subagents.appendingPathComponent("workflows")
+                    scan(workflowsFD, workflows, listingRuns: true)
+                    for run in runs {
+                        guard !cutOff, let runFD = openChild(workflowsFD, run) else { continue }
+                        defer { close(runFD) }
+                        scan(runFD, workflows.appendingPathComponent(run))
+                    }
+                }
+            }
             candidates.sort { ($0.modified.tv_sec, $0.modified.tv_nsec) > ($1.modified.tv_sec, $1.modified.tv_nsec) }
-            if candidates.count > 32 { exhausted = true }
             for candidate in candidates.prefix(32) {
                 if let child = try? ClaudeActiveSource(sessionID: parent.sessionID, transcriptURL: candidate.url, interface: parent.interface) {
                     result.append(.init(source: child, parent: parent))
                 }
             }
-            if exhausted { exhaustedSources.append(parent) }
+            // Children beyond the 32 polled are finished more often than not, so only a truncated
+            // listing, or an unpolled child that is new or has been written since the last scan,
+            // costs coverage. The first scan has nothing to compare with and reports only a cut-off.
+            let key = parent.transcriptURL.path
+            var modified: [String: Int64] = [:]
+            for candidate in candidates {
+                modified[candidate.url.path] = Int64(candidate.modified.tv_sec) &* 1_000_000_000 &+ Int64(candidate.modified.tv_nsec)
+            }
+            let previous = childHistory[key]
+            var unpolledChanged = false
+            if let previous {
+                unpolledChanged = candidates.dropFirst(32).contains { previous.modified[$0.url.path] != modified[$0.url.path] }
+            }
+            var lastGap = previous?.lastGap
+            if cutOff || unpolledChanged {
+                // A condition that lasts stays visible, but not on every 250 ms pass.
+                if let last = lastGap, date >= last, date.timeIntervalSince(last) < Self.gapInterval {} else {
+                    exhaustedSources.append(parent); lastGap = date
+                }
+            }
+            childHistory[key] = ChildHistory(modified: modified, lastGap: lastGap)
         }
         return (result, exhaustedSources)
     }

@@ -351,24 +351,47 @@ private struct NativeWorkflowProbe {
             // What's on screen is read, and it keeps its row until the list reloads.
             try require(!inbox.isUnread(review[0]) && inbox.isUnread(review[1])
                 && inbox.bucketEntries.map(\.id) == review.map(\.id), "inbox-read-keeps-order")
-            var decided: [ValueDecision?] = []
-            inbox.onDecide = { _, decision in decided.append(decision) }
-            try require(inbox.decide(byKey: "t") && decided == [.testOrDevelopment]
+            var applied: [[InventoryDecisionChange]] = []
+            inbox.onApply = { changes, _ in applied.append(changes) }
+            let decidedFirst = review[0].entry.fingerprint.map { InventoryDecisionChange.decide($0, .testOrDevelopment) }
+            try require(inbox.decide(byKey: "t") && applied.count == 1 && applied.first?.first == decidedFirst
                 && inbox.selectedEntryID == review[1].id, "inbox-decision-opens-next")
-            try require(!inbox.decide(byKey: "d") && decided.count == 1, "inbox-keys-follow-the-list")
-            var undone: [InventoryUndo] = []
-            inbox.onUndo = { undone.append($0) }
-            let step = InventoryUndo.unlocatedDecision(UUID(), previous: nil)
+            try require(!inbox.decide(byKey: "d") && applied.count == 1, "inbox-keys-follow-the-list")
+            let step: [InventoryDecisionChange] = [.decideUnlocated(UUID(), nil)]
             inbox.offerUndo(step, message: "synthetic decision")
             try require(inbox.toastOffersUndo, "inbox-undo-offered")
             inbox.undoLastDecision()
-            try require(undone == [step] && inbox.undo == nil && !inbox.toastOffersUndo, "inbox-undo")
-            var acknowledged: [ObsoleteAcknowledgement] = []
-            inbox.onAcknowledge = { _, acknowledgement in acknowledged.append(acknowledgement) }
+            try require(applied.last == step && inbox.undo == nil && !inbox.toastOffersUndo, "inbox-undo")
             inbox.selectBucket(.toRotate)
-            try require(inbox.decide(byKey: "d") && acknowledged == [.rotated] && inbox.selectedEntryID == nil,
+            try require(inbox.decide(byKey: "d") && inbox.selectedEntryID == nil
+                && applied.last.map { $0.allSatisfy { if case .acknowledge(_, .rotated) = $0 { true } else { false } } } == true,
                 "inbox-mark-rotated")
             checks.append("inbox-lists-unread-advance-and-undo")
+
+            // Several values decided together, and Focus going through them one at a time.
+            let batch = AppModel()
+            batch.loadSnapshot(try DemoInventory.snapshot())
+            batch.storageReady = true
+            var batches: [[InventoryDecisionChange]] = []
+            batch.onApply = { changes, _ in batches.append(changes) }
+            let list = batch.bucketEntries.map(\.id)
+            batch.select(list[0], gesture: .single)
+            batch.select(list[2], gesture: .range)
+            try require(batch.multiSelection == Array(list[0...2]) && batch.selectedEntryID == nil
+                && batch.selectedSummaries.map(\.id) == Array(list[0...2]), "selection-range")
+            batch.select(list[1], gesture: .toggle)
+            try require(batch.multiSelection == [list[0], list[2]], "selection-toggle")
+            try require(batch.decide(byKey: "n") && batches.last?.count == 2 && batch.multiSelection.isEmpty
+                && batch.selectedEntryID == list[1], "selection-decides-together")
+            batch.startFocus(.list)
+            try require(batch.focus?.ids == list && batch.selectedEntryID == list[0], "focus-starts-at-the-top")
+            try require(batch.decide(byKey: "r") && batch.focus?.current == list[1] && batch.selectedEntryID == list[1],
+                "focus-opens-the-next")
+            batch.moveFocus(by: -1)
+            try require(batch.focus?.current == list[0], "focus-goes-back")
+            batch.exitFocus()
+            try require(batch.focus == nil && batch.bucket == .toReview && batch.selectedEntryID == list[0], "focus-exit")
+            checks.append("selection-and-focus")
 
             // Switching appearance while the prompt is open reveals only the newer one, after a single prompt.
             let firstAppearance = try InventoryRevealSelection.occurrenceWithValue(in: intraEntry.ledger.snapshot,

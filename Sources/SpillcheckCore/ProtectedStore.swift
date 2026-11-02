@@ -2006,6 +2006,13 @@ public actor ProtectedStore {
         _ = try await mutateLedger { try $0.acknowledgeObsolete(fingerprint, as: acknowledgement, at: time) }
     }
 
+    /// Applies the changes in order as one write: all of them, or none if one fails.
+    public func apply(_ changes: [InventoryDecisionChange], at time: Date) async throws {
+        _ = try await mutateLedger { ledger in
+            for change in changes { try ledger.apply(change, at: time) }
+        }
+    }
+
     public func forgetObsoleteMarker(_ fingerprint: ValueFingerprint) async throws {
         _ = try await mutateLedger { try $0.forgetObsoleteMarker(fingerprint) }
     }

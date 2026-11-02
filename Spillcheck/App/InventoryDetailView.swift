@@ -690,20 +690,36 @@ struct SourceStyle {
 
 // MARK: - Decision
 
-/// One decision for the value, covering every appearance, including later ones. It sits in the
-/// window's bottom row, beside the sidebar footer, at the same height.
+/// One decision for the value, or for every selected value, covering all their appearances,
+/// including later ones. It sits in the window's bottom row, beside the sidebar footer, at the same
+/// height, and under the value in Focus.
 struct DecisionBar: View {
     let model: AppModel
-    let summary: EntrySummary
+    let summaries: [EntrySummary]
+    /// Shown under the copy in Focus, where the keys are the quickest way through.
+    var hint: String?
+
+    init(model: AppModel, summaries: [EntrySummary], hint: String? = nil) {
+        self.model = model
+        self.summaries = summaries
+        self.hint = hint
+    }
+
+    init(model: AppModel, summary: EntrySummary, hint: String? = nil) {
+        self.init(model: model, summaries: [summary], hint: hint)
+    }
 
     private typealias Copy = (title: String, body: String, quiet: Bool)
 
+    private var summary: EntrySummary { summaries[0] }
+    private var many: Bool { summaries.count > 1 }
     private var disabled: Bool { !model.storageReady || model.actionBusy || model.isDemo }
-    private var service: String { summary.kind.servicePhrase }
+    private var service: String { many ? "each service" : summary.kind.servicePhrase }
     /// Rotation can only be acknowledged for a value Spillcheck can recognize again.
-    private var recognizable: Bool { !summary.unlocated && summary.entry.fingerprint != nil }
+    private var recognizable: Bool { summaries.contains { !$0.unlocated && $0.entry.fingerprint != nil } }
 
     private var copy: Copy {
+        if many { return manyCopy }
         let entry = summary.entry
         if let acknowledgement = entry.acknowledgement {
             let date = DisplayTime.day(entry.acknowledgedAt ?? entry.observedAt)
@@ -731,6 +747,18 @@ struct DecisionBar: View {
             return ("Possible \(summary.kind.shortName), exact value not located", "Check its source above, then decide.", false)
         }
         return ("Does this need rotating?", "Your answer covers every appearance of this value, including later ones.", false)
+    }
+
+    private var manyCopy: Copy {
+        let count = summaries.count
+        switch summary.bucket {
+        case .toReview:
+            return ("Do these \(count) values need rotating?", "Your answer covers all their appearances, including later ones.", false)
+        case .toRotate:
+            return ("Change them at each service, then confirm", "Later appearances then show as obsolete, without alerts.", false)
+        case .done:
+            return ("\(count) values done", "Changing the decision sends values back to review. Rotated or revoked ones stay.", true)
+        }
     }
 
     var body: some View {
@@ -768,12 +796,17 @@ struct DecisionBar: View {
             Text(copy.body).font(.system(size: 12)).foregroundStyle(Palette.secondary).lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
                 .help(copy.body)
+            if let hint {
+                Text(hint).font(.system(size: 11)).foregroundStyle(Palette.quaternary).lineLimit(1).padding(.top, 2)
+            }
         }
     }
 
     @ViewBuilder
     private var actions: some View {
-        if summary.acknowledged {
+        if many {
+            manyActions
+        } else if summary.acknowledged {
             Button("Change decision…") { model.detailSheet = .forget }
                 .buttonStyle(OutlineButtonStyle(height: 30))
                 .disabled(disabled)
@@ -788,10 +821,7 @@ struct DecisionBar: View {
                         .help("Removes this entry. If the value appears again, it’s reviewed as new.")
                         .accessibilityIdentifier("inventory.forget-decision")
                 } else if decision == .needsRotation {
-                    Button("Back to review") { model.decide(summary, as: nil) }
-                        .buttonStyle(QuietButtonStyle(height: 30, horizontalPadding: 10))
-                        .disabled(disabled)
-                        .accessibilityIdentifier("inventory.change-decision")
+                    backToReview
                 } else {
                     Button("Change decision") { model.decide(summary, as: nil) }
                         .buttonStyle(OutlineButtonStyle(height: 30))
@@ -799,57 +829,95 @@ struct DecisionBar: View {
                         .help("Back to review")
                         .accessibilityIdentifier("inventory.change-decision")
                 }
-                if decision == .needsRotation, recognizable {
-                    Button("Mark revoked") { model.acknowledge(summary, as: .revoked) }
-                        .buttonStyle(OutlineButtonStyle(height: 30))
-                        .disabled(disabled)
-                        .help("Invalidated at \(service) without a replacement")
-                        .accessibilityIdentifier("inventory.mark-revoked")
-                    Button { model.acknowledge(summary, as: .rotated) } label: {
-                        HStack(spacing: 7) { KeyCap(key: "D", onAccent: true); Text("Mark rotated") }
-                    }
-                    .buttonStyle(FilledButtonStyle(height: 30))
-                    .disabled(disabled)
-                    .help("Replaced at \(service) and the old value invalidated. Spillcheck doesn’t check this.")
-                    .accessibilityIdentifier("inventory.mark-rotated")
-                }
+                if decision == .needsRotation, recognizable { rotationButtons }
             }
             .fixedSize()
         } else {
-            HStack(spacing: 8) {
-                decisionButton(.testOrDevelopment, "Test or dev only", key: "T")
-                decisionButton(.notSecret, "Not a secret", key: "N")
-                // A known format is almost always a real credential, so rotating is the likely answer.
-                decisionButton(.needsRotation, "Needs rotation", key: "R", primary: summary.strong)
-                Menu {
-                    Button("Real, but keep it") { model.decide(summary, as: .acceptedRisk) }
-                    if recognizable {
-                        Divider()
-                        Button("Already rotated") { model.acknowledge(summary, as: .rotated) }
-                        Button("Already revoked") { model.acknowledge(summary, as: .revoked) }
-                    }
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .font(.system(size: 13, weight: .semibold))
-                        .frame(width: 30, height: 30)
-                        .contentShape(Rectangle())
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .tint(Palette.ink2)
-                .fixedSize()
-                .disabled(disabled)
-                .help("Other decisions")
-                .accessibilityLabel("Other decisions")
-                .accessibilityIdentifier("inventory.more-decisions")
-            }
-            .fixedSize()
+            reviewButtons
         }
     }
 
     @ViewBuilder
+    private var manyActions: some View {
+        switch summary.bucket {
+        case .toReview: reviewButtons
+        case .toRotate:
+            HStack(spacing: 8) {
+                backToReview
+                if recognizable { rotationButtons }
+            }
+            .fixedSize()
+        case .done:
+            let decided = summaries.filter { !$0.acknowledged && $0.decision != nil }
+            if !decided.isEmpty {
+                Button(decided.count == summaries.count ? "Back to review" : "Send \(decided.count) back to review") {
+                    model.decide(decided, as: nil)
+                }
+                .buttonStyle(OutlineButtonStyle(height: 30))
+                .disabled(disabled)
+                .accessibilityIdentifier("inventory.change-decision")
+            }
+        }
+    }
+
+    private var backToReview: some View {
+        Button("Back to review") { model.decide(summaries, as: nil) }
+            .buttonStyle(QuietButtonStyle(height: 30, horizontalPadding: 10))
+            .disabled(disabled)
+            .accessibilityIdentifier("inventory.change-decision")
+    }
+
+    private var rotationButtons: some View {
+        HStack(spacing: 8) {
+            Button("Mark revoked") { model.acknowledge(summaries, as: .revoked) }
+                .buttonStyle(OutlineButtonStyle(height: 30))
+                .disabled(disabled)
+                .help("Invalidated at \(service) without a replacement")
+                .accessibilityIdentifier("inventory.mark-revoked")
+            Button { model.acknowledge(summaries, as: .rotated) } label: {
+                HStack(spacing: 7) { KeyCap(key: "D", onAccent: true); Text("Mark rotated") }
+            }
+            .buttonStyle(FilledButtonStyle(height: 30))
+            .disabled(disabled)
+            .help("Replaced at \(service) and the old value invalidated. Spillcheck doesn’t check this.")
+            .accessibilityIdentifier("inventory.mark-rotated")
+        }
+    }
+
+    private var reviewButtons: some View {
+        HStack(spacing: 8) {
+            decisionButton(.testOrDevelopment, "Test or dev only", key: "T")
+            decisionButton(.notSecret, "Not a secret", key: "N")
+            // A known format is almost always a real credential, so rotating is the likely answer.
+            decisionButton(.needsRotation, "Needs rotation", key: "R", primary: summaries.contains(where: \.strong))
+            Menu {
+                Button("Real, but keep it") { model.decide(summaries, as: .acceptedRisk) }
+                if recognizable {
+                    Divider()
+                    Button("Already rotated") { model.acknowledge(summaries, as: .rotated) }
+                    Button("Already revoked") { model.acknowledge(summaries, as: .revoked) }
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 13, weight: .semibold))
+                    .frame(width: 30, height: 30)
+                    .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .tint(Palette.ink2)
+            .fixedSize()
+            .disabled(disabled)
+            .help("Other decisions")
+            .accessibilityLabel("Other decisions")
+            .accessibilityIdentifier("inventory.more-decisions")
+        }
+        .fixedSize()
+    }
+
+    @ViewBuilder
     private func decisionButton(_ decision: ValueDecision, _ title: String, key: String, primary: Bool = false) -> some View {
-        let button = Button { model.decide(summary, as: decision) } label: {
+        let button = Button { model.decide(summaries, as: decision) } label: {
             HStack(spacing: 7) { KeyCap(key: key, onAccent: primary); Text(title) }
         }
         if primary {

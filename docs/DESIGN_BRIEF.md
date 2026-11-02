@@ -123,7 +123,7 @@ The user should be able to answer these questions in order:
 4. What retained value and context can I inspect after authentication?
 5. What decision, source, acknowledgement, or removal action is appropriate here?
 
-Keep the decision with the value, since it covers every appearance, and source actions with the appearance they open. Explain evidence in plain language, with rule identifiers available as secondary detail. Retained excerpts can be clipped and must be identified as excerpts rather than complete conversations.
+Keep the decision with the value, since it covers every appearance, and source actions with the appearance they open. A large backlog needs two speeds: the inbox for browsing, and Focus for going through values one at a time with the keyboard. Values that obviously share an answer, such as a set of test fixtures, can be selected and decided together. Explain evidence in plain language, with rule identifiers available as secondary detail. Retained excerpts can be clipped and must be identified as excerpts rather than complete conversations.
 
 ### Monitoring, history, and settings
 

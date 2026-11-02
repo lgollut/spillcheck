@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import SpillcheckCore
 
@@ -11,12 +12,29 @@ struct InventoryView: View {
     private let sidebarWidth: CGFloat = 320
 
     var body: some View {
-        let barSummary = contentKind == .detail ? model.selectedSummary : nil
-        VStack(spacing: 0) {
+        if model.focus != nil {
+            FocusView(model: model)
+                .ignoresSafeArea()
+                .frame(minWidth: 900, minHeight: 560)
+                .tint(Palette.link)
+                .focusVisible()
+                .accessibilityIdentifier("inventory.window")
+        } else {
+            inbox
+        }
+    }
+
+    private var inbox: some View {
+        let barSummaries: [EntrySummary] = switch contentKind {
+        case .detail: model.selectedSummary.map { [$0] } ?? []
+        case .selection: model.selectedSummaries
+        default: []
+        }
+        return VStack(spacing: 0) {
             HStack(spacing: 0) {
                 VStack(spacing: 0) {
                     SidebarView(model: model)
-                    if barSummary == nil, !isSettings {
+                    if barSummaries.isEmpty, !isSettings {
                         SidebarFooter(model: model)
                             .frame(height: 52)
                             .overlay(alignment: .top) { Rectangle().fill(Palette.separator).frame(height: 1) }
@@ -44,7 +62,7 @@ struct InventoryView: View {
                 }
                 .animation(.easeOut(duration: 0.16), value: model.toast)
             }
-            if let barSummary {
+            if !barSummaries.isEmpty {
                 // The sidebar footer and the decision bar share one row: same height, same top edge.
                 HStack(spacing: 0) {
                     SidebarFooter(model: model)
@@ -52,7 +70,7 @@ struct InventoryView: View {
                         .frame(minHeight: 52, maxHeight: .infinity)
                         .background(Palette.sidebar)
                     Rectangle().fill(Palette.separator).frame(width: 1)
-                    DecisionBar(model: model, summary: barSummary)
+                    DecisionBar(model: model, summaries: barSummaries)
                         .frame(maxHeight: .infinity)
                 }
                 .fixedSize(horizontal: false, vertical: true)
@@ -84,7 +102,7 @@ struct InventoryView: View {
     private var isSettings: Bool { if case .settings = model.route { true } else { false } }
 
     private enum ContentKind: Hashable {
-        case empty(EmptyInventoryState.Kind), coverage, detail, noSelection, settings(SettingsPage)
+        case empty(EmptyInventoryState.Kind), coverage, detail, selection, noSelection, settings(SettingsPage)
     }
 
     /// The screen shown beside the sidebar. With nothing in the inventory, coverage is the first screen.
@@ -92,6 +110,7 @@ struct InventoryView: View {
         switch model.route {
         case .inventory:
             if let empty = EmptyInventoryState(model: model) { return empty.kind == .nothingFound ? .coverage : .empty(empty.kind) }
+            if model.multiSelection.count > 1 { return .selection }
             return model.selectedSummary == nil ? .noSelection : .detail
         case .coverage: return .coverage
         case .settings(let page): return .settings(page)
@@ -107,6 +126,8 @@ struct InventoryView: View {
             CoverageView(model: model)
         case .detail:
             if let summary = model.selectedSummary { InventoryDetailView(model: model, summary: summary).id(summary.id) }
+        case .selection:
+            SelectionDetail(model: model)
         case .noSelection:
             BucketEmptyState(model: model)
         case .settings(let page):
@@ -221,18 +242,34 @@ private struct SidebarView: View {
         case .done: "done"
         }
         return HStack(spacing: 4) {
-            Text("\(entries.count.formatted()) \(noun)")
-            if unread > 0 {
-                Text("·").foregroundStyle(Palette.faint)
-                Text("\(unread.formatted()) unread").foregroundStyle(Palette.link)
+            HStack(spacing: 4) {
+                Text("\(entries.count.formatted()) \(noun)")
+                if unread > 0 {
+                    Text("·").foregroundStyle(Palette.faint)
+                    Text("\(unread.formatted()) unread").foregroundStyle(Palette.link)
+                }
             }
+            .accessibilityElement(children: .combine)
             Spacer()
+            if model.bucket != .done, !entries.isEmpty {
+                Button { model.startFocus(model.multiSelection.count > 1 ? .selection : .list) } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "viewfinder").font(.system(size: 10.5, weight: .semibold))
+                        Text("Focus")
+                        KeyCap(key: "F")
+                    }
+                    .font(.system(size: 11.5, weight: .medium))
+                }
+                .buttonStyle(QuietButtonStyle(foreground: Palette.secondary, height: 22, horizontalPadding: 6))
+                .help("Go through them one at a time, from the top")
+                .accessibilityIdentifier("inventory.focus")
+            }
         }
         .font(.system(size: 11.5, weight: .medium))
         .foregroundStyle(Palette.tertiary)
-        .padding(.horizontal, 20)
-        .padding(.bottom, 6)
-        .accessibilityElement(children: .combine)
+        .padding(.leading, 20).padding(.trailing, 12)
+        .frame(height: 24)
+        .padding(.bottom, 4)
     }
 
     private var valueList: some View {
@@ -262,15 +299,15 @@ private struct SidebarView: View {
         .focusEffectDisabled()
         .onKeyPress(.downArrow) { model.moveSelection(by: 1); return .handled }
         .onKeyPress(.upArrow) { model.moveSelection(by: -1); return .handled }
-        .onKeyPress(characters: CharacterSet(charactersIn: "jkntrdz"), phases: .down) { press in handle(press) }
+        .onKeyPress(characters: CharacterSet(charactersIn: "jkntrdzf"), phases: .down) { press in handle(press) }
         .onAppear { listFocused = true }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Values")
         .accessibilityIdentifier("inventory.list")
     }
 
-    /// J and K move like the arrows; T, N and R decide a value to review; D marks one to rotate as
-    /// rotated; Command-Z takes the last decision back.
+    /// J and K move like the arrows; T, N and R decide what's selected to review; D marks it rotated;
+    /// F goes through the list, or the selection, in Focus; Command-Z takes the last decision back.
     private func handle(_ press: KeyPress) -> KeyPress.Result {
         let key = press.characters.lowercased()
         if key == "z" {
@@ -282,6 +319,7 @@ private struct SidebarView: View {
         switch key {
         case "j": model.moveSelection(by: 1)
         case "k": model.moveSelection(by: -1)
+        case "f": model.startFocus(model.multiSelection.count > 1 ? .selection : .list)
         default: return model.decide(byKey: key) ? .handled : .ignored
         }
         return .handled
@@ -341,7 +379,7 @@ private struct InboxRow: View {
     let summary: EntrySummary
     let unread: Bool
 
-    private var selected: Bool { model.selectedEntryID == summary.id }
+    private var selected: Bool { model.isSelected(summary.id) }
     private var appearances: String {
         summary.occurrences.isEmpty
             ? (summary.entry.kind == .rememberedDecision ? "Decision only" : "Marker only")
@@ -359,7 +397,11 @@ private struct InboxRow: View {
     }
 
     var body: some View {
-        Button { model.selectEntry(summary.id) } label: {
+        Button {
+            // Command adds or removes a value, Shift selects a range, like Finder.
+            let flags = NSEvent.modifierFlags
+            model.select(summary.id, gesture: flags.contains(.command) ? .toggle : flags.contains(.shift) ? .range : .single)
+        } label: {
             HStack(spacing: 10) {
                 ValueTile(text: summary.kind.monogram, colors: TileColors.forEntry(summary.entry))
                 VStack(alignment: .leading, spacing: 3) {
@@ -440,6 +482,61 @@ private struct BucketEmptyState: View {
     }
 }
 
+/// Unlock when locked; Hide or Show values and Lock when unlocked.
+struct ViewingLockControls: View {
+    let model: AppModel
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if model.viewingUnlocked {
+                Button { model.valuesHidden ? model.showValues() : model.hideValues() } label: {
+                    Image(systemName: model.valuesHidden ? "eye" : "eye.slash")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Palette.secondary)
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
+                        .hoverFill(hover: Palette.shade.opacity(0.06))
+                }
+                .buttonStyle(.plain)
+                .help(model.valuesHidden ? "Show values. Unlocked, so no prompt." : "Hide values. The app stays unlocked.")
+                .accessibilityLabel(model.valuesHidden ? "Show values" : "Hide values")
+                .accessibilityIdentifier("inventory.toggle-values")
+                Button { model.lockNow() } label: {
+                    Label("Lock", systemImage: "lock.open.fill")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Palette.onAccent)
+                        .padding(.horizontal, 11)
+                        .frame(height: 28)
+                        .background(Palette.accent, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .help("Unlocked. Every value shows with its context until you lock, after 5 min idle, when the window closes, or when the Mac sleeps.")
+                .accessibilityLabel("Unlocked. Lock now")
+                .accessibilityIdentifier("inventory.lock")
+            } else {
+                Button { model.onUnlock?() } label: {
+                    // Collapses to the lock alone when the coverage word needs the room.
+                    ViewThatFits(in: .horizontal) {
+                        Label("Unlock…", systemImage: "lock.fill").labelStyle(TightLabelStyle()).fixedSize()
+                        Image(systemName: "lock.fill").imageScale(.small)
+                    }
+                    .font(.system(size: 12))
+                    .foregroundStyle(Palette.secondary)
+                    .padding(.horizontal, 8)
+                    .frame(height: 28)
+                    .contentShape(Rectangle())
+                    .hoverFill(hover: Palette.shade.opacity(0.06))
+                }
+                .buttonStyle(.plain)
+                .disabled(model.viewingBusy || model.isDemo || !model.storageReady)
+                .help("Values, excerpts, titles, and paths stay hidden. Unlock once with Touch ID or your password to show every value with its context.")
+                .accessibilityLabel("Values locked. Unlock")
+                .accessibilityIdentifier("inventory.unlock")
+            }
+        }
+    }
+}
+
 /// Coverage, settings, and the viewing lock. It shares the window's bottom row with the decision bar.
 private struct SidebarFooter: View {
     let model: AppModel
@@ -486,51 +583,7 @@ private struct SidebarFooter: View {
             .accessibilityIdentifier("inventory.settings")
 
             Spacer(minLength: 0)
-            if model.viewingUnlocked {
-                Button { model.valuesHidden ? model.showValues() : model.hideValues() } label: {
-                    Image(systemName: model.valuesHidden ? "eye" : "eye.slash")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(Palette.secondary)
-                        .frame(width: 28, height: 28)
-                        .contentShape(Rectangle())
-                        .hoverFill(hover: Palette.shade.opacity(0.06))
-                }
-                .buttonStyle(.plain)
-                .help(model.valuesHidden ? "Show values. Unlocked, so no prompt." : "Hide values. The app stays unlocked.")
-                .accessibilityLabel(model.valuesHidden ? "Show values" : "Hide values")
-                .accessibilityIdentifier("inventory.toggle-values")
-                Button { model.lockNow() } label: {
-                    Label("Lock", systemImage: "lock.open.fill")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(Palette.onAccent)
-                        .padding(.horizontal, 11)
-                        .frame(height: 28)
-                        .background(Palette.accent, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                }
-                .buttonStyle(.plain)
-                .help("Unlocked. Every value shows with its context until you lock, after 5 min idle, when the window closes, or when the Mac sleeps.")
-                .accessibilityLabel("Unlocked. Lock now")
-                .accessibilityIdentifier("inventory.lock")
-            } else {
-                Button { model.onUnlock?() } label: {
-                    // Collapses to the lock alone when the coverage word needs the room.
-                    ViewThatFits(in: .horizontal) {
-                        Label("Unlock…", systemImage: "lock.fill").labelStyle(TightLabelStyle()).fixedSize()
-                        Image(systemName: "lock.fill").imageScale(.small)
-                    }
-                    .font(.system(size: 12))
-                    .foregroundStyle(Palette.secondary)
-                    .padding(.horizontal, 8)
-                    .frame(height: 28)
-                    .contentShape(Rectangle())
-                    .hoverFill(hover: Palette.shade.opacity(0.06))
-                }
-                .buttonStyle(.plain)
-                .disabled(model.viewingBusy || model.isDemo || !model.storageReady)
-                .help("Values, excerpts, titles, and paths stay hidden. Unlock once with Touch ID or your password to show every value with its context.")
-                .accessibilityLabel("Values locked. Unlock")
-                .accessibilityIdentifier("inventory.unlock")
-            }
+            ViewingLockControls(model: model)
         }
         .padding(.horizontal, 10)
     }
@@ -672,5 +725,226 @@ struct StartupDiagnosticsButton: View {
             .disabled(!model.canPerformCoverageAction(.exportDiagnostics))
             .help(DiagnosticsExport.help)
             .accessibilityIdentifier("storage.export-diagnostics")
+    }
+}
+
+// MARK: - Several selected values
+
+/// Two or more values selected with Command or Shift. The decision bar below applies to all of them.
+private struct SelectionDetail: View {
+    let model: AppModel
+
+    var body: some View {
+        let summaries = model.selectedSummaries
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("\(summaries.count) values selected")
+                        .font(.system(size: 19, weight: .semibold)).tracking(-0.2)
+                        .accessibilityAddTraits(.isHeader)
+                    Text(model.bucket == .done ? "Change their decisions together below."
+                         : "Decide them together below, or go through them one at a time.")
+                        .font(.system(size: 13)).foregroundStyle(Palette.secondary)
+                }
+                if model.bucket != .done {
+                    Button { model.startFocus(.selection) } label: {
+                        Label("Go through one by one", systemImage: "viewfinder").labelStyle(TightLabelStyle())
+                    }
+                    .buttonStyle(OutlineButtonStyle(height: 30))
+                    .accessibilityIdentifier("inventory.focus-selection")
+                }
+                VStack(spacing: 0) {
+                    ForEach(Array(summaries.enumerated()), id: \.element.id) { index, summary in
+                        HStack(spacing: 10) {
+                            ValueTile(text: summary.kind.monogram, colors: TileColors.forEntry(summary.entry), size: 24)
+                            Text(summary.kind.shortName).font(.system(size: 13))
+                            Text(summary.label).font(Palette.mono).foregroundStyle(Palette.quaternary)
+                            if summary.strong, summary.bucket == .toReview {
+                                Text("Known format").font(.system(size: 11.5)).foregroundStyle(Palette.amberText)
+                            }
+                            Spacer(minLength: 8)
+                            Text("\(summary.occurrences.count.formatted())×").font(.system(size: 12))
+                                .foregroundStyle(Palette.tertiary).monospacedDigit()
+                            Text(DisplayTime.short(summary.latestActivity)).font(.system(size: 12))
+                                .foregroundStyle(Palette.quaternary).monospacedDigit().frame(minWidth: 52, alignment: .trailing)
+                        }
+                        .padding(.horizontal, 14).frame(height: 40)
+                        if index < summaries.count - 1 { Rectangle().fill(Palette.hairline).frame(height: 1) }
+                    }
+                }
+                .background(Palette.surface)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .card(ring: 0.07)
+            }
+            .padding(.top, 26).padding(.horizontal, 32).padding(.bottom, 32)
+        }
+        .accessibilityIdentifier("inventory.selection")
+    }
+}
+
+// MARK: - Focus
+
+/// One value at a time, started from the Inbox. The session's set is fixed when it starts; it ends
+/// with a summary, and a review session can continue with the values it sent to To rotate.
+private struct FocusView: View {
+    let model: AppModel
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        if let session = model.focus {
+            let pending = model.pending(in: session)
+            VStack(spacing: 0) {
+                header(session, done: session.ids.count - pending.count)
+                Rectangle().fill(Palette.separator).frame(height: 1)
+                if session.current != nil, let summary = model.selectedSummary {
+                    InventoryDetailView(model: model, summary: summary)
+                        .id(summary.id)
+                        .frame(maxWidth: 900)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    DecisionBar(model: model, summary: summary, hint: hint(for: summary))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .overlay(alignment: .top) { Rectangle().fill(Color(hex: 0xe3e8e5, dark: 0x2e312f)).frame(height: 1) }
+                } else {
+                    FocusSummary(model: model, session: session)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+            .background(Palette.background)
+            .overlay(alignment: .bottom) {
+                if let toast = model.toast {
+                    ToastView(message: toast, undo: model.toastOffersUndo ? { model.undoLastDecision() } : nil)
+                        .padding(.horizontal, 24)
+                        .padding(.bottom, session.current == nil ? 24 : 110)
+                        .transition(.opacity)
+                        .accessibilityIdentifier("inventory.toast")
+                }
+            }
+            .animation(.easeOut(duration: 0.16), value: model.toast)
+            .focusable()
+            .focused($focused)
+            .focusEffectDisabled()
+            .onKeyPress(.escape) { model.exitFocus(); return .handled }
+            .onKeyPress(.upArrow) { model.moveFocus(by: -1); return .handled }
+            .onKeyPress(.downArrow) { model.moveFocus(by: 1); return .handled }
+            .onKeyPress(characters: CharacterSet(charactersIn: "jkntrdzf"), phases: .down) { press in handle(press) }
+            .onAppear { focused = true }
+            .accessibilityIdentifier("inventory.focus-session")
+        }
+    }
+
+    private func header(_ session: FocusSession, done: Int) -> some View {
+        HStack(spacing: 12) {
+            // Room for the window's traffic lights.
+            Color.clear.frame(width: 62, height: 12)
+            Button { model.exitFocus() } label: {
+                Label("Inbox", systemImage: "chevron.left").labelStyle(TightLabelStyle())
+                    .font(.system(size: 12.5, weight: .medium))
+            }
+            .buttonStyle(QuietButtonStyle(height: 26))
+            .help("Back to the Inbox (Esc)")
+            .accessibilityIdentifier("inventory.focus.exit")
+            Text(session.title).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+            Spacer(minLength: 12)
+            if session.current != nil {
+                HStack(spacing: 2) {
+                    Button { model.moveFocus(by: -1) } label: { Image(systemName: "chevron.up").frame(width: 24, height: 24) }
+                        .buttonStyle(QuietButtonStyle(height: 26, horizontalPadding: 2))
+                        .disabled(session.ids.first == session.current)
+                        .help("Previous (↑)")
+                        .accessibilityLabel("Previous value")
+                    Button { model.moveFocus(by: 1) } label: { Image(systemName: "chevron.down").frame(width: 24, height: 24) }
+                        .buttonStyle(QuietButtonStyle(height: 26, horizontalPadding: 2))
+                        .disabled(session.ids.last == session.current)
+                        .help("Next (↓)")
+                        .accessibilityLabel("Next value")
+                }
+            }
+            HStack(spacing: 8) {
+                ProgressView(value: Double(done), total: Double(max(1, session.ids.count)))
+                    .progressViewStyle(.linear)
+                    .frame(width: 110)
+                    .tint(Palette.green)
+                Text("\(done) of \(session.ids.count) done").font(.system(size: 11.5)).foregroundStyle(Palette.tertiary)
+                    .monospacedDigit()
+            }
+            .accessibilityElement(children: .combine)
+            ViewingLockControls(model: model)
+        }
+        .padding(.horizontal, 16)
+        .frame(height: windowHeaderHeight)
+        .background(WindowDragArea())
+    }
+
+    private func hint(for summary: EntrySummary) -> String {
+        let keys = switch summary.bucket {
+        case .toReview: "T, N or R to decide · "
+        case .toRotate: "D once rotated · "
+        case .done: ""
+        }
+        return keys + "↑ ↓ previous and next · Esc back to the Inbox · ⌘Z undo"
+    }
+
+    private func handle(_ press: KeyPress) -> KeyPress.Result {
+        let key = press.characters.lowercased()
+        if key == "z" {
+            guard press.modifiers == .command, model.undo != nil else { return .ignored }
+            model.undoLastDecision()
+            return .handled
+        }
+        guard press.modifiers.isEmpty else { return .ignored }
+        switch key {
+        case "j": model.moveFocus(by: 1)
+        case "k": model.moveFocus(by: -1)
+        case "f": model.exitFocus()
+        default: return model.decide(byKey: key) ? .handled : .ignored
+        }
+        return .handled
+    }
+}
+
+/// The end of a session: what became of its values, and where to go next.
+private struct FocusSummary: View {
+    let model: AppModel
+    let session: FocusSession
+
+    var body: some View {
+        let outcomes = model.outcomes(of: session)
+        let reviewing = session.bucket == .toReview
+        let toRotate = reviewing ? model.summaries.filter { session.ids.contains($0.id) && $0.bucket == .toRotate }.count : 0
+        VStack(spacing: 12) {
+            Image(systemName: "checkmark")
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(Palette.ink2)
+                .frame(width: 56, height: 56)
+                .background(Palette.chip, in: Circle())
+                .accessibilityHidden(true)
+            Text("\(plural(session.ids.count, "value")) \(reviewing ? "reviewed" : "handled")")
+                .font(.system(size: 17, weight: .semibold)).padding(.top, 4)
+            FlowChips {
+                ForEach(outcomes, id: \.label) { outcome in
+                    Text("\(outcome.count) \(outcome.label)").chip(background: Palette.chip, foreground: Palette.ink2)
+                }
+            }
+            Text(reviewing
+                 ? "These decisions cover later appearances too." + (toRotate > 0 ? " What needs rotation waits in To rotate." : "")
+                 : "Later appearances of rotated or revoked values show as obsolete, without alerts.")
+                .font(.system(size: 13)).lineSpacing(3).foregroundStyle(Palette.secondary)
+                .multilineTextAlignment(.center)
+            HStack(spacing: 8) {
+                Button("Back to Inbox") { model.exitFocus() }
+                    .buttonStyle(OutlineButtonStyle(height: 30))
+                    .keyboardShortcut(.cancelAction)
+                if toRotate > 0 {
+                    Button(toRotate == 1 ? "Continue with the one to rotate" : "Continue with the \(toRotate) to rotate") {
+                        model.startFocus(.rotationAfterReview)
+                    }
+                    .buttonStyle(FilledButtonStyle(height: 30))
+                    .accessibilityIdentifier("inventory.focus.continue-rotation")
+                }
+            }
+            .padding(.top, 6)
+        }
+        .frame(maxWidth: 440)
+        .padding(40)
     }
 }

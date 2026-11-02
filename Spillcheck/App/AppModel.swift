@@ -296,12 +296,14 @@ struct ReadMarks {
     }
 }
 
-/// The last decision, which the toast's Undo and ⌘Z take back.
-enum InventoryUndo: Equatable {
-    case decision(ValueFingerprint, previous: ValueDecision?)
-    case unlocatedDecision(UUID, previous: ValueDecision?)
-    /// Marked rotated or revoked; undoing forgets the marker and restores the decision.
-    case acknowledgement(ValueFingerprint, previous: ValueDecision?)
+/// Going through values one at a time. The set is fixed when the session starts, so new detections
+/// never reshuffle it; `current` is nil once every value in it has left its list.
+struct FocusSession: Equatable {
+    enum Start { case list, selection, rotationAfterReview }
+    let bucket: InventoryBucket
+    let ids: [InventoryEntryID]
+    let title: String
+    var current: InventoryEntryID?
 }
 
 /// A host-specific presentation or an aggregate for a profile whose transport
@@ -521,6 +523,7 @@ final class AppModel {
     var selectedEntryID: InventoryEntryID? {
         didSet {
             guard oldValue != selectedEntryID else { return }
+            if selectedEntryID != nil, !multiSelection.isEmpty { multiSelection = [] }
             detailSheet = nil
             selectedOccurrenceID = selectedEntryID.flatMap { defaultOccurrence(for: $0) }
             clearRevealedContent()
@@ -557,7 +560,12 @@ final class AppModel {
     /// Unread entries sort first. The set changes when the list reloads, not when an entry is read,
     /// so opening one clears its dot without moving its row.
     @ObservationIgnored private var pinnedUnread: Set<InventoryEntryID> = []
-    var undo: InventoryUndo?
+    /// The changes that take back the last decision, for the toast's Undo and Command-Z.
+    var undo: [InventoryDecisionChange]?
+    /// More than one entry selected with Command or Shift; decisions apply to all of them.
+    private(set) var multiSelection: [InventoryEntryID] = []
+    @ObservationIgnored private var selectionAnchor: InventoryEntryID?
+    private(set) var focus: FocusSession?
     /// The toast on screen reports the decision `undo` takes back.
     var toastOffersUndo = false
     /// The value action sheet belongs to the selected value and closes when the selection changes.
@@ -576,10 +584,8 @@ final class AppModel {
     @ObservationIgnored var onHide: (() -> Void)?
     @ObservationIgnored var onUnlock: (() -> Void)?
     @ObservationIgnored var onLock: (() -> Void)?
-    @ObservationIgnored var onDecide: ((ValueFingerprint, ValueDecision?) -> Void)?
-    @ObservationIgnored var onDecideUnlocated: ((UUID, ValueDecision?) -> Void)?
-    @ObservationIgnored var onUndo: ((InventoryUndo) -> Void)?
-    @ObservationIgnored var onAcknowledge: ((ValueFingerprint, ObsoleteAcknowledgement) -> Void)?
+    /// Applies decisions as one write. `undoing` is true when the changes take back the last ones.
+    @ObservationIgnored var onApply: (([InventoryDecisionChange], _ undoing: Bool) -> Void)?
     @ObservationIgnored var onRemoveContent: ((ValueFingerprint) -> Void)?
     @ObservationIgnored var onForgetMarker: ((ValueFingerprint) -> Void)?
     @ObservationIgnored var onOpenSource: ((UUID) -> Void)?
@@ -696,6 +702,7 @@ final class AppModel {
         if route != .inventory { route = .inventory }
         guard self.bucket != bucket else { return }
         self.bucket = bucket
+        multiSelection = []
         refreshPinnedUnread()
         selectedEntryID = bucketEntries.first?.id
     }
@@ -717,38 +724,63 @@ final class AppModel {
         pinnedUnread = Set(summaries.filter(isUnread).map(\.id))
     }
 
-    /// Records the decision. When the value leaves the open list, the next one opens, like an inbox.
-    func decide(_ summary: EntrySummary, as decision: ValueDecision?) {
-        let leaves = InventoryBucket(decision: decision) != summary.bucket
-        let next = leaves ? nextEntry(after: summary.id) : nil
-        if case .unlocated(let resultID) = summary.id {
-            onDecideUnlocated?(resultID, decision)
-        } else if let fingerprint = summary.entry.fingerprint {
-            onDecide?(fingerprint, decision)
-        } else {
-            return
+    /// Records one decision for every given value. Values that leave their list make way for the
+    /// next one, like an inbox; in Focus, the next value still to do opens.
+    func decide(_ summaries: [EntrySummary], as decision: ValueDecision?) {
+        let changes = summaries.compactMap { summary -> InventoryDecisionChange? in
+            if case .unlocated(let resultID) = summary.id { return .decideUnlocated(resultID, decision) }
+            return summary.entry.fingerprint.map { .decide($0, decision) }
         }
-        if leaves, selectedEntryID == summary.id { selectedEntryID = next }
+        let leaving = summaries.filter { InventoryBucket(decision: decision) != $0.bucket }.map(\.id)
+        apply(changes, leaving: leaving)
     }
 
-    /// Records that the value was rotated or revoked at its service. It moves to Done.
+    func decide(_ summary: EntrySummary, as decision: ValueDecision?) { decide([summary], as: decision) }
+
+    /// Records that values were rotated or revoked at their service. They move to Done.
+    func acknowledge(_ summaries: [EntrySummary], as acknowledgement: ObsoleteAcknowledgement) {
+        let eligible = summaries.filter { !$0.acknowledged && !$0.unlocated && $0.entry.fingerprint != nil }
+        apply(eligible.compactMap { $0.entry.fingerprint.map { .acknowledge($0, acknowledgement) } },
+              leaving: eligible.filter { $0.bucket != .done }.map(\.id))
+    }
+
     func acknowledge(_ summary: EntrySummary, as acknowledgement: ObsoleteAcknowledgement) {
-        guard let fingerprint = summary.entry.fingerprint, !summary.acknowledged else { return }
-        let next = summary.bucket == .done ? nil : nextEntry(after: summary.id)
-        onAcknowledge?(fingerprint, acknowledgement)
-        if summary.bucket != .done, selectedEntryID == summary.id { selectedEntryID = next }
+        acknowledge([summary], as: acknowledgement)
     }
 
-    /// T, N and R decide a value to review; D marks a value to rotate as rotated.
+    private func apply(_ changes: [InventoryDecisionChange], leaving: [InventoryEntryID]) {
+        guard !changes.isEmpty else { return }
+        let leaving = Set(leaving)
+        let next = nextEntry(leaving: leaving)
+        onApply?(changes, false)
+        guard !leaving.isEmpty else { return }
+        if focus != nil {
+            advanceFocus(leaving: leaving)
+        } else if !multiSelection.isEmpty || selectedEntryID.map(leaving.contains) == true {
+            multiSelection = []
+            selectedEntryID = next
+        }
+    }
+
+    /// The entry after the first one leaving the open list, or the closest one before it.
+    private func nextEntry(leaving: Set<InventoryEntryID>) -> InventoryEntryID? {
+        let list = bucketEntries.map(\.id)
+        guard let first = list.firstIndex(where: leaving.contains) else { return nil }
+        let rest = list.enumerated().filter { !leaving.contains($0.element) }
+        return (rest.first { $0.offset > first } ?? rest.last { $0.offset < first })?.element
+    }
+
+    /// T, N and R decide what's selected to review; D marks what's selected to rotate as rotated.
     func decide(byKey key: String) -> Bool {
-        guard let summary = selectedSummary, route == .inventory, storageReady, !isDemo, !actionBusy else { return false }
-        switch (summary.bucket, key) {
-        case (.toReview, "t"): decide(summary, as: .testOrDevelopment)
-        case (.toReview, "n"): decide(summary, as: .notSecret)
-        case (.toReview, "r"): decide(summary, as: .needsRotation)
+        let targets = multiSelection.isEmpty ? (selectedSummary.map { [$0] } ?? []) : selectedSummaries
+        guard let bucket = targets.first?.bucket, route == .inventory, storageReady, !isDemo, !actionBusy else { return false }
+        switch (bucket, key) {
+        case (.toReview, "t"): decide(targets, as: .testOrDevelopment)
+        case (.toReview, "n"): decide(targets, as: .notSecret)
+        case (.toReview, "r"): decide(targets, as: .needsRotation)
         case (.toRotate, "d"):
-            guard !summary.unlocated, summary.entry.fingerprint != nil else { return false }
-            acknowledge(summary, as: .rotated)
+            guard targets.contains(where: { !$0.unlocated && $0.entry.fingerprint != nil }) else { return false }
+            acknowledge(targets, as: .rotated)
         default: return false
         }
         return true
@@ -760,28 +792,156 @@ final class AppModel {
         self.undo = nil
         toastOffersUndo = false
         toast = nil
-        onUndo?(undo)
+        onApply?(undo, true)
     }
 
-    /// After an undo, the value is selected again in the list it returned to.
-    func reselect(_ undo: InventoryUndo) {
-        let summary = summaries.first { summary in
-            switch undo {
-            case .decision(let fingerprint, _), .acknowledgement(let fingerprint, _): summary.entry.fingerprint == fingerprint
-            case .unlocatedDecision(let resultID, _): summary.id == .unlocated(resultID)
+    /// After an undo, the value is selected again: in its session during Focus, otherwise in the list
+    /// it returned to.
+    func reselect(_ changes: [InventoryDecisionChange]) {
+        let id = changes.lazy.compactMap { change -> InventoryEntryID? in
+            switch change {
+            case .decide(let fingerprint, _), .acknowledge(let fingerprint, _), .forgetMarker(let fingerprint):
+                self.summaries.first { $0.entry.fingerprint == fingerprint }?.id
+            case .decideUnlocated(let resultID, _): .unlocated(resultID)
             }
+        }.first
+        guard let id, let summary = summaries.first(where: { $0.id == id }) else { return }
+        if var session = focus {
+            guard session.ids.contains(id) else { return }
+            session.current = id
+            focus = session
+            selectedEntryID = id
+            return
         }
-        guard let summary else { return }
         if route != .inventory { route = .inventory }
         bucket = summary.bucket
+        multiSelection = []
         refreshPinnedUnread()
         selectedEntryID = summary.id
     }
 
-    private func nextEntry(after id: InventoryEntryID) -> InventoryEntryID? {
-        let list = bucketEntries
-        guard let index = list.firstIndex(where: { $0.id == id }) else { return nil }
-        return (list.dropFirst(index + 1).first ?? list.prefix(index).last)?.id
+    // MARK: Selection
+
+    enum SelectionGesture { case single, toggle, range }
+
+    /// The selected entries, in list order. More than one only after Command- or Shift-clicking.
+    var selectedSummaries: [EntrySummary] {
+        let ids = Set(multiSelection)
+        return bucketEntries.filter { ids.contains($0.id) }
+    }
+
+    func isSelected(_ id: InventoryEntryID) -> Bool {
+        multiSelection.isEmpty ? selectedEntryID == id : multiSelection.contains(id)
+    }
+
+    /// A click selects one entry; with Command it adds or removes one, with Shift it selects a range.
+    func select(_ id: InventoryEntryID, gesture: SelectionGesture) {
+        switch gesture {
+        case .single:
+            multiSelection = []
+            selectionAnchor = id
+            selectEntry(id)
+        case .toggle:
+            var ids = multiSelection.isEmpty ? (selectedEntryID.map { [$0] } ?? []) : multiSelection
+            if let index = ids.firstIndex(of: id) { ids.remove(at: index) } else { ids.append(id) }
+            selectionAnchor = id
+            setSelection(ids)
+        case .range:
+            let list = bucketEntries.map(\.id)
+            guard let anchor = selectionAnchor ?? selectedEntryID,
+                  let from = list.firstIndex(of: anchor), let to = list.firstIndex(of: id) else {
+                return select(id, gesture: .single)
+            }
+            setSelection(Array(list[min(from, to)...max(from, to)]))
+        }
+    }
+
+    private func setSelection(_ ids: [InventoryEntryID]) {
+        guard ids.count > 1 else {
+            multiSelection = []
+            if let id = ids.first { selectEntry(id) }
+            return
+        }
+        // The detail lists the selection, so no single entry is on screen.
+        selectedEntryID = nil
+        multiSelection = ids
+    }
+
+    // MARK: Focus
+
+    /// Goes through values one at a time: the open list from the top, the selection, or after a
+    /// review session, the values it sent to To rotate.
+    func startFocus(_ start: FocusSession.Start) {
+        let bucket: InventoryBucket = start == .rotationAfterReview ? .toRotate : self.bucket
+        guard bucket != .done else { return }
+        let ids: [InventoryEntryID]
+        switch start {
+        case .list: ids = bucketEntries.map(\.id)
+        case .selection: ids = selectedSummaries.map(\.id)
+        case .rotationAfterReview:
+            let toRotate = Set(summaries.filter { $0.bucket == .toRotate }.map(\.id))
+            ids = (focus?.ids ?? []).filter(toRotate.contains)
+        }
+        guard let first = ids.first else { return }
+        let noun = start == .selection ? "selected value" : "value"
+        if self.bucket != bucket { self.bucket = bucket }
+        multiSelection = []
+        refreshPinnedUnread()
+        focus = FocusSession(bucket: bucket, ids: ids, title: "\(plural(ids.count, noun)) to \(bucket == .toRotate ? "rotate" : "review")",
+                             current: first)
+        selectedEntryID = first
+    }
+
+    /// Back to the Inbox, on the value that was on screen when it's still in the list.
+    func exitFocus() {
+        guard let session = focus else { return }
+        focus = nil
+        bucket = session.bucket
+        refreshPinnedUnread()
+        let list = bucketEntries.map(\.id)
+        selectedEntryID = session.current.flatMap { list.contains($0) ? $0 : nil }
+            ?? pending(in: session).first.flatMap { list.contains($0) ? $0 : nil } ?? list.first
+    }
+
+    func moveFocus(by offset: Int) {
+        guard var session = focus, !session.ids.isEmpty else { return }
+        let index = session.current.flatMap { session.ids.firstIndex(of: $0) } ?? session.ids.count
+        let next = session.ids[max(0, min(session.ids.count - 1, index + offset))]
+        session.current = next
+        focus = session
+        selectedEntryID = next
+    }
+
+    /// The session's values still in its list.
+    func pending(in session: FocusSession) -> [InventoryEntryID] {
+        let open = Set(summaries.filter { $0.bucket == session.bucket }.map(\.id))
+        return session.ids.filter(open.contains)
+    }
+
+    /// What became of each value of a session, for its summary.
+    func outcomes(of session: FocusSession) -> [(label: String, count: Int)] {
+        let byID = Dictionary(summaries.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var counts: [String: Int] = [:]
+        var order: [String] = []
+        for id in session.ids {
+            let summary = byID[id]
+            let label = summary?.entry.acknowledgement?.rawValue
+                ?? summary?.decision.map { $0 == .needsRotation ? "to rotate" : $0.displayName.lowercased() }
+                ?? (summary == nil ? "removed" : "still to review")
+            if counts[label] == nil { order.append(label) }
+            counts[label, default: 0] += 1
+        }
+        return order.map { ($0, counts[$0] ?? 0) }
+    }
+
+    /// A value left the session's list: the next one still to do opens, or the summary when none is left.
+    private func advanceFocus(leaving: Set<InventoryEntryID>) {
+        guard var session = focus, let current = session.current, leaving.contains(current) else { return }
+        let open = pending(in: session).filter { !leaving.contains($0) }
+        let at = session.ids.firstIndex(of: current) ?? 0
+        session.current = open.first { (session.ids.firstIndex(of: $0) ?? 0) > at } ?? open.first
+        focus = session
+        selectedEntryID = session.current
     }
 
     var needsReview: [EntrySummary] {
@@ -802,6 +962,7 @@ final class AppModel {
     func moveSelection(by offset: Int) {
         let entries = bucketEntries
         guard !entries.isEmpty else { return }
+        multiSelection = []
         let index = entries.firstIndex { $0.id == selectedEntryID } ?? (offset > 0 ? -1 : entries.count)
         let next = entries[max(0, min(entries.count - 1, index + offset))]
         if next.id != selectedEntryID { selectedEntryID = next.id }
@@ -827,8 +988,16 @@ final class AppModel {
     }
 
     private func keepSelectionVisible() {
-        guard route == .inventory else { return }
+        guard route == .inventory, focus == nil else { return }
         let entries = bucketEntries
+        if !multiSelection.isEmpty {
+            let visible = Set(entries.map(\.id))
+            let kept = multiSelection.filter(visible.contains)
+            if kept.count > 1 { multiSelection = kept; return }
+            multiSelection = []
+            selectedEntryID = kept.first ?? entries.first?.id
+            return
+        }
         if let selectedEntryID, entries.contains(where: { $0.id == selectedEntryID }) { return }
         selectedEntryID = entries.first?.id
     }
@@ -1061,7 +1230,7 @@ final class AppModel {
     }
 
     /// Reports a decision that Undo can take back.
-    func offerUndo(_ undo: InventoryUndo, message: String) {
+    func offerUndo(_ undo: [InventoryDecisionChange], message: String) {
         self.undo = undo
         showToast(message, offeringUndo: true)
     }
@@ -1174,12 +1343,14 @@ final class AppModel {
         // New unread entries join the top of the list; entries read since keep their place.
         pinnedUnread.formUnion(summaries.filter(isUnread).map(\.id))
         readMarks.keep(only: Set(next.entries().compactMap { $0.label?.index }))
-        if selectedEntryID == nil { selectedEntryID = bucketEntries.first?.id }
+        if !multiSelection.isEmpty { keepSelectionVisible() }
+        if selectedEntryID == nil, multiSelection.isEmpty, focus == nil { selectedEntryID = bucketEntries.first?.id }
         markSelectionSeen()
     }
 
-    /// Opens a value from a notification, in the list it belongs to.
+    /// Opens a value from a notification, in the list it belongs to. It leaves Focus, whose set is fixed.
     func selectValue(_ id: UUID) {
+        if focus != nil { exitFocus() }
         agentFilter = nil
         searchText = ""
         selectEntry(.value(id))

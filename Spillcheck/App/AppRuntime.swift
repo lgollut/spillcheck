@@ -573,17 +573,8 @@ final class AppRuntime {
         model.onUnlock = { [weak self] in
             self?.performAction { runtime in await runtime.unlock() }
         }
-        model.onDecide = { [weak self] fingerprint, decision in
-            self?.performAction { runtime in await runtime.mutateInventory(.decide(fingerprint, decision)) }
-        }
-        model.onDecideUnlocated = { [weak self] resultID, decision in
-            self?.performAction { runtime in await runtime.mutateInventory(.decideUnlocated(resultID, decision)) }
-        }
-        model.onUndo = { [weak self] undo in
-            self?.performAction { runtime in await runtime.mutateInventory(.undo(undo)) }
-        }
-        model.onAcknowledge = { [weak self] fingerprint, acknowledgement in
-            self?.performAction { runtime in await runtime.mutateInventory(.acknowledge(fingerprint, acknowledgement)) }
+        model.onApply = { [weak self] changes, undoing in
+            self?.performAction { runtime in await runtime.mutateInventory(.apply(changes, undoing: undoing)) }
         }
         model.onRemoveContent = { [weak self] fingerprint in
             self?.performAction { runtime in await runtime.mutateInventory(.remove(fingerprint)) }
@@ -780,10 +771,8 @@ final class AppRuntime {
     private enum InventoryMutation {
         /// Per-appearance review, kept for the acceptance fixture that builds an older vault's state.
         case review(UUID, OccurrenceReview)
-        case decide(ValueFingerprint, ValueDecision?)
-        case decideUnlocated(UUID, ValueDecision?)
-        case undo(InventoryUndo)
-        case acknowledge(ValueFingerprint, ObsoleteAcknowledgement)
+        /// Decisions, rotations and revocations, applied as one write. Undoing applies their inverse.
+        case apply([InventoryDecisionChange], undoing: Bool)
         case remove(ValueFingerprint)
         case forget(ValueFingerprint)
     }
@@ -812,41 +801,16 @@ final class AppRuntime {
                 recordWorkflowEvent("review-" + state.rawValue)
                 #endif
                 model.actionMessage = "Review saved for this appearance. Other appearances are unchanged."
-            case .decide(let fingerprint, let decision):
-                try await store.decide(fingerprint, as: decision, at: .now)
+            case .apply(let changes, let undoing):
+                try await store.apply(changes, at: .now)
                 #if DEBUG
-                recordWorkflowEvent("decide-" + (decision?.rawValue ?? "cleared"))
+                for change in changes { recordWorkflowEvent(undoing ? "undo" : Self.eventName(change)) }
                 #endif
-                model.offerUndo(.decision(fingerprint, previous: before.valueDecisions[fingerprint]?.decision),
-                                message: Self.decisionMessage(decision))
-            case .decideUnlocated(let resultID, let decision):
-                try await store.decide(unlocated: resultID, as: decision, at: .now)
-                #if DEBUG
-                recordWorkflowEvent("decide-unlocated-" + (decision?.rawValue ?? "cleared"))
-                #endif
-                model.offerUndo(.unlocatedDecision(resultID, previous: before.unlocatedDecisions[resultID]?.decision),
-                                message: Self.decisionMessage(decision))
-            case .acknowledge(let fingerprint, let acknowledgement):
-                try await store.acknowledgeObsolete(fingerprint, as: acknowledgement, at: .now)
-                #if DEBUG
-                recordWorkflowEvent("acknowledge-" + acknowledgement.rawValue)
-                #endif
-                model.offerUndo(.acknowledgement(fingerprint, previous: before.valueDecisions[fingerprint]?.decision),
-                                message: "Marked \(acknowledgement.rawValue). Later appearances show as obsolete, without alerts. Spillcheck didn’t check this with the service.")
-            case .undo(let undo):
-                switch undo {
-                case .decision(let fingerprint, let previous):
-                    try await store.decide(fingerprint, as: previous, at: .now)
-                case .unlocatedDecision(let resultID, let previous):
-                    try await store.decide(unlocated: resultID, as: previous, at: .now)
-                case .acknowledgement(let fingerprint, let previous):
-                    try await store.forgetObsoleteMarker(fingerprint)
-                    if let previous { try await store.decide(fingerprint, as: previous, at: .now) }
+                if undoing {
+                    model.actionMessage = "Undone."
+                } else {
+                    model.offerUndo(InventoryDecisionChange.inverse(of: changes, in: before), message: Self.message(for: changes))
                 }
-                #if DEBUG
-                recordWorkflowEvent("undo")
-                #endif
-                model.actionMessage = "Undone."
             case .remove(let fingerprint):
                 hide()
                 let plan = try await store.removeContent(for: fingerprint)
@@ -877,7 +841,7 @@ final class AppRuntime {
                 }
             }
             await refresh()
-            if case .undo(let undo) = mutation { model.reselect(undo) }
+            if case .apply(let changes, true) = mutation { model.reselect(changes) }
             // Removal and forgetting hide what was shown; what is still selected shows again.
             if viewing?.state == .masked { showSelectionIfUnlocked() }
         } catch {
@@ -886,16 +850,40 @@ final class AppRuntime {
         }
     }
 
-    private static func decisionMessage(_ decision: ValueDecision?) -> String {
-        switch decision {
-        case .needsRotation?:
-            "Moved to To rotate. Change it at its service, then mark it rotated."
-        case let decision?:
-            "Marked “\(decision.displayName)”. Later appearances stay quiet."
+    private static func message(for changes: [InventoryDecisionChange]) -> String {
+        let count = changes.count
+        switch changes.first {
+        case .decide(_, let decision)?, .decideUnlocated(_, let decision)?:
+            switch decision {
+            case .needsRotation?:
+                return count == 1 ? "Moved to To rotate. Change it at its service, then mark it rotated."
+                    : "\(count) values moved to To rotate. Change them at their services, then mark them rotated."
+            case let decision?:
+                return (count == 1 ? "Marked" : "\(count) values marked") + " “\(decision.displayName)”. Later appearances stay quiet."
+            case nil:
+                return (count == 1 ? "Back to review." : "\(count) values are back to review.")
+                    + " Later appearances alert and wait for review as before."
+            }
+        case .acknowledge(_, let acknowledgement)?:
+            return (count == 1 ? "Marked" : "\(count) values marked") + " \(acknowledgement.rawValue)."
+                + " Later appearances show as obsolete, without alerts. Spillcheck didn’t check this with the service."
+        case .forgetMarker?:
+            return "Obsolete recognition forgotten. New appearances will be evaluated normally."
         case nil:
-            "Back to review. Later appearances alert and wait for review as before."
+            return ""
         }
     }
+
+    #if DEBUG
+    private static func eventName(_ change: InventoryDecisionChange) -> String {
+        switch change {
+        case .decide(_, let decision): "decide-" + (decision?.rawValue ?? "cleared")
+        case .decideUnlocated(_, let decision): "decide-unlocated-" + (decision?.rawValue ?? "cleared")
+        case .acknowledge(_, let acknowledgement): "acknowledge-" + acknowledgement.rawValue
+        case .forgetMarker: "marker-forgotten"
+        }
+    }
+    #endif
 
     private func sourceReference(id: UUID, snapshot: InventorySnapshot) -> (SessionIdentity, Bool)? {
         if let occurrence = snapshot.occurrences[id] { return (occurrence.source.identity.session, occurrence.protectedExcerpt != nil) }
@@ -1429,7 +1417,7 @@ final class AppRuntime {
                 acceptanceInventoryReviewApplied = true
             } else if acknowledgement {
                 try InventoryStateAcceptance.requireRetainedRevocation(snapshot, fingerprint: fingerprint)
-                await mutateInventory(.acknowledge(fingerprint, .revoked))
+                await mutateInventory(.apply([.acknowledge(fingerprint, .revoked)], undoing: false))
                 guard InventoryStateAcceptance.phase(await store.snapshot(), fingerprint: fingerprint, upgradeState: true)
                         == "reviewed-revoked7" else { throw InventoryStateAcceptance.Failure.postconditionFailed }
                 acceptanceInventoryAcknowledgementApplied = true
@@ -1440,7 +1428,7 @@ final class AppRuntime {
                 if recovery.upgradeRemovedStateEnabled {
                     try InventoryStateAcceptance.requireRetainedRevocation(snapshot, fingerprint: fingerprint)
                 }
-                await mutateInventory(.acknowledge(fingerprint, .revoked))
+                await mutateInventory(.apply([.acknowledge(fingerprint, .revoked)], undoing: false))
                 guard await store.snapshot().obsoleteMarkers[fingerprint]?.acknowledgement == .revoked else {
                     throw InventoryStateAcceptance.Failure.postconditionFailed
                 }

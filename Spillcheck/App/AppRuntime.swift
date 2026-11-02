@@ -1102,8 +1102,14 @@ final class AppRuntime {
     /// `openStorage` makes its own first refresh once it is ready, and a failed one never gets another.
     func reportUIAppeared() {
         guard model.storageReady else { return }
+        // Opening a window reports it twice: once when it is ordered front and again when its
+        // occlusion state follows. One refresh covers both.
+        let now = Date()
+        if let last = lastAppearanceRefresh, now.timeIntervalSince(last) < 1 { return }
+        lastAppearanceRefresh = now
         Task { [weak self] in await self?.refresh() }
     }
+    private var lastAppearanceRefresh: Date?
 
     /// The once-a-second `periodic` refresh may show a coverage report a few seconds old, or half a
     /// minute while nothing shows it; every other caller has just changed something and gets an

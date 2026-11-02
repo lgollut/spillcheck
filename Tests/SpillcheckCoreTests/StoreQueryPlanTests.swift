@@ -98,6 +98,78 @@ struct StoreQueryPlanTests {
         try await store.close()
     }
 
+    @Test func theCoverageReportReadsOnlyTheWorkRowsItReturns() async throws {
+        // The report rebuilds every few seconds and the window holds tens of thousands of work rows.
+        // Reading and sorting all of them to return a page made it the app's main background cost.
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("spillcheck-work-plans-\(UUID())").resolvingSymlinksInPath()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try await ProtectedStore.open(at: directory, cryptography: try BackgroundCryptography.ephemeralForTesting())
+        try await store.close()
+        let database = try DatabaseQueue(path: directory.appendingPathComponent(ProtectedStore.databaseFilename).path)
+        defer { try? database.close() }
+        typealias Queries = ProtectedStore.HotQueries
+        let active = try await database.read { db in try Self.plan(of: Queries.activeWork, in: db) }
+        #expect(active.contains { $0.hasPrefix("SEARCH collection_work USING INDEX collection_work_state") },
+                "active work is not found by state: \(active)")
+        #expect(!active.contains { $0.hasPrefix("SCAN ") }, "active work reads every row: \(active)")
+        // The sort over the active rows is bounded by the queue, not by the window, so it is allowed.
+        let settled = try await database.read { db in try Self.plan(of: Queries.settledWork, in: db) }
+        #expect(settled.contains { $0.hasPrefix("SEARCH collection_work USING INDEX collection_work_updated") },
+                "settled work does not walk the updated index: \(settled)")
+        #expect(!settled.contains { $0.hasPrefix("SCAN ") }, "settled work reads every row: \(settled)")
+        // A full sort would read the whole window first; the partial sorts stop at the limit.
+        #expect(!settled.contains("USE TEMP B-TREE FOR ORDER BY"), "settled work sorts the whole window: \(settled)")
+    }
+
+    @Test func pagedWorkRowsMatchSortingTheWholeWindow() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("spillcheck-work-pages-\(UUID())").resolvingSymlinksInPath()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try await ProtectedStore.open(at: directory, cryptography: try BackgroundCryptography.ephemeralForTesting())
+        try await store.close()
+        let database = try DatabaseQueue(path: directory.appendingPathComponent(ProtectedStore.databaseFilename).path)
+        defer { try? database.close() }
+        let states = ["queued", "processing", "stalled", "completed", "recovered", "terminal", "blocked"]
+        let (from, through) = (1_000.0, 2_000.0)
+        // Few distinct times so many rows tie; the bounds and rows just outside them are included.
+        let times: [Double] = [999, 1_000, 1_000, 1_001, 1_500, 1_500, 1_500, 1_999, 2_000, 2_000, 2_001]
+        try await database.write { db in
+            for n in 0..<220 {
+                try db.execute(sql: """
+                    INSERT INTO collection_work (id, state, admitted_at, updated_at, encoded) VALUES (?, ?, 0, ?, ?)
+                    """, arguments: [String(format: "id-%04d", (n * 37) % 1000), states[(n * 5 + n / 7) % states.count],
+                                     times[(n * 3 + n / 11) % times.count], Data([UInt8(n % 256)])])
+            }
+        }
+        let reference = """
+            SELECT * FROM collection_work WHERE updated_at >= ? AND updated_at <= ?
+            ORDER BY (state IN ('queued', 'processing', 'stalled')) DESC, updated_at DESC, id LIMIT ?
+            """
+        // Fewer than the active rows, between them and the window, exactly the window, and beyond it.
+        for limit in [1, 5, 20, 40, 100, 150, 200, 1000] {
+            let (expected, actual) = try await database.read { db in
+                (try Row.fetchAll(db, sql: reference, arguments: [from, through, limit]).map(\.description),
+                 try ProtectedStore.workRows(in: db, from: from, through: through, limit: limit).rows.map(\.description))
+            }
+            let counts = try await database.read { db in
+                (try ProtectedStore.workRows(in: db, from: from, through: through, limit: limit).count,
+                 try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM collection_work WHERE updated_at >= ? AND updated_at <= ?",
+                                  arguments: [from, through]))
+            }
+            #expect(counts.0 == counts.1, "count differs at limit \(limit)")
+            #expect(actual == expected, "rows differ at limit \(limit)")
+            #expect(!expected.isEmpty)
+        }
+        let activeInWindow = try await database.read { db in
+            try Int.fetchOne(db, sql: """
+                SELECT COUNT(*) FROM collection_work WHERE state IN ('queued', 'processing', 'stalled')
+                AND updated_at >= ? AND updated_at <= ?
+                """, arguments: [from, through])
+        }
+        #expect((activeInWindow ?? 0) > 20 && (activeInWindow ?? 0) < 150)
+    }
+
     private static func plan(of sql: String, in db: Database) throws -> [String] {
         let statement = try db.makeStatement(sql: "EXPLAIN QUERY PLAN " + sql)
         // Unbound parameters are NULL; the plan does not depend on them.

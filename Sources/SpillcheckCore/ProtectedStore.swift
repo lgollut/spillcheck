@@ -1556,14 +1556,17 @@ public actor ProtectedStore {
         return chain
     }
 
-    private static func workRows(in db: Database, from: Double, through: Double,
-                                 limit: Int) throws -> (rows: [Row], count: Int) {
+    static func workRows(in db: Database, from: Double, through: Double,
+                         limit: Int) throws -> (rows: [Row], count: Int) {
         let count = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM collection_work WHERE updated_at >= ? AND updated_at <= ?",
             arguments: [from, through]) ?? 0
-        let rows = try Row.fetchAll(db, sql: """
-            SELECT * FROM collection_work WHERE updated_at >= ? AND updated_at <= ?
-            ORDER BY (state IN ('queued', 'processing', 'stalled')) DESC, updated_at DESC, id LIMIT ?
-            """, arguments: [from, through, limit])
+        // Unfinished work first, then the newest settled rows to fill the page; the same order
+        // as sorting the whole window, without reading it.
+        var rows = try Row.fetchAll(db, sql: HotQueries.activeWork, arguments: [from, through, limit])
+        if rows.count < limit {
+            rows += try Row.fetchAll(db, sql: HotQueries.settledWork,
+                arguments: [from, through, limit - rows.count])
+        }
         return (rows, count)
     }
 
@@ -2934,6 +2937,20 @@ extension ProtectedStore {
     /// rows through an index from `v9-indexed-queue-maintenance`. Reading every row instead made
     /// each capture slower the longer the queue grew.
     enum HotQueries {
+        /// The coverage report lists unfinished work first. Those rows are found by state, so the
+        /// sort covers only the queue, not the week's window.
+        static let activeWork = """
+            SELECT * FROM collection_work INDEXED BY collection_work_state
+            WHERE state IN ('queued', 'processing', 'stalled') AND updated_at >= ? AND updated_at <= ?
+            ORDER BY updated_at DESC, id LIMIT ?
+            """
+        /// The rest of the page: walks the window newest first and stops at the limit. SQLite orders
+        /// the `id` tie-break with a partial sort of equal `updated_at` rows, never the whole window.
+        static let settledWork = """
+            SELECT * FROM collection_work INDEXED BY collection_work_updated
+            WHERE state NOT IN ('queued', 'processing', 'stalled') AND updated_at >= ? AND updated_at <= ?
+            ORDER BY updated_at DESC, id LIMIT ?
+            """
         static let expiringCaptures = """
             SELECT id, encoded, captured_at, expires_at, retry_count FROM captures
             WHERE expires_at <= ? ORDER BY expires_at LIMIT ?

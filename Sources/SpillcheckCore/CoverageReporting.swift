@@ -258,3 +258,20 @@ public struct CoverageReport: Sendable {
         }
     }
 }
+
+/// How stale the once-a-second refresh may let the coverage report get. Rebuilding it costs a few
+/// hundred milliseconds on a large vault, which is wasted while nothing on screen shows its content.
+public enum CoverageReportRefreshPolicy {
+    /// While a window or panel that shows report-derived content is on screen.
+    public static let visibleInterval: TimeInterval = 5
+    /// Otherwise only the status item's tooltip reads the report, so it may lag this long.
+    public static let hiddenInterval: TimeInterval = 30
+
+    /// The longest a report may be reused before a refresh rebuilds it. Anything that is not the
+    /// periodic tick has just changed something and wants a current report, and so does an
+    /// acceptance run, which acts on the report as soon as its control file appears.
+    public static func minimumInterval(periodic: Bool, reportUIVisible: Bool, acceptanceRecovery: Bool) -> TimeInterval {
+        guard periodic, !acceptanceRecovery else { return 0 }
+        return reportUIVisible ? visibleInterval : hiddenInterval
+    }
+}

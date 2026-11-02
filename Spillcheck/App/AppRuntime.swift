@@ -179,6 +179,9 @@ final class AppRuntime {
     private var publishedRevision: Int64?
     private var publishedDay: Date?
     var onShowInventory: (() -> Void)?
+    /// Whether a window or panel that shows report-derived content is on screen. Until the app
+    /// delegate says otherwise the report is treated as shown, which keeps the shorter interval.
+    var reportUIVisible: () -> Bool = { true }
     #if DEBUG
     private var acceptanceReportURL: URL?
     private var acceptanceDeadline: Date?
@@ -1116,8 +1119,24 @@ final class AppRuntime {
         }
     }
 
-    /// The once-a-second `periodic` refresh may show a coverage report up to a few seconds old;
-    /// every other caller has just changed something and gets an up-to-date one.
+    /// Something that shows the report just appeared. The periodic refresh may have let the report
+    /// age to `hiddenInterval` while nothing did, so it is refreshed now rather than on the next tick.
+    /// Before storage is ready (still opening) or after startup failed, the store must stay untouched:
+    /// `openStorage` makes its own first refresh once it is ready, and a failed one never gets another.
+    func reportUIAppeared() {
+        guard model.storageReady else { return }
+        // Opening a window reports it twice: once when it is ordered front and again when its
+        // occlusion state follows. One refresh covers both.
+        let now = Date()
+        if let last = lastAppearanceRefresh, now.timeIntervalSince(last) < 1 { return }
+        lastAppearanceRefresh = now
+        Task { [weak self] in await self?.refresh() }
+    }
+    private var lastAppearanceRefresh: Date?
+
+    /// The once-a-second `periodic` refresh may show a coverage report a few seconds old, or half a
+    /// minute while nothing shows it; every other caller has just changed something and gets an
+    /// up-to-date one.
     func refresh(periodic: Bool = false) async {
         guard let store, !terminating else { holdAnalysisActivity(false); return }
         do {
@@ -1142,11 +1161,13 @@ final class AppRuntime {
             #endif
             _ = try await store.maintainQueue()
             try await store.expireCoverageRecovery(at: .now)
-            var minimumInterval: TimeInterval = periodic ? 5 : 0
+            var acceptanceRun = false
             #if DEBUG
             // Acceptance runs act on the report as soon as their control file appears.
-            if acceptanceRecovery != nil { minimumInterval = 0 }
+            acceptanceRun = acceptanceRecovery != nil
             #endif
+            let minimumInterval = CoverageReportRefreshPolicy.minimumInterval(
+                periodic: periodic, reportUIVisible: reportUIVisible(), acceptanceRecovery: acceptanceRun)
             // The queue's size drives the shown activity, so it is read every second rather than
             // taken from a report that may be a few seconds old. Activity holds must use `queue`,
             // never `report.queue`.

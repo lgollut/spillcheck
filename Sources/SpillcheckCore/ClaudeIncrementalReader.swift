@@ -15,6 +15,11 @@ public struct ClaudeIncrementalRead: Sendable {
     let hasFinalResponse: Bool
 }
 
+/// Saved cursors compare this signature across launches and restarts. macOS numbers a volume
+/// when it mounts it, so the same file can report a different `st_dev` after a restart. The
+/// device number is still encoded, because earlier builds require it when they decode a cursor,
+/// but no comparison uses it. The inode and birth time identify the file; size and modification
+/// time show whether it changed.
 struct ClaudeFileSignature: Codable, Equatable, Sendable {
     let device: UInt64, inode: UInt64, birthSeconds: Int64, birthNanos: Int64
     let size: UInt64, modifiedSeconds: Int64, modifiedNanos: Int64
@@ -25,7 +30,11 @@ struct ClaudeFileSignature: Codable, Equatable, Sendable {
         modifiedSeconds = Int64(value.st_mtimespec.tv_sec); modifiedNanos = Int64(value.st_mtimespec.tv_nsec)
     }
     func sameFile(_ other: Self) -> Bool {
-        device == other.device && inode == other.inode && birthSeconds == other.birthSeconds && birthNanos == other.birthNanos
+        inode == other.inode && birthSeconds == other.birthSeconds && birthNanos == other.birthNanos
+    }
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.sameFile(rhs) && lhs.size == rhs.size
+            && lhs.modifiedSeconds == rhs.modifiedSeconds && lhs.modifiedNanos == rhs.modifiedNanos
     }
 }
 

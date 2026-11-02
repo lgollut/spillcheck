@@ -173,8 +173,10 @@ struct CoverageView: View {
                     }
                     .accessibilityElement(children: .combine)
                 }
-                Text("These lifetime records prevent duplicate findings. Deleting findings does not free this space.")
-                    .foregroundStyle(Palette.tertiary)
+                if model.collectionStorageWarnings.contains(where: \.isLifetime) {
+                    Text("These lifetime records prevent duplicate findings. Deleting findings does not free this space.")
+                        .foregroundStyle(Palette.tertiary)
+                }
                 Button("Export diagnostics") { model.performCoverageAction(.exportDiagnostics) }
                     .buttonStyle(QuietButtonStyle(foreground: Palette.link, height: 26))
                     .disabled(!model.canPerformCoverageAction(.exportDiagnostics))

@@ -166,8 +166,8 @@ public actor DetectionPipeline {
             }
             // The store generation rejects retry work after pause, deletion or shutdown too.
             let progressed = error as? PipelineError == .budgetExhausted && committedSources > 0
-            try await store.retry(capture, reason: Self.reason(for: error), at: Date(), permit: permit,
-                                  progressed: progressed)
+            try await store.retry(capture, reason: Self.reason(for: error), diagnosticCode: Self.lossDiagnostic(for: error),
+                                  at: Date(), permit: permit, progressed: progressed)
             return .retryScheduled
         }
     }
@@ -514,6 +514,13 @@ public actor DetectionPipeline {
     private func publish(processing: Bool) async {
         let count = (try? await store.queueStatistics().count) ?? 0
         await onActivity(PipelineActivity(processing: processing, pendingCount: count))
+    }
+
+    /// A loss explained better by its cause than by its reason. A capture whose work or next page
+    /// found the work ledger full is still a rejected capture, but the remedy is storage, not a reread.
+    static func lossDiagnostic(for error: any Error) -> CoverageDiagnosticCode? {
+        if case .capacityExceeded(.collectionWork)? = error as? StorageError { return .workStorageLimit }
+        return nil
     }
 
     private static func reason(for error: any Error) -> CoverageGapReason {

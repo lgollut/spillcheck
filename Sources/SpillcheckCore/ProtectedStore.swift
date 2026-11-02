@@ -934,9 +934,10 @@ public actor ProtectedStore {
 
     /// A `progressed` attempt ran out of time after committing new sources. It is queued again at
     /// once without using up a retry, so a long pass finishes; an attempt that adds nothing counts.
+    /// `diagnosticCode` explains a dropped capture's loss when its reason's default would not.
     public func retry(
-        _ capture: PendingCapture, reason: CoverageGapReason, at now: Date,
-        permit: StoreProcessingPermit, progressed: Bool = false
+        _ capture: PendingCapture, reason: CoverageGapReason, diagnosticCode: CoverageDiagnosticCode? = nil,
+        at now: Date, permit: StoreProcessingPermit, progressed: Bool = false
     ) async throws {
         try check(permit)
         guard now.timeIntervalSince1970.isFinite else { throw StorageError.invalidTime }
@@ -946,8 +947,10 @@ public actor ProtectedStore {
         let attempted = try await prepareFailedHistoricalAttempt(opened: opened, continuing: !shouldDrop, at: now)
         let loss: PreparedCoverageSettlement?
         if shouldDrop {
+            let expired = capture.expiresAt <= now
             loss = try await prepareCaptureLoss(id: capture.id, body: opened?.body,
-                capturedAt: capture.capturedAt, reason: capture.expiresAt <= now ? .queueExpired : reason,
+                capturedAt: capture.capturedAt, reason: expired ? .queueExpired : reason,
+                diagnosticCode: expired ? nil : diagnosticCode,
                 at: now, audit: opened?.historicalAudit, context: try await collectionWork(id: capture.id)?.context)
         } else { loss = nil }
         try check(permit)
@@ -1257,7 +1260,7 @@ public actor ProtectedStore {
                 try db.execute(sql: "UPDATE collection_work SET recovery_certificate = ? WHERE id = ?",
                     arguments: [bytes, capture.id.uuidString])
                 guard try Int.fetchOne(db, sql: HotQueries.workBytes) ?? 0
-                    <= limits.maxProtectedStateBytes else { throw StorageError.stateTooLarge }
+                    <= limits.maxProtectedStateBytes else { throw StorageError.capacityExceeded(.collectionWork) }
             }
             if let priorRecoveryID, recoveryWindowCovered {
                 try Self.updateWork(id: priorRecoveryID, state: .recovered, at: now, in: db)
@@ -1312,11 +1315,15 @@ public actor ProtectedStore {
             SELECT COUNT(*) AS count, COALESCE(SUM(length(encoded)), 0) AS bytes FROM codex_hook_content_slots
             """)
         guard let authorities, let slots else { throw StorageError.databaseUnavailable }
+        let workCount = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM collection_work") ?? 0
+        let workBytes = try Int.fetchOne(db, sql: HotQueries.workBytes) ?? 0
         return .init(
             sourceAuthorities: .init(count: authorities["count"], encryptedBytes: authorities["bytes"],
                 countLimit: limits.maxSourceAuthorities, encryptedBytesLimit: limits.maxProtectedStateBytes),
             codexHookContentSlots: .init(count: slots["count"], encryptedBytes: slots["bytes"],
-                countLimit: limits.maxHookContentSlots, encryptedBytesLimit: limits.maxProtectedStateBytes))
+                countLimit: limits.maxHookContentSlots, encryptedBytesLimit: limits.maxProtectedStateBytes),
+            collectionWork: .init(count: workCount, encryptedBytes: workBytes,
+                countLimit: .max, encryptedBytesLimit: limits.maxProtectedStateBytes))
     }
 
     public func selectAuthority(_ choice: CollectionAuthorityChoice, permit: StoreProcessingPermit) async throws {
@@ -1551,7 +1558,9 @@ public actor ProtectedStore {
                 try pruneEvidenceWork(in: db, keeping: keeping)
                 if try Int.fetchOne(db, sql: HotQueries.workBytes) ?? 0 <= limits.maxProtectedStateBytes { return }
             }
-            throw StorageError.stateTooLarge
+            // Only unfinished work and recent completions remain. Name the full ledger so the
+            // refusal is not reported as a generic rejection.
+            throw StorageError.capacityExceeded(.collectionWork)
         }
     }
 
@@ -2397,13 +2406,13 @@ public actor ProtectedStore {
     }
 
     private func prepareCaptureLoss(id captureID: UUID, body: Data?, capturedAt: Date,
-                                    reason: CoverageGapReason, at now: Date,
+                                    reason: CoverageGapReason, diagnosticCode: CoverageDiagnosticCode? = nil, at now: Date,
                                     audit: HistoricalAuditContext? = nil, context: CollectionWorkContext? = nil) async throws -> PreparedCoverageSettlement {
         let metadata = body.flatMap { try? CapturePacket(body: $0).metadata }
         // Without persisted route authority we cannot infer the path from the provider.
         let scope = context?.scope
         let gap = CoverageGap(reason: reason, interval: context?.auditWindow ?? audit.map { DateInterval(start: $0.start, end: $0.end) }, scope: scope, operation: context?.operation,
-            diagnosticCode: reason.defaultDiagnosticCode, observedAt: now)
+            diagnosticCode: diagnosticCode ?? reason.defaultDiagnosticCode, observedAt: now)
         let id = try await captureLossID(captureID)
         // The queue copy ending says nothing about retention of the original source.
         let state: CoverageOmissionState = context?.retry == nil ? .blocked : .retryable

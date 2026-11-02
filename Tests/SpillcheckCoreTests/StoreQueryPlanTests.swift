@@ -60,6 +60,44 @@ struct StoreQueryPlanTests {
         }
     }
 
+    @Test func settlementPreparesItsPerLocationStatementsOnce() async throws {
+        // A history pass records or recovers thousands of locations in one capture. Parsing and
+        // planning the same statements again for each location took longer than running them.
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("spillcheck-settlement-statements-\(UUID())").resolvingSymlinksInPath()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try await ProtectedStore.open(at: directory, cryptography: try BackgroundCryptography.ephemeralForTesting())
+        let now = Date()
+        let session = try SessionIdentity(provider: .codex, profileID: "private-native-profile", sessionID: "private-native-session")
+        let scope = CollectionScope(provider: .codex, profileID: "private-native-profile", interface: .standaloneCLI, path: .publicHistory)
+        let locations = (0..<24).map {
+            CoverageRecoveryReference(session: session, locator: .upstreamItem, itemID: "private-item-\($0)",
+                                      contentTime: now, parserContract: "contract")
+        }
+        func complete(gaps: [CoverageGap] = [], recovered: [CoverageRecoveryReference] = []) async throws {
+            let permit = try #require(await store.processingPermit())
+            _ = try await store.enqueue(Data("synthetic controlled capture".utf8), capturedAt: now, permit: permit, at: now)
+            let capture = try #require(try await store.nextPending(at: now, permit: permit))
+            try await store.completeCapture(capture, coverageGaps: gaps, recoveredReferences: recovered, permit: permit, at: now)
+        }
+        func runs(_ sql: String) async throws -> Int {
+            try await store.preparedStatementRunsForTesting().filter { $0.key.contains(sql) }.values.reduce(0, +)
+        }
+
+        try await complete(gaps: locations.map {
+            CoverageGap(reason: .malformedSource, scope: scope, contentType: .toolOutput, recovery: $0, isRequiredFormatFailure: true)
+        })
+        #expect(try await store.coverageOmissions().count == locations.count)
+        #expect(try await runs("INSERT INTO coverage_omissions") >= locations.count)
+
+        try await complete(recovered: locations)
+        #expect(try await store.coverageOmissions().isEmpty)
+        #expect(try await store.healthIncidents().isEmpty)
+        #expect(try await runs(ProtectedStore.HotQueries.recoverOmissionsAtLocation) >= locations.count)
+        #expect(try await runs("UPDATE collection_health_incidents SET resolved_at") >= locations.count)
+        try await store.close()
+    }
+
     private static func plan(of sql: String, in db: Database) throws -> [String] {
         let statement = try db.makeStatement(sql: "EXPLAIN QUERY PLAN " + sql)
         // Unbound parameters are NULL; the plan does not depend on them.

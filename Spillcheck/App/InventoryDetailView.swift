@@ -162,7 +162,7 @@ struct InventoryDetailView: View {
                         .font(.system(size: 12)).foregroundStyle(Palette.tertiary).padding(.horizontal, 2)
                 }
                 if let issue = model.revealIssue {
-                    Text(issue == .cancelled ? "Authentication was cancelled. Nothing was revealed." : "Authentication failed. Content stays masked.")
+                    Text(issue == .cancelled ? "Authentication was cancelled. Nothing was revealed." : "This content couldn’t be opened. Unlock to try again.")
                         .font(.system(size: 12, weight: .medium)).foregroundStyle(Palette.amberText)
                         .padding(.horizontal, 2)
                         .accessibilityIdentifier("inventory.viewing-message")
@@ -195,43 +195,51 @@ struct InventoryDetailView: View {
                 .padding(.vertical, 16)
                 .privacySensitive()
                 .accessibilityIdentifier("inventory.revealed-value")
+        } else if model.viewingUnlocked && !model.valuesHidden {
+            // Unlocked, so the value is opening. No mask flashes up while it does.
+            Text(verbatim: " ").font(.system(size: 17, design: .monospaced)).accessibilityHidden(true)
         } else {
             Text("•••• •••• •••• •••• ••••")
                 .font(.system(size: 17, design: .monospaced)).tracking(3).foregroundStyle(Palette.secondary)
                 .lineLimit(1)
-                .accessibilityLabel("Masked value")
+                .accessibilityLabel(model.valuesHidden ? "Value hidden" : "Value locked")
                 .accessibilityIdentifier("inventory.masked-value")
         }
     }
 
+    /// Unlocking shows every value with its context, so the only controls are Unlock and, once
+    /// unlocked, hiding or showing values again without a prompt.
     @ViewBuilder
     private var secretControl: some View {
-        let canReveal = summary.unlocated ? selectedOccurrence?.protectedMetadata != nil : entry.canRevealRetainedValue
+        let canShow = summary.unlocated ? selectedOccurrence?.protectedMetadata != nil : entry.canRevealRetainedValue
         if model.viewingBusy {
             HStack(spacing: 6) {
                 ProgressView().controlSize(.small)
                 Text("Waiting for Touch ID…")
             }
             .font(.system(size: 12)).foregroundStyle(Palette.secondary)
-        } else if canReveal {
-            let revealed = model.contentRevealed && (revealedValue != nil || summary.unlocated)
-            // The ellipsis marks the authentication prompt a locked reveal opens first.
-            let prompt = model.viewingUnlocked ? "" : "…"
+        } else if canShow {
+            let control: (title: String, symbol: String, help: String, identifier: String) =
+                !model.viewingUnlocked
+                    ? ("Unlock…", "lock.fill", "Touch ID or your password once. Every value then shows with its context until you lock.", "inventory.detail.unlock")
+                    : model.valuesHidden
+                    ? ("Show values", "eye", "Unlocked, so no prompt", "inventory.detail.show-values")
+                    : ("Hide values", "eye.slash", "Hides values on screen. The app stays unlocked.", "inventory.detail.hide-values")
             Button {
-                if revealed { model.hideNow() } else { model.onReveal?(entry.id, model.selectedOccurrenceID) }
+                if !model.viewingUnlocked { model.onUnlock?() }
+                else if model.valuesHidden { model.showValues() }
+                else { model.hideValues() }
             } label: {
-                Label(revealed ? "Hide" : (model.revealIssue != nil ? "Try again" : (summary.unlocated ? "Reveal source" : "Reveal") + prompt),
-                      systemImage: revealed ? "eye.slash" : "eye")
+                Label(control.title, systemImage: control.symbol)
                     .labelStyle(TightLabelStyle())
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(Palette.secondary)
             }
             .buttonStyle(QuietButtonStyle(height: 26))
             .padding(.trailing, -6)
-            .disabled(disabled)
-            .help(revealed ? "Hide again. The app stays unlocked."
-                : model.viewingUnlocked ? "Unlocked, so no prompt" : "Touch ID or password, then the app stays unlocked")
-            .accessibilityIdentifier(revealed ? "inventory.detail.hide" : "inventory.reveal-value")
+            .disabled(model.viewingUnlocked ? false : (model.isDemo || !model.storageReady))
+            .help(control.help)
+            .accessibilityIdentifier(control.identifier)
         }
     }
 
@@ -487,7 +495,9 @@ private struct OccurrenceDetail: View {
                     }
                 }
                 .accessibilityHidden(true)
-                Text(summary.unlocated ? "Source masked. Reveal it to read the title and project." : "Context masked. Reveal the value to read it.")
+                Text(!model.viewingUnlocked
+                     ? (summary.unlocated ? "Unlock to read its source." : "Unlock to read where it appeared.")
+                     : model.valuesHidden ? "Values are hidden." : "")
                     .font(.system(size: 11.5)).foregroundStyle(Palette.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: 220, alignment: .trailing)
@@ -1089,7 +1099,7 @@ private struct ValueActionSheet: View {
                     Text(model.viewingBusy ? "Waiting for Touch ID…" : "The conversation ID is protected.")
                         .font(.system(size: 12)).foregroundStyle(Palette.secondary)
                     Spacer()
-                    Button(model.viewingUnlocked ? "Show" : "Unlock to show…") { model.onReveal?(summary.entry.id, occurrence.id) }
+                    Button(model.viewingUnlocked ? "Show values" : "Unlock to show…") { model.unlockOrShowValues() }
                         .buttonStyle(OutlineButtonStyle(height: 24))
                         .disabled(model.viewingBusy || model.isDemo || !model.storageReady)
                 }

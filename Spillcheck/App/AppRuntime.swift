@@ -486,6 +486,8 @@ final class AppRuntime {
             self?.viewingGeneration = UUID()
             self?.viewing?.didInvalidate(reason)
             self?.model.clearRevealedContent()
+            // The next unlock shows values again.
+            self?.model.valuesHidden = false
         }
         let ownedSetup = AgentSetupController(store: store,
             helperURL: Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/spillcheck-hook"),
@@ -536,6 +538,8 @@ final class AppRuntime {
                 self.model.route = .coverage
                 self.model.actionMessage = "Collection has a scoped limitation. Review the affected route and content in Coverage."
             }
+            // The selection may not have changed, so it wouldn't show again on its own.
+            self.showSelectionIfUnlocked()
             self.onShowInventory?()
         }
         await notifications.refreshPermission()
@@ -547,36 +551,27 @@ final class AppRuntime {
             self?.viewingGeneration = UUID()
             self?.viewing?.select(valueID: Self.viewingID(entry))
             self?.sourceOpening.cancel()
+            self?.showSelectionIfUnlocked()
         }
         model.onOccurrenceSelectionChanged = { [weak self] occurrence in
             guard let self else { return }
             self.viewingGeneration = UUID()
             self.sourceOpening.cancel()
-            // Revealing covers the whole value, so another of its appearances stays revealed and shows
-            // its own context. A new entry selects its default appearance before the viewing selection
-            // follows, so that change is not mistaken for one within the revealed entry.
-            if let viewing = self.viewing, viewing.state == .revealed || viewing.state == .authenticating,
-               let entry = self.model.selectedEntryID, let id = Self.viewingID(entry), viewing.selectedValueID == id {
-                let generation = self.viewingGeneration
-                self.performAction { runtime in
-                    await runtime.reveal(entry: entry, occurrenceID: occurrence, generation: generation)
-                }
+            // The value stays on screen while another of its appearances loads its own context. A new
+            // entry selects its default appearance before the viewing selection follows, so that change
+            // is not mistaken for one within the shown entry.
+            if let viewing = self.viewing, let entry = self.model.selectedEntryID, let id = Self.viewingID(entry),
+               viewing.selectedValueID == id, viewing.isAuthorized, !self.model.valuesHidden {
+                self.showSelectionIfUnlocked()
             } else {
                 self.viewing?.hide()
             }
         }
         model.onHide = { [weak self] in self?.hide() }
+        model.onShowValues = { [weak self] in self?.showSelectionIfUnlocked() }
         model.onLock = { [weak self] in self?.lock() }
         model.onUnlock = { [weak self] in
             self?.performAction { runtime in await runtime.unlock() }
-        }
-        model.onReveal = { [weak self] entry, occurrence in
-            guard let self else { return }
-            self.model.selectedOccurrenceID = occurrence
-            let generation = self.viewingGeneration
-            self.performAction { runtime in
-                await runtime.reveal(entry: entry, occurrenceID: occurrence, generation: generation)
-            }
         }
         model.onDecide = { [weak self] fingerprint, decision in
             self?.performAction { runtime in await runtime.mutateInventory(.decide(fingerprint, decision)) }
@@ -727,14 +722,29 @@ final class AppRuntime {
 
     private func unlock() async {
         guard let viewing, model.windowVisible, !terminating else { return }
-        do { try await viewing.unlock() }
-        catch ViewingAuthorizationError.denied, ViewingAuthorizationError.unavailable {
+        do {
+            try await viewing.unlock()
+            model.valuesHidden = false
+            showSelectionIfUnlocked()
+        } catch ViewingAuthorizationError.denied, ViewingAuthorizationError.unavailable {
             model.actionMessage = "Authentication failed. Values stay hidden."
         } catch {}
     }
 
+    /// While the session is unlocked and values aren't hidden, whatever is selected shows its value
+    /// and the selected appearance's context, with no prompt and no Reveal action.
+    private func showSelectionIfUnlocked() {
+        guard let viewing, viewing.isAuthorized, !model.valuesHidden, model.windowVisible, !terminating,
+              let entry = model.selectedEntryID, Self.viewingID(entry) != nil else { return }
+        let occurrence = model.selectedOccurrenceID, generation = viewingGeneration
+        performAction { runtime in
+            await runtime.reveal(entry: entry, occurrenceID: occurrence, generation: generation)
+        }
+    }
+
+    /// Never prompts: a session that is locked, or locks meanwhile, leaves the selection masked.
     private func reveal(entry: InventoryEntryID, occurrenceID: UUID?, generation: UUID) async {
-        guard let store, let viewing, entry == model.selectedEntryID,
+        guard let store, let viewing, viewing.isAuthorized, !model.valuesHidden, entry == model.selectedEntryID,
               occurrenceID == model.selectedOccurrenceID,
               generation == viewingGeneration, model.windowVisible else { return }
         do {
@@ -755,15 +765,12 @@ final class AppRuntime {
             case .obsoleteMarker, .rememberedDecision: return
             }
             guard model.selectedEntryID == entry, generation == viewingGeneration,
-                  occurrenceID == model.selectedOccurrenceID,
+                  occurrenceID == model.selectedOccurrenceID, !model.valuesHidden,
                   model.windowVisible, !terminating, !Task.isCancelled else { return }
             viewing.select(valueID: selection.valueID)
-            await viewing.reveal(selection)
+            await viewing.reveal(selection, prompting: false)
         } catch {
-            if model.selectedEntryID == entry, generation == viewingGeneration,
-               occurrenceID == model.selectedOccurrenceID {
-                model.viewingMessage = "No retained content is available for this appearance."
-            }
+            // Nothing retained to show, which the detail already says. Shown on its own, so it stays silent.
         }
     }
 
@@ -851,6 +858,8 @@ final class AppRuntime {
                 }
             }
             await refresh()
+            // Removal and forgetting hide what was shown; what is still selected shows again.
+            if viewing?.state == .masked { showSelectionIfUnlocked() }
         } catch {
             model.actionMessage = "The change could not be saved. Reload the inventory and try again."
         }
@@ -1909,6 +1918,7 @@ final class AppRuntime {
         else { protection?.viewingSession.invalidate(reason: reason) }
         sourceOpening.cancel()
         model.clearRevealedContent()
+        model.valuesHidden = false
     }
 
     func shutdown() async {

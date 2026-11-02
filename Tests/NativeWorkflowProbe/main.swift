@@ -240,6 +240,23 @@ private struct NativeWorkflowProbe {
                 "reveal-after-unlock-without-prompt")
             checks.append("unlock-then-reveal-without-prompt")
 
+            // The app shows every selection on its own while unlocked, and that must never prompt.
+            let shown = try await ViewingFixture()
+            await shown.controller.reveal(try shown.selection(), prompting: false)
+            try require(shown.key.authorizations == 0 && shown.controller.state == .masked
+                && shown.controller.content.value == nil && shown.session.revealed.isEmpty, "locked-show-stays-masked")
+            try await shown.controller.unlock()
+            await shown.controller.reveal(try .occurrenceWithValue(in: shown.ledger.snapshot, occurrenceID: shown.occurrenceID),
+                prompting: false)
+            try require(shown.controller.state == .revealed && shown.key.authorizations == 1
+                && shown.controller.content.value == "SYNTHETIC-NATIVE-VIEWING-Ä-🔐"
+                && shown.controller.content.excerpts[shown.occurrenceID] != nil, "unlocked-show-without-prompt")
+            shown.controller.invalidate(.sessionLock)
+            await shown.controller.reveal(try shown.selection(), prompting: false)
+            try require(shown.key.authorizations == 1 && shown.controller.state == .masked
+                && shown.controller.content.value == nil && !shown.controller.isAuthorized, "locked-again-show-stays-masked")
+            checks.append("show-while-unlocked-never-prompts")
+
             let cancelledUnlock = try await ViewingFixture()
             cancelledUnlock.key.cancellation = true
             do {

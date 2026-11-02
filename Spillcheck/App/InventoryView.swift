@@ -345,6 +345,18 @@ private struct SidebarView: View {
 
             Spacer(minLength: 0)
             if model.viewingUnlocked {
+                Button { model.valuesHidden ? model.showValues() : model.hideValues() } label: {
+                    Image(systemName: model.valuesHidden ? "eye" : "eye.slash")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Palette.secondary)
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
+                        .hoverFill(hover: Palette.shade.opacity(0.06))
+                }
+                .buttonStyle(.plain)
+                .help(model.valuesHidden ? "Show values. Unlocked, so no prompt." : "Hide values. The app stays unlocked.")
+                .accessibilityLabel(model.valuesHidden ? "Show values" : "Hide values")
+                .accessibilityIdentifier("inventory.toggle-values")
                 Button { model.lockNow() } label: {
                     Label("Lock", systemImage: "lock.open.fill")
                         .font(.system(size: 12, weight: .medium))
@@ -354,7 +366,7 @@ private struct SidebarView: View {
                         .background(Palette.accent, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
                 }
                 .buttonStyle(.plain)
-                .help("Unlocked. Values reveal without asking again until you lock, after 5 min idle, when the window closes, or when the Mac sleeps.")
+                .help("Unlocked. Every value shows with its context until you lock, after 5 min idle, when the window closes, or when the Mac sleeps.")
                 .accessibilityLabel("Unlocked. Lock now")
                 .accessibilityIdentifier("inventory.lock")
             } else {
@@ -373,7 +385,7 @@ private struct SidebarView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(model.viewingBusy || model.isDemo || !model.storageReady)
-                .help("Values, excerpts, titles, and paths stay hidden. Unlock once with Touch ID or your password to reveal them without asking again.")
+                .help("Values, excerpts, titles, and paths stay hidden. Unlock once with Touch ID or your password to show every value with its context.")
                 .accessibilityLabel("Values locked. Unlock")
                 .accessibilityIdentifier("inventory.unlock")
             }

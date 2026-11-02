@@ -430,8 +430,10 @@ final class AppModel {
     var revealedContent: [UUID: String] = [:]
     var revealedExcerpts: [UUID: RetainedExcerpt] = [:]
     var revealedSourceMetadata: [UUID: RetainedSourceContext] = [:]
-    /// The viewing session is authorized, so revealing needs no further prompt.
+    /// The viewing session is authorized: every selection shows its value and context without a prompt.
     var viewingUnlocked = false
+    /// Unlocked, but values are hidden until shown again or the session ends. No prompt either way.
+    var valuesHidden = false
     /// The selection's protected content is on screen.
     var contentRevealed = false
     var viewingBusy = false
@@ -490,7 +492,7 @@ final class AppModel {
     }
     @ObservationIgnored var onSelectionChanged: ((InventoryEntryID?) -> Void)?
     @ObservationIgnored var onOccurrenceSelectionChanged: ((UUID?) -> Void)?
-    @ObservationIgnored var onReveal: ((InventoryEntryID, UUID?) -> Void)?
+    @ObservationIgnored var onShowValues: (() -> Void)?
     @ObservationIgnored var onHide: (() -> Void)?
     @ObservationIgnored var onUnlock: (() -> Void)?
     @ObservationIgnored var onLock: (() -> Void)?
@@ -995,11 +997,23 @@ final class AppModel {
         selectedEntryID = .value(id)
     }
 
-    /// Hides the selection's content and keeps the viewing session unlocked.
-    func hideNow() {
+    /// Hides values, and keeps them hidden across selections, without locking.
+    func hideValues() {
+        valuesHidden = true
         clearRevealedContent()
         revealIssue = nil
         onHide?()
+    }
+
+    /// Shows values again. Unlocked, so there's no prompt.
+    func showValues() {
+        valuesHidden = false
+        onShowValues?()
+    }
+
+    /// The one way to protected content: unlock when locked, or show hidden values.
+    func unlockOrShowValues() {
+        if viewingUnlocked { showValues() } else { onUnlock?() }
     }
 
     func lockNow() {

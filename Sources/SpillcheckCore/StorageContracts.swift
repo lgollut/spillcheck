@@ -83,6 +83,9 @@ public struct StoreLimits: Sendable {
     public let claimDuration: TimeInterval
     public let maxProtectedStateBytes: Int
     public let maxSuccessfulWorkRecords: Int
+    /// Completed work kept because it holds gap evidence. Bounded apart from `maxSuccessfulWorkRecords`
+    /// so a long catch-up that records a gap on every capture cannot fill the protected-state cap.
+    public let maxEvidenceWorkRecords: Int
     public let maxHookContentSlots: Int
     public let maxSourceAuthorities: Int
 
@@ -92,7 +95,8 @@ public struct StoreLimits: Sendable {
         maxQueueAge: TimeInterval = 24 * 60 * 60,
         maxRetryCount: UInt = 3, claimDuration: TimeInterval = 180,
         maxProtectedStateBytes: Int = 64 * 1024 * 1024, maxSuccessfulWorkRecords: Int = 2048,
-        maxHookContentSlots: Int = 16_384, maxSourceAuthorities: Int = 16_384
+        maxHookContentSlots: Int = 16_384, maxSourceAuthorities: Int = 16_384,
+        maxEvidenceWorkRecords: Int = 1024
     ) {
         self.maxEventBytes = maxEventBytes
         self.maxQueueBytes = maxQueueBytes
@@ -101,6 +105,7 @@ public struct StoreLimits: Sendable {
         self.claimDuration = claimDuration
         self.maxProtectedStateBytes = maxProtectedStateBytes
         self.maxSuccessfulWorkRecords = max(1, maxSuccessfulWorkRecords)
+        self.maxEvidenceWorkRecords = max(1, maxEvidenceWorkRecords)
         self.maxHookContentSlots = maxHookContentSlots
         self.maxSourceAuthorities = maxSourceAuthorities
     }

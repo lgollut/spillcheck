@@ -224,6 +224,12 @@ public actor ProtectedStore {
         do {
             database = try DatabaseQueue(path: databaseURL.path, configuration: configuration)
             try migrate(database)
+            // Earlier builds kept every completed row that held gap evidence until it aged out,
+            // and filled the cap. Trim to the bounds now so the first enqueue can succeed.
+            try write(database) { db in
+                try pruneCompletedWork(in: db, retaining: limits.maxSuccessfulWorkRecords)
+                try pruneEvidenceWork(in: db, keeping: limits.maxEvidenceWorkRecords)
+            }
         } catch { throw StorageError.databaseUnavailable }
         do {
             let manifestData = try JSONEncoder().encode(manifest)
@@ -489,7 +495,7 @@ public actor ProtectedStore {
                 if let workBytes,
                    try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM collection_work WHERE id = ?", arguments: [id.uuidString]) == 0 {
                     try Self.insertWork(id: id, context: workBytes, recoveryOf: recoveryOf, recoveryChain: recoveryChainBytes,
-                        at: now, maximumBytes: limits.maxProtectedStateBytes, in: db)
+                        at: now, limits: limits, in: db)
                     try Self.updateWork(id: id, state: .terminal, at: now, in: db)
                 }
                 try Self.writeCoverageSettlement(loss, at: now, maximumBytes: limits.maxProtectedStateBytes, in: db)
@@ -533,7 +539,7 @@ public actor ProtectedStore {
                                       historicalAudit == nil ? 0 : 1])
                 if let workBytes {
                     try Self.insertWork(id: id, context: workBytes, recoveryOf: recoveryOf, recoveryChain: recoveryChainBytes,
-                        at: now, maximumBytes: limits.maxProtectedStateBytes, in: db)
+                        at: now, limits: limits, in: db)
                 }
                 try Self.pruneCompletedWork(in: db, retaining: limits.maxSuccessfulWorkRecords)
                 try injector?(.beforeEnqueueCommit)
@@ -1077,7 +1083,7 @@ public actor ProtectedStore {
             }
             if let next = nextCapture, let nextWorkBytes {
                 try Self.insertWork(id: next.id, context: nextWorkBytes, recoveryOf: priorRecoveryID, recoveryChain: nextRecoveryChainBytes,
-                    at: now, maximumBytes: limits.maxProtectedStateBytes, in: db)
+                    at: now, limits: limits, in: db)
             }
             if let read = successfulReadPayload {
                 try db.execute(sql: """
@@ -1121,6 +1127,10 @@ public actor ProtectedStore {
             try Self.writeCoverageSettlement(coverage, at: now, maximumBytes: limits.maxProtectedStateBytes, in: db)
             try Self.consumeCapture(capture.id, in: db)
             try Self.pruneCompletedWork(in: db, retaining: limits.maxSuccessfulWorkRecords)
+            // Evidence grows only here: a gap on this capture, or a recovered target leaving terminal.
+            if !coverage.workWithGapEvidence.isEmpty || (priorRecoveryID != nil && recoveryWindowCovered) {
+                try Self.trimEvidenceWork(in: db, bound: limits.maxEvidenceWorkRecords)
+            }
             try injector?(.beforeProcessingCommit)
         }
         try injector?(.afterProcessingCommit)
@@ -1379,13 +1389,19 @@ public actor ProtectedStore {
     }
 
     private static func insertWork(id: UUID, context: Data, recoveryOf: UUID?, recoveryChain: Data? = nil, at now: Date,
-                                   maximumBytes: Int, in db: Database) throws {
+                                   limits: StoreLimits, in db: Database) throws {
         try db.execute(sql: """
             INSERT INTO collection_work (id, state, admitted_at, updated_at, recovery_of, encoded, recovery_chain)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """, arguments: [id.uuidString, CollectionWorkState.queued.rawValue, now.timeIntervalSince1970,
                 now.timeIntervalSince1970, recoveryOf?.uuidString, context, recoveryChain])
-        guard try Int.fetchOne(db, sql: HotQueries.workBytes) ?? 0 <= maximumBytes else {
+        if try Int.fetchOne(db, sql: HotQueries.workBytes) ?? 0 > limits.maxProtectedStateBytes {
+            // Kept evidence is presentation only; collection stopping is worse than losing the
+            // oldest of it. Shed half, then all, before refusing the new work.
+            for keeping in [limits.maxEvidenceWorkRecords / 2, 0] {
+                try pruneEvidenceWork(in: db, keeping: keeping)
+                if try Int.fetchOne(db, sql: HotQueries.workBytes) ?? 0 <= limits.maxProtectedStateBytes { return }
+            }
             throw StorageError.stateTooLarge
         }
     }
@@ -1394,6 +1410,19 @@ public actor ProtectedStore {
     /// while retaining exact work referenced by gap evidence and the separate latest-read rows.
     private static func pruneCompletedWork(in db: Database, retaining count: Int) throws {
         try db.execute(sql: HotQueries.pruneCompletedWork, arguments: [count])
+    }
+
+    /// Completed work kept as gap evidence has its own bound, newest first, so a catch-up that
+    /// records a gap on nearly every capture cannot fill the ledger. Trimming sorts the retained
+    /// rows, so it runs only once the bound is exceeded and then goes below it by an eighth,
+    /// which keeps a steady stream of evidence from sorting on every capture.
+    private static func trimEvidenceWork(in db: Database, bound: Int) throws {
+        guard try Int.fetchOne(db, sql: HotQueries.evidenceWorkCount) ?? 0 > bound else { return }
+        try pruneEvidenceWork(in: db, keeping: bound - bound / 8)
+    }
+
+    private static func pruneEvidenceWork(in db: Database, keeping count: Int) throws {
+        try db.execute(sql: Maintenance.pruneEvidenceWork, arguments: [count])
     }
 
     private static func updateWork(id: UUID, state: CollectionWorkState, at now: Date, in db: Database) throws {
@@ -2963,9 +2992,35 @@ extension ProtectedStore {
                     (SELECT id FROM collection_work WHERE state = 'terminal'))
                 ORDER BY updated_at DESC, id LIMIT -1 OFFSET ?)
             """
+        /// Rows kept as gap evidence: completed rows less those without evidence. Both counts read
+        /// only an index; filtering on retain_evidence directly would read each completed row.
+        static let evidenceWorkCount = """
+            SELECT (SELECT COUNT(*) FROM collection_work INDEXED BY collection_work_state
+                    WHERE state IN ('completed', 'recovered'))
+                 - (SELECT COUNT(*) FROM collection_work INDEXED BY collection_work_prunable
+                    WHERE state IN ('completed', 'recovered') AND retain_evidence = 0)
+            """
         static let expireRecoverableOmissions = """
             UPDATE coverage_omissions SET state = ?
             WHERE COALESCE(content_at, created_at) < ? AND state IN (?, ?)
+            """
+    }
+}
+
+extension ProtectedStore {
+    /// Statements that sort a bounded set of rows. None runs for every capture: each runs when a
+    /// bound is exceeded, when the vault opens, or when an insert would exceed the cap.
+    enum Maintenance {
+        /// Keeps the newest `?` completed or recovered evidence rows, except a certificate whose
+        /// target is still terminal. Evidence rows are not in the partial `collection_work_prunable`
+        /// index, so the sort is over every completed row: bounded, but not a per-capture cost.
+        static let pruneEvidenceWork = """
+            DELETE FROM collection_work WHERE id IN (
+                SELECT id FROM collection_work INDEXED BY collection_work_state
+                WHERE state IN ('completed', 'recovered') AND retain_evidence = 1
+                AND NOT (recovery_certificate IS NOT NULL AND recovery_of IN
+                    (SELECT id FROM collection_work WHERE state = 'terminal'))
+                ORDER BY updated_at DESC, id LIMIT -1 OFFSET ?)
             """
     }
 }

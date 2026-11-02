@@ -28,6 +28,7 @@ struct StoreQueryPlanTests {
             ("released work", Queries.requeueReleasedWork),
             ("next capture", Queries.nextCapture),
             ("completed work pruning", Queries.pruneCompletedWork),
+            ("evidence work count", Queries.evidenceWorkCount),
             ("omission expiry", Queries.expireRecoverableOmissions),
         ]
         for (name, sql) in statements {

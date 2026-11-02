@@ -39,8 +39,8 @@ struct CoverageReportLookupTests {
     private func referenceRecoveredBacklog(_ event: StoredCoverageGapEvent, in report: CoverageReport) -> Bool {
         guard event.isIntermediateBacklog, event.gap.reason == .budgetExhausted,
               event.gap.recovery == nil, let audit = event.audit else { return false }
-        if let workID = event.workID {
-            guard !report.work.isTruncated, report.work.items.contains(where: { $0.id == workID }),
+        if event.workID != nil {
+            guard !report.work.isTruncated,
                   !report.work.items.contains(where: { $0.context.audit == audit && $0.state != .recovered && $0.state != .completed }) else { return false }
         }
         return report.history.items.contains {

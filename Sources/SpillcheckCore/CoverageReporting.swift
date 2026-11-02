@@ -162,9 +162,10 @@ public struct CoverageReport: Sendable {
     public func hasRecoveredBacklog(_ event: StoredCoverageGapEvent) -> Bool {
         guard event.isIntermediateBacklog, event.gap.reason == .budgetExhausted,
               event.gap.recovery == nil, let audit = event.audit else { return false }
-        if let workID = event.workID {
-            guard !work.isTruncated, lookup.workByID[workID] != nil,
-                  !lookup.auditsWithUnsettledWork.contains(audit) else { return false }
+        // Only completed or recovered work is pruned, so an event whose work row is gone settled
+        // with it. A truncated page may hide unsettled work of the audit, so it settles nothing.
+        if event.workID != nil {
+            guard !work.isTruncated, !lookup.auditsWithUnsettledWork.contains(audit) else { return false }
         }
         return lookup.latestSettledHistory[audit].map { $0 >= event.observedAt } == true
     }

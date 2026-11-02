@@ -1098,7 +1098,10 @@ final class AppRuntime {
 
     /// Something that shows the report just appeared. The periodic refresh may have let the report
     /// age to `hiddenInterval` while nothing did, so it is refreshed now rather than on the next tick.
+    /// Before storage is ready (still opening) or after startup failed, the store must stay untouched:
+    /// `openStorage` makes its own first refresh once it is ready, and a failed one never gets another.
     func reportUIAppeared() {
+        guard model.storageReady else { return }
         Task { [weak self] in await self?.refresh() }
     }
 

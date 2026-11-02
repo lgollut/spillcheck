@@ -425,8 +425,17 @@ final class AppRuntime {
                         try await opened.recordCoverageGap(failure.gap)
                         throw CaptureTransportError.rejectionRecorded
                     }
-                    let insertion = try await opened.enqueue(packet.body, capturedAt: .now, permit: permit,
-                        scope: scope, historicalAudit: historicalAudit, workContext: context)
+                    let insertion: QueueInsertion
+                    do {
+                        insertion = try await opened.enqueue(packet.body, capturedAt: .now, permit: permit,
+                            scope: scope, historicalAudit: historicalAudit, workContext: context)
+                    } catch StorageError.capacityExceeded(.collectionWork) {
+                        // As with an admission limit, name the cause on the configured route and
+                        // suppress the generic transport gap only once that record commits.
+                        try await opened.recordCoverageGap(
+                            CollectionCapacityRejection(resource: .collectionWork, scope: context.scope).gap)
+                        throw CaptureTransportError.rejectionRecorded
+                    }
                     let queueID: UUID
                     switch insertion {
                     case .inserted(let id), .alreadyQueued(let id), .alreadyProcessed(let id): queueID = id
@@ -2348,13 +2357,17 @@ final class AppRuntime {
         guard (try? await store.queueStatistics().historicalCount) == 0,
               model.monitoringEnabled, !model.monitoringTransition,
               !model.agentSetupBusy.contains(provider) else { return }
-        let queued = await enqueueHistory(provider: provider, reassessing: true)
-        model.showToast(queued ? "Reading the last 7 days of this agent’s history."
-                               : "History could not be queued. Check this agent in Settings.")
+        switch await enqueueHistory(provider: provider, reassessing: true) {
+        case .queued: model.showToast("Reading the last 7 days of this agent’s history.")
+        case .storageFull: model.showToast("History could not be queued because collection storage is full.")
+        case .notQueued: model.showToast("History could not be queued. Check this agent in Settings.")
+        }
         await refresh()
     }
 
-    private enum SourceRetryOutcome { case unavailable, alreadyReading, reading, recovered, incomplete, unverifiable, failed, cancelled }
+    private enum SourceRetryOutcome {
+        case unavailable, alreadyReading, reading, recovered, incomplete, unverifiable, failed, storageFull, cancelled
+    }
 
     /// Retries each retained original selection in turn. Readers revalidate its authorized root and authority.
     private func retrySources(_ requested: [CoverageSourceRetryDescriptor]) async {
@@ -2382,6 +2395,7 @@ final class AppRuntime {
         func count(_ matching: Set<SourceRetryOutcome>) -> Int { outcomes.filter(matching.contains).count }
         let parts = [(count([.recovered]), "recovered"), (count([.reading, .alreadyReading]), "still being read"),
                      (count([.incomplete, .unverifiable]), "not fully recovered"), (count([.failed]), "couldn’t be queued"),
+                     (count([.storageFull]), "couldn’t be queued because collection storage is full"),
                      (count([.unavailable]), "skipped")]
             .filter { $0.0 > 0 }.map { "\($0.0.formatted()) \($0.1)" }
         return "Retry finished for \(plural(outcomes.count, "source")): \(parts.joined(separator: ", "))."
@@ -2458,6 +2472,9 @@ final class AppRuntime {
             return remaining.isEmpty ? .recovered : .incomplete
         } catch is CancellationError {
             return .cancelled
+        } catch StorageError.capacityExceeded(.collectionWork) {
+            toast("This source could not be queued because collection storage is full.")
+            return .storageFull
         } catch {
             toast("This source could not be queued. Check the agent in Settings or export diagnostics.")
             return .failed
@@ -2518,15 +2535,18 @@ final class AppRuntime {
         }
     }
 
+    private enum HistoryQueueOutcome { case queued, notQueued, storageFull }
+
     @discardableResult
-    private func enqueueHistory(provider: AgentProvider? = nil, reassessing: Bool = false) async -> Bool {
+    private func enqueueHistory(provider: AgentProvider? = nil, reassessing: Bool = false) async -> HistoryQueueOutcome {
         #if DEBUG
         // Acceptance against exact owned original-provider sessions must not enumerate unrelated history.
-        if CommandLine.arguments.contains("--acceptance-no-profile-catchup") { return false }
+        if CommandLine.arguments.contains("--acceptance-no-profile-catchup") { return .notQueued }
         #endif
         guard let store, let permit = await store.processingPermit(),
-              let scope = await admission.currentScope(), !terminating else { return false }
+              let scope = await admission.currentScope(), !terminating else { return .notQueued }
         var queued: Set<AgentProvider> = []
+        var storageFull = false
         do {
             let audit = try HistoricalAuditContext(id: reassessing ? UUID() : scope.catchupAuditID ?? UUID(),
                 reason: reassessing ? .resume : scope.catchupReason, endingAt: reassessing ? .now : scope.startedAt)
@@ -2541,6 +2561,10 @@ final class AppRuntime {
                     case .inserted, .alreadyQueued: queued.insert(route.route.scope.provider)
                     case .alreadyProcessed: break
                     }
+                } catch StorageError.capacityExceeded(.collectionWork) {
+                    storageFull = true
+                    try? await store.recordCoverageGap(CollectionCapacityRejection(resource: .collectionWork,
+                        scope: route.route.scope, operation: .historicalRead).gap)
                 } catch {
                     try? await store.recordCoverageGap(CoverageGap(reason: .sourceUnavailable,
                         scope: route.route.scope, operation: .historicalRead,
@@ -2551,7 +2575,7 @@ final class AppRuntime {
         } catch {
             try? await store.recordCoverageGap(reason: .sourceUnavailable)
         }
-        return !queued.isEmpty
+        return !queued.isEmpty ? .queued : storageFull ? .storageFull : .notQueued
     }
 
     private func installViewingLifecycle() {

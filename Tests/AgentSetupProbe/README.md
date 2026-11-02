@@ -23,7 +23,7 @@ instructions without claiming that public history exposed an encrypted record.
 It stays required, offers diagnostics instead of an ineffective reread, and keeps
 native session and item identities out of the exported report.
 
-Capacity checks cover count and encrypted-byte headroom, the 80% warning threshold, full storage and lowered limits. Near-capacity warnings do not create content gaps or disable a working route. The diagnostic export contains aggregate usage and configured limits only. Admission-capacity failures retain their configured route and offer diagnostics rather than an ineffective history retry. Paused and unavailable storage retain their own status.
+Capacity checks cover count and encrypted-byte headroom, the 80% warning threshold, full storage and lowered limits. Near-capacity warnings do not create content gaps or disable a working route. The diagnostic export contains aggregate usage and configured limits only. Admission-capacity failures retain their configured route and offer diagnostics rather than an ineffective history retry. Collection storage, the work ledger, has only a byte limit. Its warning shows the record count without a limit and leaves out the lifetime-records note. Refused hook deliveries and refused history pages name the storage limit, keep their route and offer diagnostics. Paused and unavailable storage retain their own status.
 
 Run from the repository root after building the core package:
 

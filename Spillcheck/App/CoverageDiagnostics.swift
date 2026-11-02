@@ -161,10 +161,12 @@ struct CoverageDiagnostics: Encodable {
         }
         let sourceAuthorities: Usage
         let codexHookContentSlots: Usage
+        let collectionWork: Usage
 
         init(_ snapshot: StoreCapacitySnapshot) {
             sourceAuthorities = Usage(snapshot.sourceAuthorities)
             codexHookContentSlots = Usage(snapshot.codexHookContentSlots)
+            collectionWork = Usage(snapshot.collectionWork)
         }
     }
     struct Route: Encodable {

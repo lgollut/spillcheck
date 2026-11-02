@@ -10,10 +10,14 @@ import SpillcheckCore
 struct CollectionCapacityRejection: Error, Sendable {
     let gap: CoverageGap
 
-    init(resource: StorageCapacityResource, scope: CollectionScope, at time: Date = Date()) {
-        gap = CoverageGap(reason: .budgetExhausted, scope: scope, operation: .hookDelivery,
-            diagnosticCode: resource == .sourceAuthorities ? .authorityStorageLimit : .hookStorageLimit,
-            observedAt: time)
+    init(resource: StorageCapacityResource, scope: CollectionScope, operation: CollectionOperation = .hookDelivery,
+         at time: Date = Date()) {
+        let code: CoverageDiagnosticCode = switch resource {
+        case .sourceAuthorities: .authorityStorageLimit
+        case .codexHookContentSlots: .hookStorageLimit
+        case .collectionWork: .workStorageLimit
+        }
+        gap = CoverageGap(reason: .budgetExhausted, scope: scope, operation: operation, diagnosticCode: code, observedAt: time)
     }
 }
 

@@ -52,7 +52,7 @@ enum CoverageCause: Hashable {
     /// Codes with their own explanation. Any other code shares its reason's explanation.
     private static let explainedCodes: Set<CoverageDiagnosticCode> = [.encryptedContentUnavailable,
         .nativeChildInputUnavailable, .hookIdentityConflict, .hookInterrupted, .hookContentUnavailable,
-        .hookStorageLimit, .authorityStorageLimit]
+        .hookStorageLimit, .authorityStorageLimit, .workStorageLimit]
 
     init(_ key: CoverageGroupKey) {
         if let code = key.diagnosticCode, Self.explainedCodes.contains(code) { self = .diagnostic(code) }
@@ -73,6 +73,8 @@ enum CoverageCause: Hashable {
         case .diagnostic(.hookStorageLimit): "Hook collection reached its storage limit. New hook content could not be analyzed."
         case .diagnostic(.authorityStorageLimit):
             "Conversation tracking reached its storage limit. This conversation could not be registered for collection."
+        case .diagnostic(.workStorageLimit):
+            "Collection storage reached its limit. New content could not be collected."
         case .diagnostic: "Some content couldn’t be analyzed."
         case .reason(let reason): AppModel.gapText(reason)
         }
@@ -128,21 +130,30 @@ extension AppModel {
         let usage: StoreCapacityUsage
 
         var title: String {
-            let name = id == .sourceAuthorities ? "Conversation tracking storage" : "Codex hook storage"
+            let name = switch id {
+            case .sourceAuthorities: "Conversation tracking storage"
+            case .codexHookContentSlots: "Codex hook storage"
+            case .collectionWork: "Collection storage"
+            }
             return name + (usage.state == .nearCapacity ? " is nearly full" : " has reached its limit")
         }
         var detail: String {
-            if usage.state == .nearCapacity {
-                return id == .sourceAuthorities
-                    ? "New conversations may soon be unable to start collection."
-                    : "New Codex hook content may soon be unable to enter analysis."
-            }
-            return id == .sourceAuthorities
-                ? "New conversations cannot be registered at this limit. Existing registrations are preserved."
+            let near = usage.state == .nearCapacity
+            return switch id {
+            case .sourceAuthorities: near ? "New conversations may soon be unable to start collection."
+                : "New conversations cannot be registered at this limit. Existing registrations are preserved."
+            case .codexHookContentSlots: near ? "New Codex hook content may soon be unable to enter analysis."
                 : "New Codex hook records cannot be stored at this limit. Existing replay checks are preserved."
+            case .collectionWork: near ? "New content may soon be refused. Records of unfinished reads are kept for 30 days."
+                : "New content cannot be collected at this limit. Records of unfinished reads are kept for 30 days."
+            }
         }
+        /// Lifetime records prevent duplicate findings and are never pruned.
+        var isLifetime: Bool { id != .collectionWork }
         var countText: String {
-            "\(usage.count.formatted()) of \(usage.countLimit.formatted()) records used · \(usage.remainingCount.formatted()) remaining"
+            // Only the collection storage's bytes are bounded, so its record count has no limit to show.
+            guard isLifetime else { return "\(plural(usage.count, "record")) stored" }
+            return "\(usage.count.formatted()) of \(usage.countLimit.formatted()) records used · \(usage.remainingCount.formatted()) remaining"
         }
         var byteText: String {
             func bytes(_ count: Int) -> String {
@@ -152,10 +163,12 @@ extension AppModel {
         }
     }
 
-    /// Lifetime collection metadata is distinct from content gaps in the report window.
+    /// Storage limits are distinct from content gaps in the report window. A full collection
+    /// storage refuses every capture, so it is listed first.
     var collectionStorageWarnings: [CollectionStorageWarning] {
         guard !storageUnavailable, let capacity = coverageReport?.capacity else { return [] }
-        return [CollectionStorageWarning(id: .sourceAuthorities, usage: capacity.sourceAuthorities),
+        return [CollectionStorageWarning(id: .collectionWork, usage: capacity.collectionWork),
+                CollectionStorageWarning(id: .sourceAuthorities, usage: capacity.sourceAuthorities),
                 CollectionStorageWarning(id: .codexHookContentSlots, usage: capacity.codexHookContentSlots)]
             .filter { $0.usage.state != .available }
     }
@@ -202,6 +215,7 @@ extension AppModel {
                 case .hookContentUnavailable: return "Hook content unavailable"
                 case .hookStorageLimit: return "Hook storage limit reached"
                 case .authorityStorageLimit: return "Conversation storage limit reached"
+                case .workStorageLimit: return "Collection storage limit reached"
                 case .nativeChildInputUnavailable: return "Subagent input unavailable"
                 default: break
                 }
@@ -685,7 +699,7 @@ extension AppModel {
             }
             // Unexposed or opaque input and hook-only content have no supported history repair.
             if gap.diagnosticCode == .encryptedContentUnavailable || gap.diagnosticCode == .authorityStorageLimit
-                || gap.diagnosticCode == .nativeChildInputUnavailable
+                || gap.diagnosticCode == .nativeChildInputUnavailable || gap.diagnosticCode == .workStorageLimit
                 || gap.diagnosticCode == .hookStorageLimit || gap.scope?.path == .hook,
                ![.recovered, .excluded, .queued, .reading, .historicalLoss].contains(observation.state) {
                 row.action = .exportDiagnostics

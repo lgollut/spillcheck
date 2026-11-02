@@ -18,7 +18,7 @@ public enum StorageError: Error, Equatable, Sendable {
 
 /// Allowlisted quota names, never an upstream session or source identifier.
 public enum StorageCapacityResource: String, Codable, Sendable {
-    case sourceAuthorities, codexHookContentSlots
+    case sourceAuthorities, codexHookContentSlots, collectionWork
 }
 
 public enum StoreCapacityState: String, Codable, Sendable {
@@ -63,10 +63,15 @@ public struct StoreCapacityUsage: Equatable, Codable, Sendable {
 public struct StoreCapacitySnapshot: Equatable, Codable, Sendable {
     public let sourceAuthorities: StoreCapacityUsage
     public let codexHookContentSlots: StoreCapacityUsage
+    /// Every capture's work row. Only its encrypted bytes are bounded, so its count limit is `Int.max`.
+    /// When nothing in it can be pruned, new captures are refused until it has room again.
+    public let collectionWork: StoreCapacityUsage
 
-    public init(sourceAuthorities: StoreCapacityUsage, codexHookContentSlots: StoreCapacityUsage) {
+    public init(sourceAuthorities: StoreCapacityUsage, codexHookContentSlots: StoreCapacityUsage,
+                collectionWork: StoreCapacityUsage) {
         self.sourceAuthorities = sourceAuthorities
         self.codexHookContentSlots = codexHookContentSlots
+        self.collectionWork = collectionWork
     }
 }
 

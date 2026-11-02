@@ -33,15 +33,19 @@ final class ViewingController {
     @ObservationIgnored private let session: InventoryViewingSession
     @ObservationIgnored private let loadPayload: @MainActor (ProtectedPayloadReference) async throws -> ProtectedPayload?
     @ObservationIgnored private let selectionIsCurrent: @MainActor (InventoryRevealSelection) async -> Bool
+    /// Finds the call behind a tool output kept before calls were kept with it, in the agent's history.
+    @ObservationIgnored private let lookUpToolCall: @MainActor (UUID, RetainedSourceContext) async -> RetainedToolCall?
     @ObservationIgnored private var guardState = InventoryRevealGuard()
     @ObservationIgnored private var currentRequest: InventoryRevealGuard.Ticket?
 
     init(session: InventoryViewingSession,
          loadPayload: @escaping @MainActor (ProtectedPayloadReference) async throws -> ProtectedPayload?,
-         selectionIsCurrent: @escaping @MainActor (InventoryRevealSelection) async -> Bool) {
+         selectionIsCurrent: @escaping @MainActor (InventoryRevealSelection) async -> Bool,
+         lookUpToolCall: @escaping @MainActor (UUID, RetainedSourceContext) async -> RetainedToolCall? = { _, _ in nil }) {
         self.session = session
         self.loadPayload = loadPayload
         self.selectionIsCurrent = selectionIsCurrent
+        self.lookUpToolCall = lookUpToolCall
     }
 
     var isAuthorized: Bool { session.isAuthorized }
@@ -126,7 +130,11 @@ final class ViewingController {
                 case .excerpt(let occurrenceID, _):
                     next.excerpts[occurrenceID] = try JSONDecoder().decode(RetainedExcerpt.self, from: bytes)
                 case .sourceMetadata(let occurrenceID, _), .unlocatedSourceMetadata(let occurrenceID, _):
-                    next.sourceMetadata[occurrenceID] = try JSONDecoder().decode(RetainedSourceContext.self, from: bytes)
+                    var context = try JSONDecoder().decode(RetainedSourceContext.self, from: bytes)
+                    if context.toolCall == nil, let found = await lookUpToolCall(occurrenceID, context) {
+                        context = context.with(toolCall: found)
+                    }
+                    next.sourceMetadata[occurrenceID] = context
                 }
             }
             guard guardState.accepts(ticket), session.isAuthorized else { throw ViewingAuthorizationError.invalidated }

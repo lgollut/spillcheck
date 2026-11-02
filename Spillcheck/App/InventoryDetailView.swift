@@ -325,6 +325,10 @@ private struct EvidenceCard: View {
         VStack(alignment: .leading, spacing: 0) {
             sourceHeader
             Rectangle().fill(Palette.shade.opacity(0.07)).frame(height: 1)
+            if let call = source?.toolCall {
+                ToolCallStrip(call: call, projectPath: source?.projectPath)
+                Rectangle().fill(Palette.shade.opacity(0.07)).frame(height: 1)
+            }
             context
             if let failure = occurrence.locationFailure {
                 Text(InventoryDetailView.locationMessage(failure))
@@ -470,6 +474,65 @@ private struct EvidenceCard: View {
             searchStart = range.upperBound
         }
         return attributed
+    }
+}
+
+/// Where a tool output came from, above its excerpt like a file's tab: the files its call read or
+/// changed, or the program it ran, and on the right the tool that ran it.
+private struct ToolCallStrip: View {
+    let call: RetainedToolCall
+    let projectPath: String?
+    private static let shownPaths = 3
+
+    var body: some View {
+        let paths = call.displayPaths(relativeTo: projectPath, home: NSHomeDirectory())
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: paths.isEmpty ? "terminal" : "doc.text")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(Palette.tertiary)
+                .frame(width: 14)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                if paths.isEmpty {
+                    Text(verbatim: call.subject)
+                        .font(.system(size: 12, design: .monospaced)).foregroundStyle(Palette.ink)
+                        .lineLimit(1).truncationMode(.middle)
+                        .textSelection(.enabled)
+                } else {
+                    ForEach(paths.prefix(Self.shownPaths), id: \.self) { path in
+                        Text(verbatim: path)
+                            .font(.system(size: 12, design: .monospaced)).foregroundStyle(Palette.ink)
+                            .lineLimit(1).truncationMode(.middle)
+                            .textSelection(.enabled)
+                            .help(path)
+                    }
+                    if paths.count > Self.shownPaths {
+                        Text("and \(plural(paths.count - Self.shownPaths, "more file"))")
+                            .font(.system(size: 11.5)).foregroundStyle(Palette.tertiary)
+                            .help(paths.dropFirst(Self.shownPaths).joined(separator: "\n"))
+                    }
+                }
+            }
+            .privacySensitive()
+            Spacer(minLength: 12)
+            if let method = call.method {
+                Text(verbatim: method)
+                    .font(.system(size: 11.5)).foregroundStyle(Palette.tertiary)
+                    .lineLimit(1).fixedSize()
+                    .help(paths.isEmpty ? "The tool that ran it." : "How the agent read or changed this file.")
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Palette.well.opacity(0.6))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityText(paths))
+        .accessibilityIdentifier("inventory.detail.tool-call")
+    }
+
+    private func accessibilityText(_ paths: [String]) -> String {
+        if paths.isEmpty { return "Output of \(call.subject)" + (call.method.map { ", \($0)" } ?? "") }
+        return "From " + paths.joined(separator: ", ") + (call.method.map { ", \($0)" } ?? "")
     }
 }
 

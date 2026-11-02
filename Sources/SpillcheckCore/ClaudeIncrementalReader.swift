@@ -333,7 +333,8 @@ extension ClaudeAdapter {
         let committed = SourceCheckpoint(capabilityID: documentID, sourceDocumentID: checkpointID,
             revision: revision, byteOffset: state.forwardOffset, lastContentTime: state.lastContentTime,
             gaps: gaps, adapterState: encoded)
-        imported = .init(sources: imported.sources, coverageGaps: gaps, checkpoint: committed,
+        imported = .init(sources: attachingEarlierToolCalls(imported.sources, fd: fd, before: start),
+            coverageGaps: gaps, checkpoint: committed,
             recoveredReferences: imported.recoveredReferences)
         return ClaudeIncrementalRead(batch: imported, bytesRead: bytesRead, hasForwardContent: forward,
             hasUnreadContent: unread, canContinueHistory: forward || (state.reverseEnd > 0 && !state.stoppedAtCutoff),

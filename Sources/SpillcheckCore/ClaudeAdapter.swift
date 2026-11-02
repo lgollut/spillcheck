@@ -332,6 +332,7 @@ public struct ClaudeAdapter: CaptureNormalizer, Sendable {
         guard rowBudget > 0 else { throw ClaudeCollectionError.invalidConfiguration }
         let page = try parsedPage ?? transcriptPage(bounded, maximumRows: rowBudget)
         let ambiguousTools = try ambiguousToolResults(page)
+        let toolCalls = Self.toolCalls(in: page)
         var offset = 0, rowIndex: UInt64 = 0
         for line in bounded.split(separator: 10, omittingEmptySubsequences: false) {
             try Task.checkCancellation()
@@ -384,7 +385,8 @@ public struct ClaudeAdapter: CaptureNormalizer, Sendable {
                 let record = try SourceRecord(metadata: metadata, revision: revision, segments: segments)
                 let sourceContext = RetainedSourceContext(sessionIdentifier: sessionID,
                     title: context?.title, projectPath: context?.projectPath ?? row["cwd"].string,
-                    transcriptPath: context?.transcriptPath, openingCapability: context?.openingCapability ?? .unverified)
+                    transcriptPath: context?.transcriptPath, openingCapability: context?.openingCapability ?? .unverified,
+                    toolCall: itemID.hasPrefix("tool:") ? toolCalls[String(itemID.dropFirst("tool:".count))] : nil)
                 sources.append(CollectedSource(record: record, context: sourceContext))
             }
             guard let type = row["type"].string else { addGap(.malformedSource); continue }
@@ -976,5 +978,134 @@ fileprivate enum ClaudeJSON: Decodable, Sendable {
         case .string, .array, .object: true
         default: false
         }
+    }
+}
+
+// MARK: - Tool calls
+
+extension ClaudeAdapter {
+    /// What a Claude Code tool call read or changed. Built-in file tools name their file, a Bash command
+    /// is summarized, and any other tool is kept by name. Relative paths resolve against the row's `cwd`.
+    fileprivate static func toolCall(name: String, input: ClaudeJSON, directory: String?) -> RetainedToolCall? {
+        var program: String?, paths: [String] = []
+        switch name {
+        case "Read", "Write", "Edit", "MultiEdit": paths = [input["file_path"].nonemptyString].compactMap { $0 }
+        case "NotebookEdit", "NotebookRead": paths = [input["notebook_path"].nonemptyString].compactMap { $0 }
+        case "Grep", "Glob", "LS": paths = [input["path"].nonemptyString].compactMap { $0 }
+        case "Bash":
+            let summary = ShellCommandSummary(input["command"].string ?? "")
+            program = summary.program
+            paths = summary.paths
+        default: break
+        }
+        return RetainedToolCall(tool: name, program: program, paths: RetainedToolCall.resolve(paths, against: directory))
+    }
+
+    /// The calls made in a page, by tool-use ID. A call usually comes just before its result.
+    fileprivate static func toolCalls(in page: ClaudeTranscriptPage) -> [String: RetainedToolCall] {
+        var calls: [String: RetainedToolCall] = [:]
+        for parsed in page.rows {
+            guard let row = parsed.value, row["type"].string == "assistant" else { continue }
+            for block in row["message"]["content"].array ?? [] where block["type"].string == "tool_use" {
+                guard let id = block["id"].nonemptyString, let name = block["name"].nonemptyString,
+                      let call = toolCall(name: name, input: block["input"], directory: row["cwd"].string) else { continue }
+                calls[id] = call
+            }
+        }
+        return calls
+    }
+
+    /// How far before a page one result's call is looked for, and how much one read may search in all.
+    static let earlierToolCallReach = 1024 * 1024
+    static let earlierToolCallBudget = 4 * 1024 * 1024
+
+    /// A result's call is often in an earlier read: the transcript poll can read the call while the tool
+    /// is still running. Look for it just before this page. Searching never changes what was analyzed.
+    func attachingEarlierToolCalls(_ sources: [CollectedSource], fd: Int32, before start: UInt64) -> [CollectedSource] {
+        var budget = Self.earlierToolCallBudget
+        return sources.map { source in
+            let itemID = source.record.metadata.identity.itemID
+            guard budget > 0, start > 0, itemID.hasPrefix("tool:"), let context = source.context,
+                  context.toolCall == nil else { return source }
+            let found = Self.searchToolCall(id: String(itemID.dropFirst("tool:".count)), fd: fd, before: start,
+                maximumBytes: min(budget, Self.earlierToolCallReach))
+            budget -= max(found.scanned, 1)
+            guard let call = found.call else { return source }
+            return CollectedSource(record: source.record, context: context.with(toolCall: call))
+        }
+    }
+
+    /// Looks back from `end` for the assistant row that made call `id`, reading at most `maximumBytes`.
+    static func findToolCall(id: String, fd: Int32, before end: UInt64, maximumBytes: Int) -> RetainedToolCall? {
+        searchToolCall(id: id, fd: fd, before: end, maximumBytes: maximumBytes).call
+    }
+
+    /// Claude Code writes compact JSON, so a call's `"id":"…"` is searched as bytes, then its row is
+    /// parsed to confirm it. A result's `"tool_use_id"` never matches.
+    private static func searchToolCall(id: String, fd: Int32, before end: UInt64,
+                                       maximumBytes: Int) -> (call: RetainedToolCall?, scanned: Int) {
+        guard !id.isEmpty, id.utf8.count <= 128,
+              id.unicodeScalars.allSatisfy({ $0.isASCII && ($0.properties.isAlphabetic || ("0"..."9").contains($0) || $0 == "_" || $0 == "-") })
+        else { return (nil, 0) }
+        let needle = Data("\"id\":\"\(id)\"".utf8)
+        let chunk = 64 * 1024
+        var upper = end, scanned = 0, following = Data()
+        while upper > 0, scanned < maximumBytes {
+            let lower = upper - min(upper, UInt64(min(chunk, maximumBytes - scanned)))
+            guard let read = try? claudePread(fd, offset: lower, count: Int(upper - lower)), !read.isEmpty else { break }
+            scanned += read.count
+            // The start of the chunk read before keeps a match that crosses the boundary.
+            let window = read + following
+            var searchEnd = window.endIndex
+            while let match = window.range(of: needle, options: .backwards, in: window.startIndex..<searchEnd) {
+                if let call = toolCallRow(at: lower + UInt64(match.lowerBound - window.startIndex), id: id, fd: fd) {
+                    return (call, scanned)
+                }
+                searchEnd = match.lowerBound
+            }
+            following = Data(read.prefix(needle.count - 1))
+            upper = lower
+        }
+        return (nil, scanned)
+    }
+
+    /// The call in the complete row around byte `position`, when that row is the assistant's call `id`.
+    private static func toolCallRow(at position: UInt64, id: String, fd: Int32) -> RetainedToolCall? {
+        let limit = 8 * 1024 * 1024
+        guard let start = lineBoundary(fd: fd, from: position, backwards: true, limit: limit),
+              let end = lineBoundary(fd: fd, from: position, backwards: false, limit: limit),
+              end > start, end - start <= UInt64(limit),
+              let line = try? claudePread(fd, offset: start, count: Int(end - start)),
+              let row = try? JSONDecoder().decode(ClaudeJSON.self, from: line),
+              row["type"].string == "assistant" else { return nil }
+        for block in row["message"]["content"].array ?? []
+        where block["type"].string == "tool_use" && block["id"].string == id {
+            guard let name = block["name"].nonemptyString else { return nil }
+            return toolCall(name: name, input: block["input"], directory: row["cwd"].string)
+        }
+        return nil
+    }
+
+    /// The offset just after the newline before `position`, or of the newline after it. A row
+    /// without its closing newline is still being written, so it has no end yet.
+    private static func lineBoundary(fd: Int32, from position: UInt64, backwards: Bool, limit: Int) -> UInt64? {
+        let chunk = 64 * 1024
+        var cursor = position, travelled = 0
+        while travelled < limit {
+            if backwards {
+                if cursor == 0 { return 0 }
+                let lower = cursor - min(cursor, UInt64(chunk))
+                guard let data = try? claudePread(fd, offset: lower, count: Int(cursor - lower)), !data.isEmpty else { return nil }
+                if let newline = data.lastIndex(of: 10) { return lower + UInt64(newline - data.startIndex) + 1 }
+                travelled += data.count
+                cursor = lower
+            } else {
+                guard let data = try? claudePread(fd, offset: cursor, count: chunk), !data.isEmpty else { return nil }
+                if let newline = data.firstIndex(of: 10) { return cursor + UInt64(newline - data.startIndex) }
+                travelled += data.count
+                cursor += UInt64(data.count)
+            }
+        }
+        return nil
     }
 }

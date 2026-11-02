@@ -52,6 +52,10 @@ _Avoid_: Agent host, which describes where the session runs or is presented.
 Content returned by a tool during an agentic session, including results and errors.
 _Avoid_: Model response, when referring to a tool result.
 
+**Tool call**:
+The agent's request that produced a tool output, known by its tool and the program and files it named.
+_Avoid_: Tool input, which also covers the call's arguments.
+
 **Model response**:
 A message produced by the model during an agentic session, whether intermediate or final.
 _Avoid_: Tool output, when referring to an assistant message.

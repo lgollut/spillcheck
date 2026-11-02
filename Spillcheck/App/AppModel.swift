@@ -1278,9 +1278,10 @@ final class AppModel {
         if let valueID = summary.entry.valueID { revealedContent[valueID] = value }
         if let occurrence = selectedOccurrenceID {
             revealedExcerpts[occurrence] = RetainedExcerpt(
-                text: "$ cat .env.local\nNODE_ENV=development\nAPI_TOKEN=\(value)\nLOG_LEVEL=debug", clipped: true)
+                text: "NODE_ENV=development\nAPI_TOKEN=\(value)\nLOG_LEVEL=debug", clipped: true)
             revealedSourceMetadata[occurrence] = RetainedSourceContext(
-                sessionIdentifier: "sample", title: "Fix the flaky deploy script", projectPath: "~/dev/sample-app")
+                sessionIdentifier: "sample", title: "Fix the flaky deploy script", projectPath: "~/dev/sample-app",
+                toolCall: RetainedToolCall(tool: "exec_command", program: "cat", paths: ["~/dev/sample-app/.env.local"]))
         }
     }
 

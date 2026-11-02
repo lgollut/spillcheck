@@ -7,14 +7,23 @@ public struct RetainedSourceContext: Codable, Sendable, Equatable {
     public let projectPath: String?
     public let transcriptPath: String?
     public let openingCapability: SourceOpeningCapability
+    /// For a tool output, the call that produced it. Missing from contexts kept before calls were.
+    public let toolCall: RetainedToolCall?
 
     public init(sessionIdentifier: String, title: String? = nil, projectPath: String? = nil,
-                transcriptPath: String? = nil, openingCapability: SourceOpeningCapability = .unverified) {
+                transcriptPath: String? = nil, openingCapability: SourceOpeningCapability = .unverified,
+                toolCall: RetainedToolCall? = nil) {
         self.sessionIdentifier = sessionIdentifier
         self.title = title
         self.projectPath = projectPath
         self.transcriptPath = transcriptPath
         self.openingCapability = openingCapability
+        self.toolCall = toolCall
+    }
+
+    public func with(toolCall: RetainedToolCall?) -> RetainedSourceContext {
+        RetainedSourceContext(sessionIdentifier: sessionIdentifier, title: title, projectPath: projectPath,
+            transcriptPath: transcriptPath, openingCapability: openingCapability, toolCall: toolCall)
     }
 }
 

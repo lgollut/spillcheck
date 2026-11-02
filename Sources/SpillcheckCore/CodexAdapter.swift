@@ -481,9 +481,11 @@ public struct CodexAdapter: CaptureNormalizer, SourceHistoricalCaptureProducer, 
                 hasContentGap = true
             }
             if !segments.isEmpty, let kind {
+                let call = kind == .toolOutput || kind == .toolError ? RetainedToolCall.codex(item: item) : nil
                 sources.append(try await source(sessionID: threadID, itemID: id, kind: kind, segments: segments,
                     date: date, observedAt: observedAt, provenance: provenance, locator: .upstreamItem,
-                    context: context, producerVersion: producerVersion, cryptography: cryptography))
+                    context: call.map { context.with(toolCall: $0) } ?? context,
+                    producerVersion: producerVersion, cryptography: cryptography))
             }
             if !hasContentGap {
                 recovered.append(.init(session: session, locator: .upstreamItem, itemID: id, contentTime: date,
@@ -512,6 +514,7 @@ public struct CodexAdapter: CaptureNormalizer, SourceHistoricalCaptureProducer, 
         let session = try SessionIdentity(provider: .codex, profileID: profileID, sessionID: expectedSessionID)
         var sources: [CollectedSource] = [], gaps: [CoverageGap] = [], recovered: [CoverageRecoveryReference] = []
         var offset = 0, index: UInt64 = 0
+        var toolCalls = CodexToolCallIndex()
         let bounded = data.prefix(limits.maximumBytes)
         for line in bounded.split(separator: 10, omittingEmptySubsequences: false) {
             try Task.checkCancellation()
@@ -539,6 +542,7 @@ public struct CodexAdapter: CaptureNormalizer, SourceHistoricalCaptureProducer, 
             guard !line.isEmpty else { continue }
             guard line.count <= limits.maximumRowBytes else { gap(.budgetExhausted); continue }
             guard let row = try? JSONDecoder().decode(CodexJSON.self, from: Data(line)) else { gap(.malformedSource); continue }
+            toolCalls.observe(row)
             let body = row["payload"]
             if row["type"].string == "session_meta" {
                 guard body["id"].string == expectedSessionID else { throw CodexCollectionError.authorityConflict }
@@ -609,9 +613,11 @@ public struct CodexAdapter: CaptureNormalizer, SourceHistoricalCaptureProducer, 
                 hasContentGap = true
             }
             if !segments.isEmpty, let kind {
+                let call = toolCalls.call(forItem: id)
                 sources.append(try await source(sessionID: expectedSessionID, itemID: id, kind: kind,
                     segments: segments, date: parsedDate, observedAt: observedAt, provenance: provenance,
-                    locator: locator, context: context, producerVersion: producerVersion, cryptography: cryptography))
+                    locator: locator, context: call.map { (context ?? .init(sessionIdentifier: expectedSessionID)).with(toolCall: $0) } ?? context,
+                    producerVersion: producerVersion, cryptography: cryptography))
             }
             if !hasContentGap {
                 recovered.append(.init(session: session, locator: locator, contentTime: parsedDate, parserContract: Self.parserContract))

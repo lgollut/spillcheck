@@ -237,6 +237,42 @@ struct ClaudeMonitorTests {
         #expect(await gaps() == 2)
     }
 
+    @Test func writesToPolledChildrenRecordNoGapWhenThereAreMoreThanTheBudget() async throws {
+        let directory = try claudeSetupDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let parent = directory.appendingPathComponent("parent.jsonl")
+        let subagents = directory.appendingPathComponent("parent/subagents")
+        for index in 0..<40 { try monitorAgent(subagents, "agent-\(index)", modified: Date(timeIntervalSinceNow: -7200 + Double(index) * 10)) }
+        let sink = ClaudeMonitorSink()
+        let monitor = try ClaudeActiveTranscriptMonitor(profileID: "test", sources: [.init(sessionID: "parent", transcriptURL: parent)],
+            enqueue: { packet, _ in try await sink.accept(packet) }, onGap: { await sink.recordGap($0) })
+        let start = Date()
+        _ = try await monitor.pollOnce(at: start)
+        // The newest agent is live and polled; writing it is not lost coverage, however long it goes on.
+        for pass in 1...20 {
+            try monitorTouch(subagents, "agent-39", modified: Date(timeIntervalSinceNow: Double(pass)))
+            _ = try await monitor.pollOnce(at: start.addingTimeInterval(Double(pass) * 30))
+        }
+        #expect(await sink.observedGaps().filter { $0.reason == .budgetExhausted }.isEmpty)
+    }
+
+    @Test func aNewChildOutsideTheNewest32IsReported() async throws {
+        let directory = try claudeSetupDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let parent = directory.appendingPathComponent("parent.jsonl")
+        let subagents = directory.appendingPathComponent("parent/subagents")
+        for index in 0..<40 { try monitorAgent(subagents, "agent-\(index)", modified: Date(timeIntervalSinceNow: -7200 + Double(index) * 10)) }
+        let sink = ClaudeMonitorSink()
+        let monitor = try ClaudeActiveTranscriptMonitor(profileID: "test", sources: [.init(sessionID: "parent", transcriptURL: parent)],
+            enqueue: { packet, _ in try await sink.accept(packet) }, onGap: { await sink.recordGap($0) })
+        let start = Date()
+        _ = try await monitor.pollOnce(at: start)
+        _ = try await monitor.pollOnce(at: start.addingTimeInterval(1))
+        #expect(await sink.observedGaps().filter { $0.reason == .budgetExhausted }.isEmpty)
+        // It sorts below the 32 newest, so it is never polled and nothing in it is read.
+        try monitorAgent(subagents, "late-arrival", modified: Date(timeIntervalSinceNow: -7300))
+        _ = try await monitor.pollOnce(at: start.addingTimeInterval(2))
+        #expect(await sink.observedGaps().filter { $0.reason == .budgetExhausted }.count == 1)
+    }
+
     @Test func manyChildrenWrittenAtOnceAreStillReported() async throws {
         let directory = try claudeSetupDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
         let parent = directory.appendingPathComponent("parent.jsonl")

@@ -192,10 +192,14 @@ struct ClaudeMonitorTests {
         #expect(try await monitor.pollOnce() == 0)
         try Data("{}\n{}\n".utf8).write(to:file)
         await sink.setReject(true)
-        await #expect(throws:ClaudeCollectionError.awaitingTranscript) { try await monitor.pollOnce() }
+        let failedAt = Date()
+        await #expect(throws:ClaudeCollectionError.awaitingTranscript) { try await monitor.pollOnce(at: failedAt) }
         await sink.setReject(false)
-        #expect(try await monitor.pollOnce() == 1)
-        #expect(try await monitor.pollOnce() == 0)
+        // A failed enqueue is retried with backoff, so the retry waits out its delay.
+        #expect(try await monitor.pollOnce(at: failedAt) == 0)
+        let retryAt = failedAt.addingTimeInterval(1)
+        #expect(try await monitor.pollOnce(at: retryAt) == 1)
+        #expect(try await monitor.pollOnce(at: retryAt) == 0)
         #expect(await sink.count() == 2)
     }
 

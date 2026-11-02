@@ -1,32 +1,34 @@
 import SwiftUI
 import SpillcheckCore
 
+/// One value, evidence first: what it is, where it appeared with its context, and every conversation
+/// that printed it. The decision bar sits in the window's bottom row, beside the sidebar footer.
 struct InventoryDetailView: View {
     let model: AppModel
     let summary: EntrySummary
     @State private var moreOpen = false
+    @State private var openConversation: SessionIdentity?
 
     private var entry: InventoryEntry { summary.entry }
     private var disabled: Bool { !model.storageReady || model.actionBusy || model.isDemo }
-    private var selectedOccurrence: InventoryOccurrencePresentation? {
-        summary.occurrences.first { $0.id == model.selectedOccurrenceID }
+    private var shownOccurrence: InventoryOccurrencePresentation? {
+        summary.occurrences.first { $0.id == model.selectedOccurrenceID } ?? summary.occurrences.first
     }
-    private var quiet: Bool { summary.acknowledged || summary.dismissed }
-    private var sheet: Binding<DetailSheet?> { Binding(get: { model.detailSheet }, set: { model.detailSheet = $0 }) }
 
     var body: some View {
-        VStack(spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    header
-                    secretSection.padding(.top, 14)
-                    appearances.padding(.top, 14)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                header
+                if summary.occurrences.isEmpty {
+                    nothingKept.padding(.top, 22)
+                } else {
+                    evidence.padding(.top, 22)
+                    appearances.padding(.top, 28)
                 }
-                .padding(.top, 26)
-                .padding(.horizontal, 32)
-                .padding(.bottom, 32)
             }
-            WhatToDoFooter(model: model, summary: summary, disabled: disabled, sheet: sheet)
+            .padding(.top, 26)
+            .padding(.horizontal, 32)
+            .padding(.bottom, 32)
         }
         .sheet(item: Binding(get: { model.detailSheet }, set: { model.detailSheet = $0 }),
                onDismiss: { model.terminalResumeCommand = nil }) { presented in
@@ -40,74 +42,71 @@ struct InventoryDetailView: View {
     private var header: some View {
         HStack(alignment: .top, spacing: 14) {
             ValueTile(text: summary.kind.monogram, colors: TileColors.forEntry(entry), size: 44)
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 7) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(summary.kind.title)
                         .font(.system(size: 19, weight: .semibold)).tracking(-0.2)
                         .lineLimit(1)
                         .accessibilityAddTraits(.isHeader)
-                    Text(summary.label).font(.system(size: 12, design: .monospaced)).foregroundStyle(Palette.quaternary).fixedSize()
-                }
-                HStack(spacing: 8) {
-                    if let signal = entry.detectorSignal {
-                        HStack(spacing: 7) {
-                            SignalBars(strong: signal == .strong, heights: [5, 8, 11])
-                            Text(signal == .strong ? "Strong match" : "Ambiguous match")
-                        }
-                        .font(.system(size: 12.5, weight: .medium))
-                        .foregroundStyle(Palette.ink)
-                        .help(entry.evidence.first.map { $0.reason.explanation } ?? "")
-                    } else {
-                        Text("Recognition marker").font(.system(size: 12.5, weight: .medium)).foregroundStyle(Palette.ink)
-                    }
-                    if let rule = entry.evidence.first?.rule.id {
-                        Text("·").foregroundStyle(Palette.faint)
-                        Text(rule).font(.system(size: 11.5, design: .monospaced)).foregroundStyle(Palette.quaternary)
-                            .lineLimit(1).truncationMode(.middle)
-                            .help("Detector rule \(rule)")
+                    if !summary.label.isEmpty {
+                        Text(summary.label).font(.system(size: 12, design: .monospaced)).foregroundStyle(Palette.quaternary)
+                            .fixedSize()
+                            .help("Entry number. It tells values apart while they’re hidden.")
                     }
                 }
-                .font(.system(size: 12.5))
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    SignalTag(entry: entry)
+                    if let why {
+                        Text(why).font(.system(size: 12.5)).foregroundStyle(Palette.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
             }
             Spacer(minLength: 0)
-            if !actions.isEmpty {
-                Button { moreOpen.toggle() } label: {
-                    Image(systemName: "ellipsis").font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.ink2)
-                        .frame(width: 30, height: 28)
-                        .background(Palette.surface, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(Color(hex: 0xd8dedb, dark: 0x3a3e3c)))
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .disabled(disabled)
-                .accessibilityLabel("More actions for this value")
-                .popover(isPresented: $moreOpen, arrowEdge: .bottom) {
-                    VStack(alignment: .leading, spacing: 1) {
-                        ForEach(actions, id: \.title) { action in
-                            Button {
-                                moreOpen = false
-                                model.detailSheet = action.sheet
-                            } label: {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(action.title).font(.system(size: 13, weight: .medium)).foregroundStyle(Palette.red)
-                                    Text(action.detail).font(.system(size: 11.5)).foregroundStyle(Palette.secondary)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.horizontal, 10).padding(.vertical, 8)
-                                .contentShape(Rectangle())
-                                .hoverFill(hover: Color(light: Color(hex: 0xf2f5f3), dark: .white.opacity(0.08)), radius: 6)
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityIdentifier(action.identifier)
+            if !actions.isEmpty { moreButton.padding(.top, -2) }
+        }
+    }
+
+    private var why: String? {
+        if summary.unlocated { return "The detector couldn’t locate the exact value, so only its source is kept." }
+        return entry.evidence.first.map { $0.reason.explanation }
+    }
+
+    private var moreButton: some View {
+        Button { moreOpen.toggle() } label: {
+            Image(systemName: "ellipsis").font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.ink2)
+                .frame(width: 30, height: 28)
+                .background(Palette.surface, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(Color(hex: 0xd8dedb, dark: 0x3a3e3c)))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .accessibilityLabel("More actions for this value")
+        .popover(isPresented: $moreOpen, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 1) {
+                ForEach(actions, id: \.title) { action in
+                    Button {
+                        moreOpen = false
+                        model.detailSheet = action.sheet
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(action.title).font(.system(size: 13, weight: .medium)).foregroundStyle(Palette.red)
+                            Text(action.detail).font(.system(size: 11.5)).foregroundStyle(Palette.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 10).padding(.vertical, 8)
+                        .contentShape(Rectangle())
+                        .hoverFill(hover: Color(light: Color(hex: 0xf2f5f3), dark: .white.opacity(0.08)), radius: 6)
                     }
-                    .padding(5)
-                    .frame(width: 290)
-                    .focusVisible()
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier(action.identifier)
                 }
-                .padding(.top, -2)
             }
+            .padding(5)
+            .frame(width: 290)
+            .focusVisible()
         }
     }
 
@@ -135,31 +134,43 @@ struct InventoryDetailView: View {
         return actions
     }
 
-    // MARK: Secret card
+    // MARK: Evidence
 
+    /// The value in the context of one appearance: the latest, or the one picked below.
     @ViewBuilder
-    private var secretSection: some View {
-        if summary.occurrences.isEmpty {
-            Text(entry.kind == .rememberedDecision ? "Only your decision is kept. No value." : "Recognition marker only. No value kept.")
-                .font(.system(size: 12.5)).foregroundStyle(Palette.tertiary)
-                .padding(.horizontal, 16).padding(.vertical, 14)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color(hex: 0xd3d9d6, dark: 0x404341), style: StrokeStyle(lineWidth: 1.5, dash: [4, 3])))
-        } else {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 12) {
-                    secretValue.frame(maxWidth: .infinity, alignment: .leading)
-                    secretControl
-                }
-                .padding(.leading, 18).padding(.trailing, 14)
-                .frame(minHeight: 64)
-                .background(quiet ? Palette.quiet : Color(light: Color(oklch: 0.975, 0.02, 80), dark: Color(hex: 0x1d201e)), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(quiet ? Palette.shade.opacity(0.05) : Color(light: Color(oklch: 0.9, 0.045, 80), dark: Color(oklch: 0.5, 0.08, 72)), lineWidth: 1))
-                .shadow(color: quiet ? .clear : Color(light: Color(oklch: 0.6, 0.1, 70, opacity: 0.25), dark: .clear), radius: 10, y: 6)
-                if summary.unlocated {
-                    Text("The detector couldn’t locate the exact range, so there’s no value to reveal. Only the source reference is kept.")
-                        .font(.system(size: 12)).foregroundStyle(Palette.tertiary).padding(.horizontal, 2)
+    private var evidence: some View {
+        if let occurrence = shownOccurrence {
+            let latest = summary.occurrences.max { $0.observedAt < $1.observedAt }?.id
+            VStack(alignment: .leading, spacing: 8) {
+                Text(occurrence.id == latest ? "Latest appearance" : "Selected appearance")
+                    .font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Palette.tertiary)
+                    .padding(.horizontal, 2)
+                    .accessibilityAddTraits(.isHeader)
+                if !hasProtectedContent || (model.viewingUnlocked && !model.valuesHidden) {
+                    EvidenceCard(model: model, summary: summary, occurrence: occurrence)
+                } else if model.viewingUnlocked {
+                    ProtectionCard(symbol: "eye.slash", title: "Values are hidden",
+                                   detail: "Still unlocked, so showing them again needs no Touch ID.") {
+                        Button("Show values") { model.showValues() }
+                            .buttonStyle(OutlineButtonStyle(height: 30))
+                            .accessibilityIdentifier("inventory.detail.show-values")
+                    }
+                } else {
+                    ProtectionCard(symbol: "lock.fill", title: "Unlock to see the value and where it appeared",
+                                   detail: "One Touch ID for the session. Every value then shows with its context until you lock, leave it idle for 5 minutes, or the Mac sleeps.") {
+                        if model.viewingBusy {
+                            HStack(spacing: 6) {
+                                ProgressView().controlSize(.small)
+                                Text("Waiting for Touch ID…")
+                            }
+                            .font(.system(size: 12)).foregroundStyle(Palette.secondary)
+                        } else {
+                            Button("Unlock…") { model.onUnlock?() }
+                                .buttonStyle(FilledButtonStyle(height: 30))
+                                .disabled(model.isDemo || !model.storageReady)
+                                .accessibilityIdentifier("inventory.detail.unlock")
+                        }
+                    }
                 }
                 if let issue = model.revealIssue {
                     Text(issue == .cancelled ? "Authentication was cancelled. Nothing was revealed." : "This content couldn’t be opened. Unlock to try again.")
@@ -174,114 +185,55 @@ struct InventoryDetailView: View {
         }
     }
 
-    private var revealedValue: String? {
-        guard model.contentRevealed, let valueID = entry.valueID else { return nil }
-        return model.revealedContent[valueID]
+    /// Something to unlock: the value, an excerpt, or a source reference.
+    private var hasProtectedContent: Bool {
+        entry.canRevealRetainedValue
+            || summary.occurrences.contains { $0.protectedExcerpt != nil || $0.protectedMetadata != nil }
     }
 
-    @ViewBuilder
-    private var secretValue: some View {
-        if summary.unlocated {
-            Text("no exact value located")
-                .font(.system(size: 17, design: .monospaced)).tracking(3).foregroundStyle(Palette.secondary)
-                .lineLimit(1)
-        } else if !entry.canRevealRetainedValue {
-            Text("Nothing kept").font(.system(size: 13)).foregroundStyle(Palette.tertiary)
-        } else if let value = revealedValue {
-            Text(verbatim: value)
-                .font(.system(size: 15, design: .monospaced)).lineSpacing(4)
-                .foregroundStyle(Palette.ink)
-                .textSelection(.enabled)
-                .padding(.vertical, 16)
-                .privacySensitive()
-                .accessibilityIdentifier("inventory.revealed-value")
-        } else if model.viewingUnlocked && !model.valuesHidden {
-            // Unlocked, so the value is opening. No mask flashes up while it does.
-            Text(verbatim: " ").font(.system(size: 17, design: .monospaced)).accessibilityHidden(true)
-        } else {
-            Text("•••• •••• •••• •••• ••••")
-                .font(.system(size: 17, design: .monospaced)).tracking(3).foregroundStyle(Palette.secondary)
-                .lineLimit(1)
-                .accessibilityLabel(model.valuesHidden ? "Value hidden" : "Value locked")
-                .accessibilityIdentifier("inventory.masked-value")
+    private var nothingKept: some View {
+        HStack(spacing: 12) {
+            Text("∅").font(.system(size: 13)).foregroundStyle(Palette.quaternary)
+                .frame(width: 30, height: 30)
+                .overlay(Circle().strokeBorder(Palette.ring, style: StrokeStyle(lineWidth: 1.5, dash: [3, 2])))
+            Text(entry.kind == .rememberedDecision
+                 ? "Only your decision is kept, without the value or its appearances. If the value appears again, your decision still applies to it."
+                 : "Recognition marker only. If it appears again: listed as obsolete, source and time only, no alert.")
+                .font(.system(size: 12)).foregroundStyle(Palette.secondary).lineSpacing(2)
+                .fixedSize(horizontal: false, vertical: true)
         }
-    }
-
-    /// Unlocking shows every value with its context, so the only controls are Unlock and, once
-    /// unlocked, hiding or showing values again without a prompt.
-    @ViewBuilder
-    private var secretControl: some View {
-        let canShow = summary.unlocated ? selectedOccurrence?.protectedMetadata != nil : entry.canRevealRetainedValue
-        if model.viewingBusy {
-            HStack(spacing: 6) {
-                ProgressView().controlSize(.small)
-                Text("Waiting for Touch ID…")
-            }
-            .font(.system(size: 12)).foregroundStyle(Palette.secondary)
-        } else if canShow {
-            let control: (title: String, symbol: String, help: String, identifier: String) =
-                !model.viewingUnlocked
-                    ? ("Unlock…", "lock.fill", "Touch ID or your password once. Every value then shows with its context until you lock.", "inventory.detail.unlock")
-                    : model.valuesHidden
-                    ? ("Show values", "eye", "Unlocked, so no prompt", "inventory.detail.show-values")
-                    : ("Hide values", "eye.slash", "Hides values on screen. The app stays unlocked.", "inventory.detail.hide-values")
-            Button {
-                if !model.viewingUnlocked { model.onUnlock?() }
-                else if model.valuesHidden { model.showValues() }
-                else { model.hideValues() }
-            } label: {
-                Label(control.title, systemImage: control.symbol)
-                    .labelStyle(TightLabelStyle())
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(Palette.secondary)
-            }
-            .buttonStyle(QuietButtonStyle(height: 26))
-            .padding(.trailing, -6)
-            .disabled(model.viewingUnlocked ? false : (model.isDemo || !model.storageReady))
-            .help(control.help)
-            .accessibilityIdentifier(control.identifier)
-        }
+        .padding(.horizontal, 16).padding(.vertical, 14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color(hex: 0xd1d7d4, dark: 0x404341), style: StrokeStyle(lineWidth: 1.5, dash: [4, 3])))
     }
 
     // MARK: Appearances
 
     private var appearances: some View {
         let count = summary.occurrences.count
-        let latest = summary.occurrences.max { $0.observedAt < $1.observedAt }
-        let times = count == 1 ? "once" : count == 2 ? "twice" : "\(count) times"
+        let times = count == 1 ? "once" : count == 2 ? "twice" : "\(count.formatted()) times"
+        let groups = conversationGroups
         return VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(count == 0 ? "No appearances kept" : "Seen \(times) in \(plural(summary.conversationCount, "conversation"))")
-                    .font(.system(size: 14, weight: .semibold))
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                (Text("Seen \(times)").fontWeight(.semibold) + Text(" in \(plural(summary.conversationCount, "conversation"))"))
+                    .font(.system(size: 14))
                     .accessibilityAddTraits(.isHeader)
-                Spacer()
-                if let latest {
-                    Text(latest.timeBasis == .firstObservation
-                         ? latest.timestampLabel(formattedDate: DisplayTime.full(latest.observedAt))
-                         : count == 1 ? DisplayTime.full(latest.observedAt)
-                            : "Latest \(DisplayTime.full(latest.observedAt).lowercasedFirstWordIfRelative)")
-                        .font(.system(size: 12)).foregroundStyle(Palette.tertiary).monospacedDigit()
-                }
+                Text("· " + summary.agents.joined(separator: ", ")).font(.system(size: 12.5)).foregroundStyle(Palette.tertiary)
+                    .lineLimit(1)
             }
             .padding(.horizontal, 2)
-            if count == 0 {
-                HStack(spacing: 12) {
-                    Text("∅").font(.system(size: 13)).foregroundStyle(Palette.quaternary)
-                        .frame(width: 30, height: 30)
-                        .overlay(Circle().strokeBorder(Palette.ring, style: StrokeStyle(lineWidth: 1.5, dash: [3, 2])))
-                    Text(entry.kind == .rememberedDecision
-                         ? "Only your decision is kept. If the value appears again, your decision still applies to it."
-                         : "Recognition marker only. If it appears again: listed as obsolete, source and time only, no alert.")
-                        .font(.system(size: 12)).foregroundStyle(Palette.secondary).lineSpacing(2)
-                }
-                .padding(.horizontal, 16).padding(.vertical, 14)
-                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color(hex: 0xd1d7d4, dark: 0x404341), style: StrokeStyle(lineWidth: 1.5, dash: [4, 3])))
-            } else {
-                ForEach(conversationGroups, id: \.conversation.id) { group in
-                    ConversationCard(model: model, summary: summary, conversation: group.conversation,
-                                     occurrences: group.occurrences, disabled: disabled, sheet: sheet)
+            VStack(spacing: 0) {
+                ForEach(Array(groups.enumerated()), id: \.element.conversation.id) { index, group in
+                    ConversationRow(model: model, summary: summary, conversation: group.conversation,
+                                    occurrences: group.occurrences, shown: shownOccurrence?.id,
+                                    open: openConversation == group.conversation.id, disabled: disabled) {
+                        openConversation = openConversation == group.conversation.id ? nil : group.conversation.id
+                    }
+                    if index < groups.count - 1 { Rectangle().fill(Palette.hairline).frame(height: 1) }
                 }
             }
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .card(ring: 0.07)
         }
     }
 
@@ -301,47 +253,420 @@ struct InventoryDetailView: View {
     }
 }
 
-private extension String {
-    var lowercasedFirstWordIfRelative: String {
-        hasPrefix("Today") || hasPrefix("Yesterday") ? prefix(1).lowercased() + dropFirst() : self
+/// What the match itself says: a distinctive format is very likely real, a generic pattern needs its context.
+private struct SignalTag: View {
+    let entry: InventoryEntry
+
+    var body: some View {
+        let rule = entry.evidence.first?.rule.id
+        let (title, detail, background, foreground): (String, String, Color, Color) = switch entry.detectorSignal {
+        case .strong?: ("Known format", "A distinctive format, so it’s very likely a real credential.", Palette.amberSoft, Palette.amberSoftText)
+        case .ambiguous? where entry.evidence.first?.reason == .recognizedFormat:
+            ("Unsure match", "It has a known format, but the detector isn’t confident it’s real, so its context decides.", Palette.chip, Palette.ink2)
+        case .ambiguous?: ("Generic pattern", "A generic pattern, so its context decides.", Palette.chip, Palette.ink2)
+        case nil: ("Recognition marker", "No detection is kept, only the marker.", Palette.chip, Palette.ink2)
+        }
+        Text(title)
+            .font(.system(size: 11.5, weight: .semibold))
+            .foregroundStyle(foreground)
+            .padding(.horizontal, 7).frame(height: 20)
+            .background(background, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+            .fixedSize()
+            .help(rule.map { "Rule \($0). \(detail)" } ?? detail)
+            .accessibilityLabel("\(title). \(detail)")
     }
 }
 
-// MARK: - Conversation card
+/// A locked or hidden stand-in for the evidence, with the one control that shows it.
+private struct ProtectionCard<Control: View>: View {
+    let symbol: String
+    let title: String
+    let detail: String
+    @ViewBuilder let control: Control
 
-private struct ConversationCard: View {
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: symbol)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Palette.secondary)
+                .frame(width: 34, height: 34)
+                .background(Palette.chip, in: Circle())
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.system(size: 13.5, weight: .semibold))
+                Text(detail).font(.system(size: 12)).foregroundStyle(Palette.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 12)
+            control
+        }
+        .padding(16)
+        .background(Palette.well, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Palette.shade.opacity(0.06)))
+    }
+}
+
+/// The selected appearance with its source, its excerpt with the value marked, and the value itself.
+private struct EvidenceCard: View {
+    let model: AppModel
+    let summary: EntrySummary
+    let occurrence: InventoryOccurrencePresentation
+
+    private var style: SourceStyle { SourceStyle(occurrence.contentType) }
+    private var excerpt: RetainedExcerpt? { model.contentRevealed ? model.revealedExcerpts[occurrence.id] : nil }
+    private var source: RetainedSourceContext? { model.contentRevealed ? model.revealedSourceMetadata[occurrence.id] : nil }
+    private var value: String? {
+        guard model.contentRevealed, let valueID = summary.entry.valueID else { return nil }
+        return model.revealedContent[valueID]
+    }
+    private var opening: Bool { model.viewingUnlocked && !model.valuesHidden && !model.contentRevealed }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            sourceHeader
+            Rectangle().fill(Palette.shade.opacity(0.07)).frame(height: 1)
+            context
+            if let failure = occurrence.locationFailure {
+                Text(InventoryDetailView.locationMessage(failure))
+                    .font(.system(size: 12)).foregroundStyle(Palette.secondary)
+                    .padding(.horizontal, 14).padding(.bottom, 12)
+            }
+            valueFooter
+        }
+        .background(Palette.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .card(ring: 0.08)
+    }
+
+    private var sourceHeader: some View {
+        HStack(alignment: .top, spacing: 11) {
+            Text(style.glyph)
+                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                .foregroundStyle(style.foreground)
+                .frame(width: 28, height: 28)
+                .background(style.background, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(style.label).font(.system(size: 12.5, weight: .semibold))
+                    Text("·").foregroundStyle(Palette.faint)
+                    AgentTile(provider: occurrence.conversation.provider, size: 14)
+                    Text(occurrence.conversation.provider.displayName).font(.system(size: 12.5)).foregroundStyle(Palette.secondary)
+                }
+                if let title = source?.title {
+                    Text(verbatim: title).font(.system(size: 13)).foregroundStyle(Palette.ink)
+                        .lineLimit(2).textSelection(.enabled).privacySensitive()
+                } else {
+                    Text(occurrence.conversation.label.text).font(.system(size: 13)).foregroundStyle(Palette.ink2)
+                }
+                if let path = source?.projectPath {
+                    Text(verbatim: path).font(.system(size: 11, design: .monospaced)).foregroundStyle(Palette.tertiary)
+                        .lineLimit(1).truncationMode(.middle).textSelection(.enabled).privacySensitive()
+                }
+            }
+            Spacer(minLength: 8)
+            Text(occurrence.timestampLabel(formattedDate: DisplayTime.full(occurrence.observedAt)))
+                .font(.system(size: 11.5)).foregroundStyle(Palette.quaternary).monospacedDigit()
+        }
+        .padding(.horizontal, 14).padding(.vertical, 12)
+    }
+
+    @ViewBuilder
+    private var context: some View {
+        if occurrence.metadataOnly {
+            Text("Nothing kept for this appearance. Source and time only.")
+                .font(.system(size: 12)).foregroundStyle(Palette.secondary)
+                .padding(14)
+        } else if let excerpt {
+            VStack(alignment: .trailing, spacing: 0) {
+                Text(highlighted(excerpt.text))
+                    .font(.system(size: 12, design: .monospaced)).lineSpacing(3)
+                    .foregroundStyle(Palette.ink2)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .privacySensitive()
+                    .accessibilityIdentifier("inventory.occurrence.\(occurrence.id.uuidString.lowercased()).revealed-context")
+                if excerpt.clipped {
+                    Text("Clipped around this appearance")
+                        .font(.system(size: 10.5, weight: .medium)).foregroundStyle(Palette.tertiary)
+                        .padding(.top, 8)
+                        .accessibilityLabel("Excerpt clipped around this appearance. Not the full conversation.")
+                }
+            }
+            .padding(.horizontal, 14).padding(.vertical, 12)
+            .background(Color(hex: 0xfbfcfb, dark: 0x181b19))
+        } else if summary.unlocated {
+            Text("No exact value was located in this source. Open the conversation to check it.")
+                .font(.system(size: 12)).foregroundStyle(Palette.secondary)
+                .padding(14)
+        } else if opening || occurrence.protectedExcerpt != nil {
+            VStack(alignment: .leading, spacing: 7) {
+                ForEach([0.92, 0.66, 0.8], id: \.self) { width in
+                    GeometryReader { proxy in
+                        Capsule().fill(Palette.separator).frame(width: proxy.size.width * width, height: 6)
+                    }
+                    .frame(height: 6)
+                }
+            }
+            .padding(14)
+            .accessibilityLabel("Opening the context")
+            .accessibilityIdentifier("inventory.occurrence.\(occurrence.id.uuidString.lowercased()).masked-context")
+        } else {
+            Text("No excerpt was kept for this appearance.")
+                .font(.system(size: 12)).foregroundStyle(Palette.secondary)
+                .padding(14)
+        }
+    }
+
+    @ViewBuilder
+    private var valueFooter: some View {
+        if let value {
+            HStack(spacing: 10) {
+                Text("Value").font(.system(size: 11.5)).foregroundStyle(Palette.quaternary)
+                Text(verbatim: value)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(Palette.ink)
+                    .lineLimit(1).truncationMode(.middle)
+                    .textSelection(.enabled)
+                    .privacySensitive()
+                    .padding(.horizontal, 7).frame(height: 22)
+                    .background(Palette.chip, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                    .accessibilityIdentifier("inventory.revealed-value")
+                Spacer(minLength: 8)
+                hideButton
+            }
+            .padding(.horizontal, 14).padding(.vertical, 8)
+            .overlay(alignment: .top) { Rectangle().fill(Palette.shade.opacity(0.07)).frame(height: 1) }
+        } else if source != nil || excerpt != nil {
+            HStack {
+                Text(summary.unlocated ? "No exact value located" : "No value kept")
+                    .font(.system(size: 11.5)).foregroundStyle(Palette.quaternary)
+                Spacer(minLength: 8)
+                hideButton
+            }
+            .padding(.horizontal, 14).padding(.vertical, 8)
+            .overlay(alignment: .top) { Rectangle().fill(Palette.shade.opacity(0.07)).frame(height: 1) }
+        }
+    }
+
+    private var hideButton: some View {
+        Button { model.hideValues() } label: {
+            Label("Hide values", systemImage: "eye.slash").labelStyle(TightLabelStyle())
+                .font(.system(size: 12, weight: .medium))
+        }
+        .buttonStyle(QuietButtonStyle(height: 24))
+        .help("Hides values on screen. The app stays unlocked.")
+        .accessibilityIdentifier("inventory.detail.hide-values")
+    }
+
+    private func highlighted(_ text: String) -> AttributedString {
+        var attributed = AttributedString(text)
+        guard let value, !value.isEmpty else { return attributed }
+        var searchStart = attributed.startIndex
+        while searchStart < attributed.endIndex,
+              let range = attributed[searchStart...].range(of: value) {
+            attributed[range].backgroundColor = Palette.highlight
+            attributed[range].foregroundColor = Palette.ink
+            searchStart = range.upperBound
+        }
+        return attributed
+    }
+}
+
+/// One conversation that printed the value. Opening it lists its appearances; picking one shows it above.
+private struct ConversationRow: View {
     let model: AppModel
     let summary: EntrySummary
     let conversation: InventoryConversation
     let occurrences: [InventoryOccurrencePresentation]
+    let shown: UUID?
+    let open: Bool
     let disabled: Bool
-    @Binding var sheet: DetailSheet?
+    let toggle: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private var agentLabel: String { conversation.provider.displayName }
+    private var holdsShown: Bool { occurrences.contains { $0.id == shown } }
+    /// The conversation's actions use the appearance shown above when it's in this conversation.
+    private var subject: InventoryOccurrencePresentation? {
+        occurrences.first { $0.id == shown } ?? occurrences.max { $0.observedAt < $1.observedAt }
+    }
+    private var title: String {
+        if model.contentRevealed, let shown, holdsShown, let title = model.revealedSourceMetadata[shown]?.title { return title }
+        return conversation.label.text
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                AgentTile(provider: conversation.provider, size: 20)
-                Text(agentLabel).font(.system(size: 12.5, weight: .semibold))
-                Text("·").foregroundStyle(Palette.faint)
-                Text(conversation.label.text).font(.system(size: 12.5)).foregroundStyle(Palette.secondary)
-                Spacer()
-                Text(plural(occurrences.count, "appearance")).font(.system(size: 11.5)).foregroundStyle(Palette.tertiary).monospacedDigit()
+            HStack(spacing: 4) {
+                Button {
+                    if reduceMotion { toggle() } else { withAnimation(.timingCurve(0.23, 1, 0.32, 1, duration: 0.16)) { toggle() } }
+                } label: {
+                    HStack(spacing: 10) {
+                        AgentTile(provider: conversation.provider, size: 18)
+                        Text(verbatim: title).font(.system(size: 13)).foregroundStyle(Palette.ink).lineLimit(1)
+                            .privacySensitive(title != conversation.label.text)
+                        if holdsShown {
+                            Circle().fill(Palette.link).frame(width: 5, height: 5)
+                                .help("Shown above")
+                                .accessibilityHidden(true)
+                        }
+                        Spacer(minLength: 8)
+                        Text("\(occurrences.count.formatted())×").font(.system(size: 12)).foregroundStyle(Palette.tertiary).monospacedDigit()
+                        if let latest = occurrences.map(\.observedAt).max() {
+                            Text(DisplayTime.short(latest)).font(.system(size: 12)).foregroundStyle(Palette.quaternary)
+                                .monospacedDigit().frame(minWidth: 52, alignment: .trailing)
+                        }
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(Palette.quaternary)
+                            .rotationEffect(.degrees(open ? 180 : 0))
+                            .frame(width: 18)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(conversation.provider.displayName), \(title), \(plural(occurrences.count, "appearance"))")
+                .accessibilityValue(open ? "Expanded" : "Collapsed")
+                conversationMenu
             }
-            .padding(.horizontal, 14)
-            .frame(height: 38)
-            .background(Color(hex: 0xf9fbfa, dark: 0x1f2321))
-            .accessibilityElement(children: .combine)
-            .overlay(alignment: .bottom) { Rectangle().fill(Palette.hairline).frame(height: 1) }
-            ForEach(Array(occurrences.enumerated()), id: \.element.id) { index, occurrence in
-                OccurrenceRow(model: model, summary: summary, occurrence: occurrence,
-                              isFirst: index == 0, isLast: index == occurrences.count - 1,
-                              hasRail: occurrences.count > 1, disabled: disabled, sheet: $sheet)
+            .padding(.leading, 14).padding(.trailing, 6)
+            .frame(height: 44)
+            if open {
+                VStack(spacing: 2) {
+                    ForEach(occurrences) { occurrence in
+                        AppearanceLine(model: model, occurrence: occurrence, shown: occurrence.id == shown)
+                    }
+                }
+                .padding(.leading, 40).padding(.trailing, 12).padding(.bottom, 10)
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .card(ring: 0.07)
+        .background(open ? Color(hex: 0xfafbfa, dark: 0x1f2321) : Palette.surface)
+    }
+
+    /// Opening and resuming belong to the conversation, not to the value or the decision.
+    private var conversationMenu: some View {
+        Menu {
+            if let subject {
+                if let label = openLabel(subject) {
+                    Button(label) {
+                        model.selectedOccurrenceID = subject.id
+                        model.onOpenSource?(subject.id)
+                    }
+                } else {
+                    Button("No verified way to open this conversation") {}.disabled(true)
+                }
+                if subject.protectedMetadata != nil {
+                    Button("Resume in Terminal…") {
+                        model.selectedOccurrenceID = subject.id
+                        model.detailSheet = .resume(subject.id)
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Palette.secondary)
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .tint(Palette.secondary)
+        .fixedSize()
+        .disabled(disabled)
+        .help("Open or resume this conversation")
+        .accessibilityLabel("Conversation actions")
+    }
+
+    private func openLabel(_ occurrence: InventoryOccurrencePresentation) -> String? {
+        let agent = occurrence.conversation.provider.displayName
+        let capability = model.contentRevealed ? model.revealedSourceMetadata[occurrence.id]?.openingCapability : nil
+        switch capability {
+        case .validatedRoute?: return "Open in \(agent)"
+        case .unavailable?, .activeSessionRestriction?: return nil
+        case .unverified?, nil:
+            // A shared Codex profile doesn't say which app or CLI opens the conversation.
+            if occurrence.conversation.provider == .codex { return nil }
+            switch occurrence.interface {
+            case .t3?: return "Try opening in T3"
+            case .desktopCode?: return "Try opening in \(agent)"
+            case .standaloneCLI?, nil: return nil
+            }
+        }
+    }
+}
+
+private struct AppearanceLine: View {
+    let model: AppModel
+    let occurrence: InventoryOccurrencePresentation
+    let shown: Bool
+
+    private var style: SourceStyle { SourceStyle(occurrence.contentType) }
+    private var alerted: Bool { if case .alerted(.delivered) = occurrence.alert { true } else { false } }
+
+    var body: some View {
+        Button { model.selectedOccurrenceID = occurrence.id } label: {
+            HStack(spacing: 10) {
+                Text(style.glyph)
+                    .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(style.foreground)
+                    .frame(width: 20, height: 20)
+                    .background(style.background, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .accessibilityHidden(true)
+                Text(style.label).font(.system(size: 12.5))
+                Text(occurrence.timestampLabel(formattedDate: DisplayTime.full(occurrence.observedAt)))
+                    .font(.system(size: 11.5)).foregroundStyle(Palette.quaternary).monospacedDigit()
+                if alerted {
+                    Text("Alerted").font(.system(size: 10.5, weight: .semibold))
+                        .foregroundStyle(Palette.amberSoftText)
+                        .padding(.horizontal, 6).frame(height: 18)
+                        .background(Palette.amberSoft, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                }
+                if occurrence.metadataOnly {
+                    Text("Obsolete · nothing kept").font(.system(size: 11.5)).foregroundStyle(Palette.tertiary)
+                }
+                Spacer(minLength: 8)
+                if shown {
+                    Text("Shown above").font(.system(size: 11.5, weight: .medium)).foregroundStyle(Palette.link)
+                }
+            }
+            .padding(.horizontal, 8)
+            .frame(height: 32)
+            .contentShape(Rectangle())
+            .hoverFill(shown ? Palette.selection.opacity(0.7) : .clear,
+                       hover: shown ? Palette.selection.opacity(0.7) : Palette.shade.opacity(0.04), radius: 7)
+        }
+        .buttonStyle(.plain)
+        .help(alertHelp)
+        .accessibilityLabel("\(style.label), \(DisplayTime.full(occurrence.observedAt))\(alerted ? ", alerted" : "")")
+        .accessibilityAddTraits(shown ? [.isButton, .isSelected] : .isButton)
+    }
+
+    private var alertHelp: String {
+        switch occurrence.alert {
+        case .alerted(.delivered): "A notification was sent for this appearance."
+        case .alerted(.pending): "A notification is waiting to be sent."
+        case .alerted(.permissionDenied): "Notifications are off, so this wasn’t announced."
+        case .alerted(.cancelled): "The notification was withdrawn."
+        case .repeatInConversation: "No alert: a repeat in the same conversation."
+        case .awaitingReview: "No alert: generic matches wait for your review."
+        case .catchUp: "No alert: found during a catch-up and included in its summary."
+        case .obsolete: "No alert: an obsolete value."
+        case .unlocated: "No alert: the exact value wasn’t located."
+        case .dismissed: "No alert: you decided this value needs no action."
+        case .notAlerted: "No alert."
+        }
+    }
+}
+
+extension InventoryDetailView {
+    static func locationMessage(_ reason: LocationFailure) -> String {
+        switch reason {
+        case .unavailableRange: "The detector didn’t provide a usable range."
+        case .ambiguousRange: "The detector couldn’t tell which part of the source matched."
+        case .invalidEncoding: "The reported range doesn’t match the source encoding."
+        case .scannerReportMismatch: "The scanner report couldn’t be matched to the source."
+        }
     }
 }
 
@@ -363,380 +688,18 @@ struct SourceStyle {
     }
 }
 
-private struct OccurrenceRow: View {
+// MARK: - Decision
+
+/// One decision for the value, covering every appearance, including later ones. It sits in the
+/// window's bottom row, beside the sidebar footer, at the same height.
+struct DecisionBar: View {
     let model: AppModel
     let summary: EntrySummary
-    let occurrence: InventoryOccurrencePresentation
-    let isFirst: Bool
-    let isLast: Bool
-    let hasRail: Bool
-    let disabled: Bool
-    @Binding var sheet: DetailSheet?
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    private var open: Bool { model.expandedOccurrenceID == occurrence.id }
-    private var style: SourceStyle { SourceStyle(occurrence.contentType) }
-    private var alerted: Bool { if case .alerted(.delivered) = occurrence.alert { true } else { false } }
-    private var timestamp: String { occurrence.timestampLabel(formattedDate: DisplayTime.full(occurrence.observedAt)) }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Button {
-                if reduceMotion { model.toggleOccurrence(occurrence.id) }
-                else { withAnimation(.timingCurve(0.23, 1, 0.32, 1, duration: 0.16)) { model.toggleOccurrence(occurrence.id) } }
-            } label: { rowLabel }
-            .buttonStyle(.plain)
-            .accessibilityLabel("\(style.label), \(timestamp)\(alerted ? ", alerted" : "")")
-            .accessibilityValue(open ? "Expanded" : "Collapsed")
-            .accessibilityHint("Shows the retained context and source for this appearance.")
-            if open {
-                OccurrenceDetail(model: model, summary: summary, occurrence: occurrence, disabled: disabled, sheet: $sheet)
-                    .padding(.leading, 54).padding(.trailing, 46).padding(.bottom, 16)
-            }
-        }
-        .background(alignment: .topLeading) {
-            if hasRail {
-                Rectangle().fill(Color(hex: 0xdfe4e1, dark: 0x3a3e3c)).frame(width: 1)
-                    .padding(.top, isFirst ? 26 : 0)
-                    .frame(maxHeight: isLast ? 26 : .infinity, alignment: .top)
-                    .padding(.leading, 27)
-            }
-        }
-        .background(open ? Color(hex: 0xfafbfa, dark: 0x1f2321) : Palette.surface)
-        .overlay(alignment: .bottom) {
-            if !isLast { Rectangle().fill(Color(hex: 0xeef1ef, dark: 0x242725)).frame(height: 1).padding(.leading, 54) }
-        }
-    }
-
-    private var rowLabel: some View {
-        HStack(spacing: 12) {
-            Text(style.glyph)
-                .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                .foregroundStyle(style.foreground)
-                .frame(width: 28, height: 28)
-                .background(style.background, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .background(open ? Color(hex: 0xfafbfa, dark: 0x1f2321) : Palette.surface, in: RoundedRectangle(cornerRadius: 10).inset(by: -3))
-                .accessibilityHidden(true)
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(style.label).font(.system(size: 13, weight: .medium))
-                Text(timestamp).font(.system(size: 11.5)).foregroundStyle(Palette.quaternary).monospacedDigit()
-                if alerted {
-                    Text("Alerted").font(.system(size: 10.5, weight: .semibold))
-                        .foregroundStyle(Palette.amberSoftText)
-                        .padding(.horizontal, 6).frame(height: 18)
-                        .background(Palette.amberSoft, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-                        .help("A notification was sent for this appearance")
-                }
-            }
-            Spacer(minLength: 8)
-            if occurrence.metadataOnly {
-                Text("Obsolete · nothing kept").font(.system(size: 11.5)).foregroundStyle(Palette.tertiary)
-            }
-            Image(systemName: "chevron.down")
-                .font(.system(size: 9, weight: .bold))
-                .foregroundStyle(Palette.quaternary)
-                .rotationEffect(.degrees(open ? 180 : 0))
-                .frame(width: 24, height: 24)
-        }
-        .padding(.leading, 14).padding(.trailing, 10)
-        .frame(minHeight: 52)
-        .contentShape(Rectangle())
-        .hoverFill(.clear, hover: Palette.shade.opacity(0.02), radius: 0)
-    }
-}
-
-private struct OccurrenceDetail: View {
-    let model: AppModel
-    let summary: EntrySummary
-    let occurrence: InventoryOccurrencePresentation
-    let disabled: Bool
-    @Binding var sheet: DetailSheet?
-
-    private var excerpt: RetainedExcerpt? { model.contentRevealed ? model.revealedExcerpts[occurrence.id] : nil }
-    private var source: RetainedSourceContext? { model.contentRevealed ? model.revealedSourceMetadata[occurrence.id] : nil }
-
-    // Reads top to bottom: what was seen, the facts about it, then what you can do with it.
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            context
-            facts
-            actionBar
-        }
-    }
-
-    @ViewBuilder
-    private var context: some View {
-        if occurrence.metadataOnly {
-            Text("Nothing kept for this appearance. Source and time only.")
-                .font(.system(size: 12)).foregroundStyle(Palette.secondary)
-        } else if let excerpt {
-            // Framed like a code block: the source names it, the body is the excerpt.
-            VStack(alignment: .leading, spacing: 0) {
-                excerptHeader(clipped: excerpt.clipped)
-                Text(highlighted(excerpt.text))
-                    .font(.system(size: 12, design: .monospaced)).lineSpacing(3)
-                    .foregroundStyle(Palette.ink2)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 14).padding(.vertical, 12)
-                    .privacySensitive()
-                    .accessibilityIdentifier("inventory.occurrence.\(occurrence.id.uuidString.lowercased()).revealed-context")
-            }
-            .background(Self.excerptBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(Palette.shade.opacity(0.08)))
-        } else if occurrence.protectedExcerpt != nil || occurrence.protectedMetadata != nil, source == nil {
-            HStack(spacing: 14) {
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach([0.9, 0.64, 0.78], id: \.self) { width in
-                        GeometryReader { proxy in
-                            Capsule().fill(Palette.separator).frame(width: proxy.size.width * width, height: 6)
-                        }
-                        .frame(height: 6)
-                    }
-                }
-                .accessibilityHidden(true)
-                Text(!model.viewingUnlocked
-                     ? (summary.unlocated ? "Unlock to read its source." : "Unlock to read where it appeared.")
-                     : model.valuesHidden ? "Values are hidden." : "")
-                    .font(.system(size: 11.5)).foregroundStyle(Palette.tertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: 220, alignment: .trailing)
-            }
-            .padding(12)
-            .background(Palette.well, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .accessibilityIdentifier("inventory.occurrence.\(occurrence.id.uuidString.lowercased()).masked-context")
-        }
-        if let failure = occurrence.locationFailure {
-            Text(Self.locationMessage(failure)).font(.system(size: 12)).foregroundStyle(Palette.secondary)
-        }
-    }
-
-    /// Darker than the expanded row in dark mode, white in light, so the excerpt always reads as its own surface.
-    private static let excerptBackground = Color(hex: 0xffffff, dark: 0x161917)
-
-    private func excerptHeader(clipped: Bool) -> some View {
-        HStack(spacing: 8) {
-            if let title = source?.title {
-                Text(verbatim: title).font(.system(size: 11.5, weight: .medium)).foregroundStyle(Palette.ink2)
-                    .lineLimit(1).privacySensitive()
-            }
-            if let path = source?.projectPath {
-                Text(verbatim: path).font(.system(size: 11, design: .monospaced)).foregroundStyle(Palette.tertiary)
-                    .lineLimit(1).truncationMode(.middle)
-                    .layoutPriority(-1)
-                    .help(path)
-                    .privacySensitive()
-            }
-            if source?.title == nil && source?.projectPath == nil {
-                Text("Excerpt").font(.system(size: 11.5, weight: .medium)).foregroundStyle(Palette.tertiary)
-            }
-            Spacer(minLength: 8)
-            if clipped {
-                Text("Clipped")
-                    .font(.system(size: 10.5, weight: .medium)).foregroundStyle(Palette.tertiary)
-                    .padding(.horizontal, 6).frame(height: 18)
-                    .background(Palette.chip, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-                    .help("Clipped around this appearance. Not the full conversation.")
-                    .accessibilityLabel("Excerpt clipped around this appearance. Not the full conversation.")
-            }
-        }
-        .textSelection(.enabled)
-        .padding(.horizontal, 14)
-        .frame(height: 32)
-        .overlay(alignment: .bottom) { Rectangle().fill(Palette.shade.opacity(0.07)).frame(height: 1) }
-    }
-
-    // MARK: Facts
-
-    /// Label/value pairs with a shared label column, so each fact can be found by scanning down the left edge.
-    private var facts: some View {
-        let route = route
-        let alert = alert
-        return Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 16, verticalSpacing: 7) {
-            if excerpt == nil, let source, source.title != nil || source.projectPath != nil {
-                GridRow {
-                    factLabel("Source")
-                    VStack(alignment: .leading, spacing: 2) {
-                        if let title = source.title { Text(verbatim: title).foregroundStyle(Palette.ink2) }
-                        if let path = source.projectPath {
-                            Text(verbatim: path).font(.system(size: 11, design: .monospaced)).foregroundStyle(Palette.tertiary)
-                                .lineLimit(1).truncationMode(.middle).help(path)
-                        }
-                    }
-                    .textSelection(.enabled)
-                    .privacySensitive()
-                }
-            }
-            GridRow {
-                factLabel("Alert")
-                factValue(alert.title, alert.detail)
-            }
-            GridRow {
-                factLabel("Link")
-                HStack(alignment: .firstTextBaseline, spacing: 7) {
-                    StatusDot(color: route.color, size: 6).alignmentGuide(.firstTextBaseline) { $0[.bottom] - 0.5 }
-                    factValue(route.chip, route.text)
-                }
-            }
-        }
-        .font(.system(size: 12))
-    }
-
-    private func factLabel(_ text: String) -> some View {
-        Text(text).foregroundStyle(Palette.quaternary)
-            .gridColumnAlignment(.leading)
-            .frame(minWidth: 38, alignment: .leading)
-    }
-
-    private func factValue(_ title: String, _ detail: String?) -> some View {
-        (Text(title).foregroundStyle(Palette.ink2)
-            + Text(detail.map { " · \($0)" } ?? "").foregroundStyle(Palette.tertiary))
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func highlighted(_ text: String) -> AttributedString {
-        var attributed = AttributedString(text)
-        if let entryValue = summary.entry.valueID.flatMap({ model.revealedContent[$0] }), !entryValue.isEmpty,
-           let range = attributed.range(of: entryValue) {
-            attributed[range].backgroundColor = Palette.highlight
-            attributed[range].foregroundColor = Palette.ink
-        }
-        return attributed
-    }
-
-    private struct RouteInfo {
-        let chip: String
-        let color: Color
-        let outlined: Bool
-        let text: String
-        let openLabel: String?
-    }
-
-    private var route: RouteInfo {
-        let agent = occurrence.conversation.provider.displayName
-        let conversation = occurrence.conversation.label.text
-        var info: RouteInfo
-        switch source?.openingCapability {
-        case .validatedRoute?:
-            info = RouteInfo(chip: "Direct link", color: Palette.green, outlined: false,
-                             text: "Opens \(conversation) in \(agent).", openLabel: "Open conversation")
-        case .unavailable?:
-            info = RouteInfo(chip: "Link unavailable", color: Palette.ring, outlined: false,
-                             text: "No supported opening route is available for \(conversation). The retained excerpt is still here.", openLabel: nil)
-        case .activeSessionRestriction?:
-            info = RouteInfo(chip: "In use", color: Palette.amber, outlined: false,
-                             text: "This conversation is active and can’t be opened from here.", openLabel: nil)
-        case .unverified?, nil:
-            if occurrence.conversation.provider == .codex {
-                info = RouteInfo(chip: "No verified link", color: Palette.ring, outlined: false,
-                    text: "The shared Codex profile does not identify which app or CLI opens this conversation.", openLabel: nil)
-                break
-            }
-            switch occurrence.interface {
-            case .t3?:
-                info = RouteInfo(chip: "Unverified", color: Palette.amber, outlined: false,
-                                 text: "T3 may open without landing on this message.", openLabel: "Try opening in T3")
-            case .desktopCode?:
-                info = RouteInfo(chip: "Unverified", color: Palette.amber, outlined: false,
-                                 text: "The desktop app may open without landing on this message.", openLabel: "Try opening")
-            case .standaloneCLI?, nil:
-                info = RouteInfo(chip: "No direct link", color: Palette.ring, outlined: false,
-                                 text: "No verified opening route is available for this conversation.", openLabel: nil)
-            }
-        }
-        if occurrence.metadataOnly {
-            info = RouteInfo(chip: info.chip, color: info.color, outlined: info.outlined,
-                             text: info.text + " Nothing retained, so no fallback.", openLabel: info.openLabel)
-        }
-        return info
-    }
-
-    private var canResume: Bool {
-        occurrence.protectedMetadata != nil && source?.openingCapability != .unavailable
-    }
-
-    // MARK: Actions
-
-    /// Going to this appearance's conversation. The decision belongs to the value, in the footer.
-    @ViewBuilder
-    private var actionBar: some View {
-        let route = route
-        if route.openLabel != nil || canResume {
-            HStack(spacing: 8) {
-                Spacer(minLength: 12)
-                sourceButtons(route)
-            }
-            .padding(.top, 12)
-            .overlay(alignment: .top) { Rectangle().fill(Palette.shade.opacity(0.07)).frame(height: 1) }
-        }
-    }
-
-    private func sourceButtons(_ route: RouteInfo) -> some View {
-        HStack(spacing: 8) {
-            if let label = route.openLabel {
-                Button(label) {
-                    model.selectedOccurrenceID = occurrence.id
-                    model.onOpenSource?(occurrence.id)
-                }
-                .buttonStyle(OutlineButtonStyle(height: 26))
-                .disabled(disabled)
-                .accessibilityIdentifier("inventory.occurrence.\(occurrence.id.uuidString.lowercased()).open-source")
-            }
-            if canResume {
-                Button("Resume in Terminal") {
-                    model.selectedOccurrenceID = occurrence.id
-                    sheet = .resume(occurrence.id)
-                }
-                .buttonStyle(OutlineButtonStyle(height: 26))
-                .disabled(disabled)
-                .help("Resuming can send new requests to \(occurrence.conversation.provider == .codex ? "OpenAI" : "Anthropic")")
-                .accessibilityIdentifier("inventory.occurrence.\(occurrence.id.uuidString.lowercased()).terminal-resume")
-            }
-        }
-        .fixedSize()
-    }
-
-    private var alert: (title: String, detail: String?) {
-        let first = "First strong appearance in \(occurrence.conversation.label.text)"
-        switch occurrence.alert {
-        case .alerted(.delivered): return ("Sent", first)
-        case .alerted(.pending): return ("Pending", first)
-        case .alerted(.permissionDenied): return ("Not announced", "Notifications are off. \(first)")
-        case .alerted(.cancelled): return ("Withdrawn", nil)
-        case .repeatInConversation: return ("None", "Repeat in the same conversation")
-        case .awaitingReview: return ("None", "Ambiguous detections wait for your review")
-        case .catchUp: return ("None", "Found during catch-up and included in its summary")
-        case .obsolete: return ("None", "Obsolete value")
-        case .unlocated: return ("None", "The exact value wasn’t located")
-        case .dismissed: return ("None", "You decided this value needs no action")
-        case .notAlerted: return ("None", nil)
-        }
-    }
-
-    static func locationMessage(_ reason: LocationFailure) -> String {
-        switch reason {
-        case .unavailableRange: "The detector didn’t provide a usable range."
-        case .ambiguousRange: "The detector couldn’t tell which part of the source matched."
-        case .invalidEncoding: "The reported range doesn’t match the source encoding."
-        case .scannerReportMismatch: "The scanner report couldn’t be matched to the source."
-        }
-    }
-}
-
-// MARK: - What to do
-
-/// One decision for the value. It covers every appearance, including later ones.
-private struct WhatToDoFooter: View {
-    let model: AppModel
-    let summary: EntrySummary
-    let disabled: Bool
-    @Binding var sheet: DetailSheet?
 
     private typealias Copy = (title: String, body: String, quiet: Bool)
 
+    private var disabled: Bool { !model.storageReady || model.actionBusy || model.isDemo }
     private var service: String { summary.kind.servicePhrase }
-    private var short: String { summary.kind.shortName }
     /// Rotation can only be acknowledged for a value Spillcheck can recognize again.
     private var recognizable: Bool { !summary.unlocated && summary.entry.fingerprint != nil }
 
@@ -744,31 +707,35 @@ private struct WhatToDoFooter: View {
         let entry = summary.entry
         if let acknowledgement = entry.acknowledgement {
             let date = DisplayTime.day(entry.acknowledgedAt ?? entry.observedAt)
-            return ("Marked \(acknowledgement.rawValue) · \(date)",
-                    summary.nothingKept ? "Retained content was removed. If this value shows up again, it’s listed as obsolete without an alert."
-                        : "If this value shows up again, it’s listed as obsolete without an alert. A replacement is a new value with normal alerts.",
+            return ("\(acknowledgement.rawValue.capitalizedFirst) · \(date)",
+                    (summary.nothingKept ? "Retained content was removed. " : "") + "Later appearances show as obsolete, without alerts.",
                     true)
         }
-        let since = entry.appearancesSinceDecision > 0 ? " Seen \(plural(entry.appearancesSinceDecision, "more time")) since." : ""
+        let since = entry.appearancesSinceDecision
         if let decision = summary.decision {
             if decision == .needsRotation {
-                return ("Rotate this \(short)", recognizable
-                    ? "Change it at \(service), then confirm here." + since
-                    : "Change it at \(service). With no exact value, Spillcheck can’t recognize it later.", false)
+                guard recognizable else {
+                    return ("Rotate this \(summary.kind.shortName) at \(service)",
+                            "With no exact value, Spillcheck can’t recognize it later.", false)
+                }
+                return ("Change it at \(service), then confirm",
+                        "Later appearances then show as obsolete, without alerts."
+                            + (since > 0 ? " Seen \(plural(since, "more time")) since you marked it." : ""), false)
             }
             let date = DisplayTime.day(entry.decidedAt ?? entry.observedAt)
             return ("\(decision.displayName) · \(date)",
-                    (summary.nothingKept ? "Retained content was removed. " : "") + "Later appearances stay quiet." + since, true)
+                    (summary.nothingKept ? "Retained content was removed. " : "") + "Later appearances stay quiet."
+                        + (since > 0 ? " \(plural(since, "new appearance")) since." : ""), true)
         }
         if summary.unlocated {
-            return ("Possible \(short), exact value not located", "Check its source below, then decide.", false)
+            return ("Possible \(summary.kind.shortName), exact value not located", "Check its source above, then decide.", false)
         }
         return ("Does this need rotating?", "Your answer covers every appearance of this value, including later ones.", false)
     }
 
     var body: some View {
         let copy = copy
-        // Side by side when the window is wide enough, otherwise the decision goes under the question.
+        // Side by side when the window is wide enough, otherwise the actions go under the question.
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 20) {
                 text(copy)
@@ -781,19 +748,25 @@ private struct WhatToDoFooter: View {
             }
         }
         .padding(.horizontal, 32)
-        .padding(.top, 14).padding(.bottom, 16)
+        .padding(.vertical, 14)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .background(copy.quiet ? Color(hex: 0xf6f8f7, dark: 0x171a19) : Palette.background)
-        .overlay(alignment: .top) { Rectangle().fill(Color(hex: 0xe3e8e5, dark: 0x2e312f)).frame(height: 1) }
-        .shadow(color: Palette.shadow.opacity(0.035), radius: 8, y: -6)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("What to do")
     }
 
     private func text(_ copy: Copy) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(copy.title).font(.system(size: 14, weight: .semibold)).tracking(-0.1).lineLimit(1)
-                .accessibilityAddTraits(.isHeader)
-            Text(copy.body).font(.system(size: 12)).foregroundStyle(Palette.secondary).lineLimit(1)
+            HStack(spacing: 7) {
+                if copy.quiet {
+                    Image(systemName: "checkmark").font(.system(size: 11, weight: .bold)).foregroundStyle(Palette.green)
+                        .accessibilityHidden(true)
+                }
+                Text(copy.title).font(.system(size: 14, weight: .semibold)).tracking(-0.1).lineLimit(1)
+                    .accessibilityAddTraits(.isHeader)
+            }
+            Text(copy.body).font(.system(size: 12)).foregroundStyle(Palette.secondary).lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
                 .help(copy.body)
         }
     }
@@ -801,46 +774,64 @@ private struct WhatToDoFooter: View {
     @ViewBuilder
     private var actions: some View {
         if summary.acknowledged {
-            EmptyView()
+            Button("Change decision…") { model.detailSheet = .forget }
+                .buttonStyle(OutlineButtonStyle(height: 30))
+                .disabled(disabled)
+                .help("Forgets that it was rotated or revoked. Later appearances may alert again.")
+                .accessibilityIdentifier("inventory.change-decision")
         } else if let decision = summary.decision {
             HStack(spacing: 8) {
                 if summary.entry.kind == .rememberedDecision {
                     Button("Forget decision") { model.decide(summary, as: nil) }
-                        .buttonStyle(OutlineButtonStyle())
+                        .buttonStyle(OutlineButtonStyle(height: 30))
                         .disabled(disabled)
                         .help("Removes this entry. If the value appears again, it’s reviewed as new.")
                         .accessibilityIdentifier("inventory.forget-decision")
+                } else if decision == .needsRotation {
+                    Button("Back to review") { model.decide(summary, as: nil) }
+                        .buttonStyle(QuietButtonStyle(height: 30, horizontalPadding: 10))
+                        .disabled(disabled)
+                        .accessibilityIdentifier("inventory.change-decision")
                 } else {
                     Button("Change decision") { model.decide(summary, as: nil) }
-                        .buttonStyle(OutlineButtonStyle())
+                        .buttonStyle(OutlineButtonStyle(height: 30))
                         .disabled(disabled)
                         .help("Back to review")
                         .accessibilityIdentifier("inventory.change-decision")
                 }
                 if decision == .needsRotation, recognizable {
-                    Button("Mark rotated or revoked…") { sheet = .acknowledge }
-                        .buttonStyle(FilledButtonStyle())
+                    Button("Mark revoked") { model.acknowledge(summary, as: .revoked) }
+                        .buttonStyle(OutlineButtonStyle(height: 30))
                         .disabled(disabled)
-                        .help("Confirm you changed it at \(service)")
-                        .accessibilityIdentifier("inventory.acknowledge-obsolete")
+                        .help("Invalidated at \(service) without a replacement")
+                        .accessibilityIdentifier("inventory.mark-revoked")
+                    Button { model.acknowledge(summary, as: .rotated) } label: {
+                        HStack(spacing: 7) { KeyCap(key: "D", onAccent: true); Text("Mark rotated") }
+                    }
+                    .buttonStyle(FilledButtonStyle(height: 30))
+                    .disabled(disabled)
+                    .help("Replaced at \(service) and the old value invalidated. Spillcheck doesn’t check this.")
+                    .accessibilityIdentifier("inventory.mark-rotated")
                 }
             }
             .fixedSize()
         } else {
             HStack(spacing: 8) {
-                decisionButton(.testOrDevelopment, "Test or dev only")
-                decisionButton(.notSecret, "Not a secret")
+                decisionButton(.testOrDevelopment, "Test or dev only", key: "T")
+                decisionButton(.notSecret, "Not a secret", key: "N")
                 // A known format is almost always a real credential, so rotating is the likely answer.
-                decisionButton(.needsRotation, "Needs rotation", primary: summary.strong)
+                decisionButton(.needsRotation, "Needs rotation", key: "R", primary: summary.strong)
                 Menu {
                     Button("Real, but keep it") { model.decide(summary, as: .acceptedRisk) }
                     if recognizable {
-                        Button("Already rotated or revoked…") { sheet = .acknowledge }
+                        Divider()
+                        Button("Already rotated") { model.acknowledge(summary, as: .rotated) }
+                        Button("Already revoked") { model.acknowledge(summary, as: .revoked) }
                     }
                 } label: {
                     Image(systemName: "ellipsis")
                         .font(.system(size: 13, weight: .semibold))
-                        .frame(width: 30, height: 28)
+                        .frame(width: 30, height: 30)
                         .contentShape(Rectangle())
                 }
                 .menuStyle(.borderlessButton)
@@ -857,25 +848,42 @@ private struct WhatToDoFooter: View {
     }
 
     @ViewBuilder
-    private func decisionButton(_ decision: ValueDecision, _ title: String, primary: Bool = false) -> some View {
-        let button = Button(title) { model.decide(summary, as: decision) }
+    private func decisionButton(_ decision: ValueDecision, _ title: String, key: String, primary: Bool = false) -> some View {
+        let button = Button { model.decide(summary, as: decision) } label: {
+            HStack(spacing: 7) { KeyCap(key: key, onAccent: primary); Text(title) }
+        }
         if primary {
-            button.buttonStyle(FilledButtonStyle()).disabled(disabled)
+            button.buttonStyle(FilledButtonStyle(height: 30)).disabled(disabled)
                 .accessibilityIdentifier("inventory.decide.\(decision.rawValue)")
         } else {
-            button.buttonStyle(OutlineButtonStyle()).disabled(disabled)
+            button.buttonStyle(OutlineButtonStyle(height: 30)).disabled(disabled)
                 .accessibilityIdentifier("inventory.decide.\(decision.rawValue)")
         }
+    }
+}
+
+/// The key that does the same as the button, shown inside it.
+struct KeyCap: View {
+    let key: String
+    var onAccent = false
+
+    var body: some View {
+        Text(key)
+            .font(.system(size: 10, weight: .semibold, design: .rounded))
+            .foregroundStyle(onAccent ? Palette.onAccent.opacity(0.8) : Palette.tertiary)
+            .frame(minWidth: 16, minHeight: 16)
+            .background(onAccent ? Palette.onAccent.opacity(0.16) : Palette.shade.opacity(0.06),
+                        in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+            .accessibilityHidden(true)
     }
 }
 
 // MARK: - Sheets
 
 enum DetailSheet: Identifiable, Equatable {
-    case acknowledge, remove, forget, resume(UUID)
+    case remove, forget, resume(UUID)
     var id: String {
         switch self {
-        case .acknowledge: "acknowledge"
         case .remove: "remove"
         case .forget: "forget"
         case .resume(let id): "resume-\(id)"
@@ -887,7 +895,6 @@ private struct ValueActionSheet: View {
     let model: AppModel
     let summary: EntrySummary
     let kind: DetailSheet
-    @State private var acknowledgement: ObsoleteAcknowledgement = .rotated
     @State private var copied = false
     @Environment(\.dismiss) private var dismiss
 
@@ -903,7 +910,6 @@ private struct ValueActionSheet: View {
 
     private var title: String {
         switch kind {
-        case .acknowledge: "Acknowledge \(name) as addressed?"
         case .remove: "Remove retained content for \(name)?"
         case .forget: "Forget obsolete recognition for \(name)?"
         case .resume: "Resume \(resumeOccurrence?.conversation.label.text ?? "this conversation") in \(resumeOccurrence?.conversation.provider.displayName ?? "its agent")"
@@ -914,9 +920,6 @@ private struct ValueActionSheet: View {
         let count = summary.occurrences.filter { !$0.metadataOnly }.count
         let provider = resumeOccurrence?.conversation.provider == .claudeCode ? "Anthropic" : "OpenAI"
         switch kind {
-        case .acknowledge:
-            return [(.kept, "Later appearances of this exact value show as obsolete"), (.kept, "No alerts for them"),
-                    (.caution, "Not changed or checked at \(service)"), (.info, "A replacement is a different value with normal alerts")]
         case .remove:
             return [(.removed, "Exact value and \(plural(count, "excerpt"))"), (.removed, "Occurrence history"),
                     (.kept, "Agent histories on this Mac stay untouched"),
@@ -927,10 +930,10 @@ private struct ValueActionSheet: View {
             return [(.removed, "\(summary.entry.acknowledgement?.rawValue.capitalizedFirst ?? "") acknowledgement and recognition marker"),
                     (.caution, "New appearances are evaluated normally and may alert"),
                     summary.entry.kind == .rememberedObsoleteMarker ? (.kept, "Processed history won’t recreate removed occurrences")
-                        : (.kept, "Retained occurrences and reviews stay")]
+                        : (.kept, "Retained appearances stay")]
         case .resume:
             return [(.caution, "Resuming can send new requests to \(provider)"),
-                    (.info, "To only inspect, reveal the retained excerpt instead")]
+                    (.info, "To only look at it, read the excerpt in Spillcheck instead")]
         }
     }
 
@@ -953,7 +956,6 @@ private struct ValueActionSheet: View {
                     }
                 }
             }
-            if kind == .acknowledge { acknowledgementChoice }
             // For a resume, the command is the point; the notes qualify it.
             if let occurrence = resumeOccurrence { resumeCommand(occurrence) }
             VStack(alignment: .leading, spacing: 8) {
@@ -1009,7 +1011,6 @@ private struct ValueActionSheet: View {
 
     private var confirmTitle: String {
         switch kind {
-        case .acknowledge: "Acknowledge as \(acknowledgement.rawValue)"
         case .remove: "Remove retained content"
         case .forget: "Forget recognition"
         case .resume: "Done"
@@ -1020,46 +1021,10 @@ private struct ValueActionSheet: View {
         defer { dismiss() }
         guard let fingerprint = summary.entry.fingerprint, model.storageReady, !model.isDemo else { return }
         switch kind {
-        case .acknowledge: model.onAcknowledge?(fingerprint, acknowledgement)
         case .remove: model.onRemoveContent?(fingerprint)
         case .forget: model.onForgetMarker?(fingerprint)
         case .resume: break
         }
-    }
-
-    private var acknowledgementChoice: some View {
-        HStack(spacing: 8) {
-            radio(.rotated, "Rotated", "Replaced and invalidated")
-            radio(.revoked, "Revoked", "Invalidated, no replacement")
-        }
-        .fixedSize(horizontal: false, vertical: true)
-        .accessibilityElement(children: .contain)
-    }
-
-    private func radio(_ value: ObsoleteAcknowledgement, _ title: String, _ detail: String) -> some View {
-        let selected = acknowledgement == value
-        return Button { acknowledgement = value } label: {
-            HStack(alignment: .top, spacing: 9) {
-                Circle()
-                    .strokeBorder(selected ? Palette.accent : Color(hex: 0xb8b8bc, dark: 0x636366), lineWidth: selected ? 4.5 : 1.5)
-                    .background(Circle().fill(Palette.surface))
-                    .frame(width: 14, height: 14)
-                    .padding(.top, 1)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title).font(.system(size: 13, weight: .semibold))
-                    Text(detail).font(.system(size: 11.5)).foregroundStyle(Palette.secondary)
-                }
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 11).padding(.vertical, 10)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background(selected ? Color(oklch: 0.975, 0.01, 150, dark: 0.27) : Palette.surface, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .strokeBorder(selected ? Color(oklch: 0.78, 0.04, 150, dark: 0.45) : Color(hex: 0xe0e5e2, dark: 0x2e312f)))
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
     }
 
     private func markIcon(_ mark: Mark) -> some View {

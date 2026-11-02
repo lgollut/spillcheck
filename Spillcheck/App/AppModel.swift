@@ -199,6 +199,13 @@ struct EntrySummary: Identifiable {
     /// A rotated, revoked or decided value whose retained content was removed.
     var nothingKept: Bool { !unlocated && !entry.canRevealRetainedValue && (acknowledged || decision != nil) }
     var latestOccurrence: Date? { occurrences.map(\.observedAt).max() }
+    /// The latest appearance. A later one than the user has seen makes the entry unread.
+    var latestActivity: Date { latestOccurrence ?? entry.observedAt }
+    var bucket: InventoryBucket {
+        if acknowledged { return .done }
+        if awaitingRotation { return .toRotate }
+        return decision == nil ? .toReview : .done
+    }
 
     init(entry: InventoryEntry, occurrences: [InventoryOccurrencePresentation]) {
         self.entry = entry
@@ -221,14 +228,80 @@ struct EntrySummary: Identifiable {
     }
 }
 
-/// Values by what they still need: a decision, a rotation, or nothing.
-struct InventoryGroups {
-    var toReview: [EntrySummary] = []
-    var toRotate: [EntrySummary] = []
-    var noAction: [EntrySummary] = []
-    var handled: [EntrySummary] = []
-    var isEmpty: Bool { toReview.isEmpty && toRotate.isEmpty && noAction.isEmpty && handled.isEmpty }
-    var all: [EntrySummary] { toReview + toRotate + noAction + handled }
+/// The Inbox's lists, by what a value still needs: a decision, a rotation, or nothing.
+enum InventoryBucket: String, CaseIterable, Identifiable {
+    case toReview, toRotate, done
+    var id: Self { self }
+    /// Names what still has to happen, never a bare verb that reads as if it already did.
+    var title: String {
+        switch self {
+        case .toReview: "To review"
+        case .toRotate: "To rotate"
+        case .done: "Done"
+        }
+    }
+
+    init(decision: ValueDecision?) {
+        switch decision {
+        case nil: self = .toReview
+        case .needsRotation?: self = .toRotate
+        case _?: self = .done
+        }
+    }
+}
+
+/// When the user last looked at each entry, so later appearances show as unread. Only the entry's
+/// app-assigned number and a time leave the vault, never a value, title or path.
+struct ReadMarks {
+    private static let marksKey = "inventory.readMarks"
+    private static let baselineKey = "inventory.readBaseline"
+    private let defaults: UserDefaults?
+    /// Appearances up to this time count as read, so the backlog that existed before unread marks
+    /// doesn't all start out unread.
+    let baseline: Date
+    private var marks: [Int: Date]
+
+    /// Without `defaults` the marks last only as long as the model, as in sample mode.
+    init(defaults: UserDefaults?, now: Date = .now) {
+        self.defaults = defaults
+        if let stored = defaults?.object(forKey: Self.baselineKey) as? Double {
+            baseline = Date(timeIntervalSince1970: stored)
+        } else {
+            baseline = now
+            defaults?.set(now.timeIntervalSince1970, forKey: Self.baselineKey)
+        }
+        let stored = defaults?.dictionary(forKey: Self.marksKey) as? [String: Double] ?? [:]
+        marks = Dictionary(stored.compactMap { key, time in Int(key).map { ($0, Date(timeIntervalSince1970: time)) } },
+                           uniquingKeysWith: max)
+    }
+
+    func seenThrough(_ label: MaskedValueLabel) -> Date { max(baseline, marks[label.index] ?? baseline) }
+
+    mutating func markSeen(_ label: MaskedValueLabel, through time: Date) {
+        guard time > seenThrough(label) else { return }
+        marks[label.index] = time
+        save()
+    }
+
+    /// Entry numbers are never reused, so marks of removed entries can go.
+    mutating func keep(only labels: Set<Int>) {
+        guard marks.keys.contains(where: { !labels.contains($0) }) else { return }
+        marks = marks.filter { labels.contains($0.key) }
+        save()
+    }
+
+    private func save() {
+        defaults?.set(Dictionary(uniqueKeysWithValues: marks.map { (String($0.key), $0.value.timeIntervalSince1970) }),
+                      forKey: Self.marksKey)
+    }
+}
+
+/// The last decision, which the toast's Undo and ⌘Z take back.
+enum InventoryUndo: Equatable {
+    case decision(ValueFingerprint, previous: ValueDecision?)
+    case unlocatedDecision(UUID, previous: ValueDecision?)
+    /// Marked rotated or revoked; undoing forgets the marker and restores the decision.
+    case acknowledgement(ValueFingerprint, previous: ValueDecision?)
 }
 
 /// A host-specific presentation or an aggregate for a profile whose transport
@@ -448,15 +521,13 @@ final class AppModel {
     var selectedEntryID: InventoryEntryID? {
         didSet {
             guard oldValue != selectedEntryID else { return }
-            // Selecting a rotated or revoked value opens its section; collapsing it again is up to the user.
-            if let selectedEntryID, groups.handled.contains(where: { $0.id == selectedEntryID }) { handledExpanded = true }
-            expandedOccurrenceID = nil
             detailSheet = nil
             selectedOccurrenceID = selectedEntryID.flatMap { defaultOccurrence(for: $0) }
             clearRevealedContent()
             viewingMessage = nil
             revealIssue = nil
             onSelectionChanged?(selectedEntryID)
+            markSelectionSeen()
         }
     }
     var selectedOccurrenceID: UUID? {
@@ -476,14 +547,23 @@ final class AppModel {
         didSet { if oldValue != searchText { keepSelectionVisible() } }
     }
     var sortOrder: InventorySort = .latest
-    var route: MainRoute = .inventory
-    var handledExpanded = false
-    var expandedOccurrenceID: UUID?
+    var route: MainRoute = .inventory {
+        didSet { if route == .inventory, oldValue != .inventory { markSelectionSeen() } }
+    }
+    /// The open list of the Inbox.
+    private(set) var bucket: InventoryBucket = .toReview
+    /// In memory until `useStoredReadMarks()`; the workflow probe sets its own baseline.
+    var readMarks = ReadMarks(defaults: nil)
+    /// Unread entries sort first. The set changes when the list reloads, not when an entry is read,
+    /// so opening one clears its dot without moving its row.
+    @ObservationIgnored private var pinnedUnread: Set<InventoryEntryID> = []
+    var undo: InventoryUndo?
+    /// The toast on screen reports the decision `undo` takes back.
+    var toastOffersUndo = false
     /// The value action sheet belongs to the selected value and closes when the selection changes.
     var detailSheet: DetailSheet?
     var toast: String?
     @ObservationIgnored private var toastToken = UUID()
-    var dismissedBannerAuditID: UUID?
     private(set) var presentation: InventoryPresentation?
     private(set) var activity: AnalyzedActivity?
     var selectedID: UUID? {
@@ -498,6 +578,7 @@ final class AppModel {
     @ObservationIgnored var onLock: (() -> Void)?
     @ObservationIgnored var onDecide: ((ValueFingerprint, ValueDecision?) -> Void)?
     @ObservationIgnored var onDecideUnlocated: ((UUID, ValueDecision?) -> Void)?
+    @ObservationIgnored var onUndo: ((InventoryUndo) -> Void)?
     @ObservationIgnored var onAcknowledge: ((ValueFingerprint, ObsoleteAcknowledgement) -> Void)?
     @ObservationIgnored var onRemoveContent: ((ValueFingerprint) -> Void)?
     @ObservationIgnored var onForgetMarker: ((ValueFingerprint) -> Void)?
@@ -506,7 +587,13 @@ final class AppModel {
     var historyProgress: [StoredHistoricalProgress] = []
     var historicalSummaries: [HistoricalAuditSummary] = []
     var isDemo = false
-    var windowVisible = false
+    var windowVisible = false {
+        didSet {
+            guard windowVisible, !oldValue else { return }
+            refreshPinnedUnread()
+            markSelectionSeen()
+        }
+    }
     /// Agents the user unticked in the setup assistant. Newly detected agents start ticked.
     var setupDeselected: Set<AgentProvider> = []
     var agentProfiles: [AgentProvider: AgentProfileDraft] = [:]
@@ -573,34 +660,67 @@ final class AppModel {
 
     var filtersActive: Bool { agentFilter != nil || !searchText.trimmingCharacters(in: .whitespaces).isEmpty }
 
-    var groups: InventoryGroups {
-        let visible = summaries.filter { summary in
-            (agentFilter == nil || summary.occurrences.contains { $0.conversation.provider == agentFilter })
+    /// A bucket's entries that match the filters: unread first, then by the chosen order.
+    func entries(in bucket: InventoryBucket) -> [EntrySummary] {
+        summaries.filter { summary in
+            summary.bucket == bucket
+                && (agentFilter == nil || summary.occurrences.contains { $0.conversation.provider == agentFilter })
                 && summary.matches(search: searchText)
         }
-        let sorted = visible.sorted { left, right in
+        .sorted { left, right in
+            let leftPinned = pinnedUnread.contains(left.id), rightPinned = pinnedUnread.contains(right.id)
+            if leftPinned != rightPinned { return leftPinned }
             if sortOrder == .confidence, left.strong != right.strong { return left.strong }
-            return left.entry.observedAt > right.entry.observedAt
+            return left.latestActivity > right.latestActivity
         }
-        var groups = InventoryGroups()
-        for summary in sorted {
-            if summary.acknowledged { groups.handled.append(summary) }
-            else if summary.awaitingRotation { groups.toRotate.append(summary) }
-            else if summary.decision != nil { groups.noAction.append(summary) }
-            else { groups.toReview.append(summary) }
-        }
-        return groups
     }
 
-    /// The order arrow keys follow, which includes the collapsed section only when it is open.
-    var navigableEntries: [EntrySummary] {
-        let groups = groups
-        return groups.toReview + groups.toRotate + groups.noAction + (handledExpanded ? groups.handled : [])
+    /// The open list, which arrow keys follow.
+    var bucketEntries: [EntrySummary] { entries(in: bucket) }
+
+    /// Every entry per bucket, regardless of filters.
+    var bucketCounts: [InventoryBucket: Int] { Dictionary(grouping: summaries, by: \.bucket).mapValues(\.count) }
+
+    func hasUnread(in bucket: InventoryBucket) -> Bool {
+        summaries.contains { $0.bucket == bucket && isUnread($0) }
     }
 
-    /// Records the decision. Deciding a value still to review then opens the next one, like an inbox.
+    /// An entry still to review or rotate with an appearance newer than the user has seen. A decided
+    /// value only counts its new appearances.
+    func isUnread(_ summary: EntrySummary) -> Bool {
+        guard summary.bucket != .done, let label = summary.entry.label else { return false }
+        return summary.latestActivity > readMarks.seenThrough(label)
+    }
+
+    func selectBucket(_ bucket: InventoryBucket) {
+        if route != .inventory { route = .inventory }
+        guard self.bucket != bucket else { return }
+        self.bucket = bucket
+        refreshPinnedUnread()
+        selectedEntryID = bucketEntries.first?.id
+    }
+
+    /// Stored marks survive restarts. Sample mode and tests keep them in memory.
+    func useStoredReadMarks(_ defaults: UserDefaults = .standard) {
+        readMarks = ReadMarks(defaults: defaults)
+        refreshPinnedUnread()
+    }
+
+    /// What's on screen counts as read: the selected entry, while the window shows the inventory.
+    private func markSelectionSeen() {
+        guard windowVisible, route == .inventory, let summary = selectedSummary,
+              let label = summary.entry.label, summary.latestActivity > readMarks.seenThrough(label) else { return }
+        readMarks.markSeen(label, through: summary.latestActivity)
+    }
+
+    private func refreshPinnedUnread() {
+        pinnedUnread = Set(summaries.filter(isUnread).map(\.id))
+    }
+
+    /// Records the decision. When the value leaves the open list, the next one opens, like an inbox.
     func decide(_ summary: EntrySummary, as decision: ValueDecision?) {
-        let next = summary.needsReview && decision != nil ? nextToReview(after: summary.id) : nil
+        let leaves = InventoryBucket(decision: decision) != summary.bucket
+        let next = leaves ? nextEntry(after: summary.id) : nil
         if case .unlocated(let resultID) = summary.id {
             onDecideUnlocated?(resultID, decision)
         } else if let fingerprint = summary.entry.fingerprint {
@@ -608,11 +728,58 @@ final class AppModel {
         } else {
             return
         }
-        if let next { selectedEntryID = next }
+        if leaves, selectedEntryID == summary.id { selectedEntryID = next }
     }
 
-    private func nextToReview(after id: InventoryEntryID) -> InventoryEntryID? {
-        let list = groups.toReview
+    /// Records that the value was rotated or revoked at its service. It moves to Done.
+    func acknowledge(_ summary: EntrySummary, as acknowledgement: ObsoleteAcknowledgement) {
+        guard let fingerprint = summary.entry.fingerprint, !summary.acknowledged else { return }
+        let next = summary.bucket == .done ? nil : nextEntry(after: summary.id)
+        onAcknowledge?(fingerprint, acknowledgement)
+        if summary.bucket != .done, selectedEntryID == summary.id { selectedEntryID = next }
+    }
+
+    /// T, N and R decide a value to review; D marks a value to rotate as rotated.
+    func decide(byKey key: String) -> Bool {
+        guard let summary = selectedSummary, route == .inventory, storageReady, !isDemo, !actionBusy else { return false }
+        switch (summary.bucket, key) {
+        case (.toReview, "t"): decide(summary, as: .testOrDevelopment)
+        case (.toReview, "n"): decide(summary, as: .notSecret)
+        case (.toReview, "r"): decide(summary, as: .needsRotation)
+        case (.toRotate, "d"):
+            guard !summary.unlocated, summary.entry.fingerprint != nil else { return false }
+            acknowledge(summary, as: .rotated)
+        default: return false
+        }
+        return true
+    }
+
+    /// Takes back the last decision.
+    func undoLastDecision() {
+        guard let undo, storageReady, !isDemo, !actionBusy else { return }
+        self.undo = nil
+        toastOffersUndo = false
+        toast = nil
+        onUndo?(undo)
+    }
+
+    /// After an undo, the value is selected again in the list it returned to.
+    func reselect(_ undo: InventoryUndo) {
+        let summary = summaries.first { summary in
+            switch undo {
+            case .decision(let fingerprint, _), .acknowledgement(let fingerprint, _): summary.entry.fingerprint == fingerprint
+            case .unlocatedDecision(let resultID, _): summary.id == .unlocated(resultID)
+            }
+        }
+        guard let summary else { return }
+        if route != .inventory { route = .inventory }
+        bucket = summary.bucket
+        refreshPinnedUnread()
+        selectedEntryID = summary.id
+    }
+
+    private func nextEntry(after id: InventoryEntryID) -> InventoryEntryID? {
+        let list = bucketEntries
         guard let index = list.firstIndex(where: { $0.id == id }) else { return nil }
         return (list.dropFirst(index + 1).first ?? list.prefix(index).last)?.id
     }
@@ -633,21 +800,21 @@ final class AppModel {
     }
 
     func moveSelection(by offset: Int) {
-        let entries = navigableEntries
+        let entries = bucketEntries
         guard !entries.isEmpty else { return }
         let index = entries.firstIndex { $0.id == selectedEntryID } ?? (offset > 0 ? -1 : entries.count)
         let next = entries[max(0, min(entries.count - 1, index + offset))]
         if next.id != selectedEntryID { selectedEntryID = next.id }
     }
 
+    /// Selects an entry in the list it belongs to.
     func selectEntry(_ id: InventoryEntryID) {
         if route != .inventory { route = .inventory }
+        if let summary = summaries.first(where: { $0.id == id }), summary.bucket != bucket {
+            bucket = summary.bucket
+            refreshPinnedUnread()
+        }
         selectedEntryID = id
-    }
-
-    func toggleOccurrence(_ id: UUID) {
-        if selectedOccurrenceID != id { selectedOccurrenceID = id }
-        expandedOccurrenceID = expandedOccurrenceID == id ? nil : id
     }
 
     func clearFilters() {
@@ -661,19 +828,9 @@ final class AppModel {
 
     private func keepSelectionVisible() {
         guard route == .inventory else { return }
-        let entries = navigableEntries
+        let entries = bucketEntries
         if let selectedEntryID, entries.contains(where: { $0.id == selectedEntryID }) { return }
         selectedEntryID = entries.first?.id
-    }
-
-    // MARK: Catch-up banner
-
-    /// The latest recent-history catch-up that found new values or left gaps.
-    var bannerSummary: HistoricalAuditSummary? {
-        guard let latest = historicalSummaries.first, latest.audit.reason != .firstLaunch,
-              latest.audit.id != dismissedBannerAuditID,
-              latest.ordinaryValueCount > 0 || !coverageGaps.isEmpty else { return nil }
-        return latest
     }
 
     // MARK: Monitoring and coverage
@@ -749,7 +906,7 @@ final class AppModel {
     /// Leaves the setup assistant for the main window, which shows coverage until something is found.
     func finishSetup() {
         route = .inventory
-        if selectedEntryID == nil { selectedEntryID = navigableEntries.first?.id }
+        if selectedEntryID == nil { selectedEntryID = bucketEntries.first?.id }
     }
 
     /// Agents ticked for connection in the setup assistant.
@@ -889,15 +1046,24 @@ final class AppModel {
 
     // MARK: Toasts
 
-    func showToast(_ message: String) {
+    func showToast(_ message: String, offeringUndo: Bool = false) {
         let token = UUID()
         toastToken = token
         toast = message
+        toastOffersUndo = offeringUndo && undo != nil
         Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(4.2))
+            // A toast that can be undone stays a little longer.
+            try? await Task.sleep(for: .seconds(offeringUndo ? 6 : 4.2))
             guard let self, self.toastToken == token else { return }
             self.toast = nil
+            self.toastOffersUndo = false
         }
+    }
+
+    /// Reports a decision that Undo can take back.
+    func offerUndo(_ undo: InventoryUndo, message: String) {
+        self.undo = undo
+        showToast(message, offeringUndo: true)
     }
 
     // MARK: Runtime updates
@@ -911,8 +1077,26 @@ final class AppModel {
         }
         DemoInventory.configure(self)
         route = .inventory
-        selectedEntryID = navigableEntries.first?.id
+        // The last four hours count as new, so the sample shows unread values.
+        readMarks = ReadMarks(defaults: nil, now: .now.addingTimeInterval(-4 * 3600))
+        refreshPinnedUnread()
+        selectedEntryID = bucketEntries.first?.id
         actionMessage = "Sample mode. Revealing and changing values are disabled."
+    }
+
+    /// Sample mode as if unlocked, for design review. The content is synthetic: nothing is decrypted.
+    func showDemoContent() {
+        guard isDemo, let summary = selectedSummary else { return }
+        let value = "sample-value-not-a-secret"
+        viewingUnlocked = true
+        contentRevealed = true
+        if let valueID = summary.entry.valueID { revealedContent[valueID] = value }
+        if let occurrence = selectedOccurrenceID {
+            revealedExcerpts[occurrence] = RetainedExcerpt(
+                text: "$ cat .env.local\nNODE_ENV=development\nAPI_TOKEN=\(value)\nLOG_LEVEL=debug", clipped: true)
+            revealedSourceMetadata[occurrence] = RetainedSourceContext(
+                sessionIdentifier: "sample", title: "Fix the flaky deploy script", projectPath: "~/dev/sample-app")
+        }
     }
 
     /// Sample setup-assistant state matching a first launch: Codex found, Claude Code at an untested
@@ -987,14 +1171,18 @@ final class AppModel {
         if let selectedOccurrenceID, !selectedOccurrences.contains(where: { $0.id == selectedOccurrenceID }) {
             self.selectedOccurrenceID = selectedEntryID.flatMap { defaultOccurrence(for: $0) }
         }
-        if selectedEntryID == nil { selectedEntryID = navigableEntries.first?.id }
+        // New unread entries join the top of the list; entries read since keep their place.
+        pinnedUnread.formUnion(summaries.filter(isUnread).map(\.id))
+        readMarks.keep(only: Set(next.entries().compactMap { $0.label?.index }))
+        if selectedEntryID == nil { selectedEntryID = bucketEntries.first?.id }
+        markSelectionSeen()
     }
 
+    /// Opens a value from a notification, in the list it belongs to.
     func selectValue(_ id: UUID) {
         agentFilter = nil
         searchText = ""
-        route = .inventory
-        selectedEntryID = .value(id)
+        selectEntry(.value(id))
     }
 
     /// Hides values, and keeps them hidden across selections, without locking.
@@ -1028,7 +1216,8 @@ final class AppModel {
 }
 
 /// Masked-only preview state with synthetic labels. No payload is written to the production vault.
-private enum DemoInventory {
+/// Synthetic sample data for sample mode and the workflow probe.
+enum DemoInventory {
     static func presentation() throws -> InventoryPresentation { try InventoryPresentation(snapshot: snapshot()) }
 
     private static func record(_ provider: AgentProvider, _ session: String, _ item: String, _ type: ContentType,
@@ -1065,8 +1254,14 @@ private enum DemoInventory {
             let source = try record(provider, session, item, type, interface, at: now.addingTimeInterval(-ago))
             let bytes = source.segments[0].utf8
             let location = try CanonicalLocation(segmentID: "body", range: UTF8Range(0, bytes.count))
+            // The reasons the scanner mapping gives these rules.
+            let reason: DetectionReason = switch rule {
+            case "generic-api-key": .credentialField
+            case "postgres-credential-uri": .connectionString
+            default: .recognizedFormat
+            }
             let evidence = DetectionEvidence(rule: try RuleIdentity(id: rule, version: "sample"), signal: signal,
-                reason: .recognizedFormat, category: category)
+                reason: reason, category: category)
             let detection = try LocatedDetection(extraction: ExactExtraction(valueUTF8: bytes, location: location, in: source),
                 in: source, fingerprint: ValueFingerprint(keyedDigest: Data(repeating: value, count: 32)), evidence: [evidence],
                 protectedValue: ProtectedPayloadReference(), protectedExcerpt: ProtectedPayloadReference())

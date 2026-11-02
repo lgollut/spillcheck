@@ -337,6 +337,39 @@ private struct NativeWorkflowProbe {
             checks.append("intra-entry-occurrence-selection-keeps-revealed-value")
             checks.append("unchanged-occurrence-selection-keeps-current-content")
 
+            // The Inbox: three lists, unread values first, the next value after a decision, keys and undo.
+            let inbox = AppModel()
+            inbox.readMarks = ReadMarks(defaults: nil, now: Date().addingTimeInterval(-4 * 3600))
+            inbox.loadSnapshot(try DemoInventory.snapshot())
+            inbox.storageReady = true
+            let counts = inbox.bucketCounts
+            try require(counts[.toReview] == 4 && counts[.toRotate] == 1 && counts[.done] == 3, "inbox-buckets")
+            let review = inbox.bucketEntries
+            try require(review.prefix(2).allSatisfy(inbox.isUnread) && !review.dropFirst(2).contains(where: inbox.isUnread)
+                && inbox.selectedEntryID == review.first?.id, "inbox-unread-first")
+            inbox.windowVisible = true
+            // What's on screen is read, and it keeps its row until the list reloads.
+            try require(!inbox.isUnread(review[0]) && inbox.isUnread(review[1])
+                && inbox.bucketEntries.map(\.id) == review.map(\.id), "inbox-read-keeps-order")
+            var decided: [ValueDecision?] = []
+            inbox.onDecide = { _, decision in decided.append(decision) }
+            try require(inbox.decide(byKey: "t") && decided == [.testOrDevelopment]
+                && inbox.selectedEntryID == review[1].id, "inbox-decision-opens-next")
+            try require(!inbox.decide(byKey: "d") && decided.count == 1, "inbox-keys-follow-the-list")
+            var undone: [InventoryUndo] = []
+            inbox.onUndo = { undone.append($0) }
+            let step = InventoryUndo.unlocatedDecision(UUID(), previous: nil)
+            inbox.offerUndo(step, message: "synthetic decision")
+            try require(inbox.toastOffersUndo, "inbox-undo-offered")
+            inbox.undoLastDecision()
+            try require(undone == [step] && inbox.undo == nil && !inbox.toastOffersUndo, "inbox-undo")
+            var acknowledged: [ObsoleteAcknowledgement] = []
+            inbox.onAcknowledge = { _, acknowledgement in acknowledged.append(acknowledgement) }
+            inbox.selectBucket(.toRotate)
+            try require(inbox.decide(byKey: "d") && acknowledged == [.rotated] && inbox.selectedEntryID == nil,
+                "inbox-mark-rotated")
+            checks.append("inbox-lists-unread-advance-and-undo")
+
             // Switching appearance while the prompt is open reveals only the newer one, after a single prompt.
             let firstAppearance = try InventoryRevealSelection.occurrenceWithValue(in: intraEntry.ledger.snapshot,
                 occurrenceID: intraEntry.occurrenceID)

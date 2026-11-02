@@ -299,12 +299,24 @@ struct WindowDragArea: NSViewRepresentable {
 
 struct ToastView: View {
     let message: String
+    /// Takes back what the toast reports, also with Command-Z while it shows.
+    var undo: (() -> Void)?
 
     var body: some View {
-        Text(message)
-            .font(.system(size: 12.5))
-            .foregroundStyle(.white)
-            .lineSpacing(2)
+        HStack(spacing: 14) {
+            Text(message)
+                .font(.system(size: 12.5))
+                .foregroundStyle(.white)
+                .lineSpacing(2)
+            if let undo {
+                Button("Undo", action: undo)
+                    .buttonStyle(.plain)
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(Color(oklch: 0.85, 0.08, 150))
+                    .keyboardShortcut("z", modifiers: .command)
+                    .accessibilityIdentifier("inventory.toast.undo")
+            }
+        }
             .padding(.horizontal, 14)
             .padding(.vertical, 9)
             .frame(maxWidth: 560)

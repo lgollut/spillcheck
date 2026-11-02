@@ -149,7 +149,7 @@ Deletion alone never marks a value as obsolete. Explicitly forgetting an obsolet
 
 ### Viewing workflow
 
-The main window displays the list of detected secrets with a masked value, suspected type, originating agent, occurrence count, last observation date, and the user's decision. Proposed filters: agent, conversation, and decision.
+The main window is an inbox with three lists named for what each value still needs: To review (no decision yet), To rotate (decided as needing rotation, waiting to be marked rotated or revoked), and Done (any other decision, rotated or revoked). Each row shows the suspected type, the app-assigned entry number, how often the value appeared and when it was last seen; a Done row shows the decision instead. A value to review or rotate with an appearance newer than the user has seen carries an unread mark and sorts first; opening it marks it read without moving its row until the list reloads. Filters: agent and search. Deciding a value opens the next one in its list, and the last decision can be undone.
 
 A detail view shows the exact value once macOS authentication has unlocked the viewing session, and presents occurrences with their source, date, and context excerpt stored encrypted. It also retains the conversation title and identifier when available. An action provides access to the corresponding conversation. If that is impossible, the detail view remains accessible with those references.
 

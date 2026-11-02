@@ -83,6 +83,11 @@ session lock. Closing a window keeps
 monitoring active; pause suspends collection, processing and alerts; quit stops
 owned workers. Monitoring necessarily handles newly captured plaintext in memory.
 
+Read marks for the inbox are the one inventory fact kept outside the vault: the
+app's preferences store, per entry number, the time of the latest appearance the
+user has seen, plus a baseline set on first use. Entry numbers and times say
+nothing about a value or its context. See [ADR 0011](adr/0011-read-marks-outside-the-vault.md).
+
 Deletion and obsolete-value recognition are separate operations. Removing
 retained content preserves independent source receipts against historical
 resurrection. An acknowledged obsolete value may keep only its keyed recognition

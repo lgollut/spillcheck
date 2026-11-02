@@ -59,7 +59,7 @@ The current settings expose executable paths, profile directories, and versions.
 
 ### Investigate a new appearance
 
-For a new value with a strong signal, the user receives a masked macOS notification. Opening it selects the corresponding inventory detail while protected content remains masked. The detail should let the user establish what was detected, how often it appeared, and which occurrence to inspect before revealing anything.
+For a new value with a strong signal, the user receives a masked macOS notification. Opening it selects the corresponding inventory detail, in the list it belongs to, while protected content remains masked until the user unlocks. The detail leads with evidence: what was detected and why, the value inside the context of one appearance, then every conversation that printed it. Values that appeared while the user was away carry an unread mark and sort first, instead of a separate catch-up summary in the list.
 
 The user can authenticate, inspect the exact value and retained context, decide about the value, and access an appearance's source when a validated route is available. Tool output and tool error must remain visible as source types, even if the assistant never mentioned the value.
 
@@ -75,7 +75,7 @@ Alert behavior limits interruption:
 
 Direct conversation opening is a capability with known limits, not a guaranteed outcome. Show an unavailable or unverified route clearly and offer authenticated retained context when it exists. A transcript file path is not a conversation deep link.
 
-The existing app can separately prepare an authenticated terminal resume command. It displays the command for the user to run. Resuming can cause new provider requests, so the interaction must explain that effect and remain distinct from simply inspecting retained evidence.
+The existing app can separately prepare an authenticated terminal resume command. It displays the command for the user to run. Resuming can cause new provider requests, so the interaction must explain that effect and remain distinct from simply inspecting retained evidence. Opening and resuming belong to a conversation's menu, away from the value's decision.
 
 A detector result whose exact source range could not be located has its own state. Show the available evidence and source information, with an explicit explanation that there is no exact value to reveal.
 

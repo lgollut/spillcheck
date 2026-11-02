@@ -341,6 +341,40 @@ struct DetectionPipelineTests {
         try await restarted.close()
     }
 
+    @Test func valueDecisionSurvivesRestartAndKeepsALaterConversationQuiet() async throws {
+        let fixture = try await PipelineFixture()
+        defer { fixture.remove() }
+        let now = Date()
+        let normalizer = PipelineNormalizer([
+            "original": [PipelineSourceSpec(item: "original", contentTime: now)],
+            "later": [PipelineSourceSpec(session: "later-session", item: "later-appearance", contentTime: now)]
+        ])
+        let pipeline = DetectionPipeline(store: fixture.store, cryptography: fixture.crypto, normalizer: normalizer,
+            detector: PipelineDetector(), detectorVersion: pipelineDetectorVersion, liveSince: now.addingTimeInterval(-60))
+        try await enqueuePipeline("original", into: fixture.store)
+        #expect(try await pipeline.processNext() == .processed)
+        let fingerprint = try await fixture.crypto.fingerprint(exactBytes: Data(pipelineValue.utf8))
+        #expect(await fixture.store.pendingLiveAlerts().count == 1)
+        try await fixture.store.decide(fingerprint, as: .testOrDevelopment, at: now)
+        // Deciding withdraws the alert that hadn't been delivered yet.
+        #expect(await fixture.store.pendingLiveAlerts().isEmpty)
+        try await fixture.store.close()
+
+        let restarted = try await ProtectedStore.open(at: fixture.directory, cryptography: fixture.crypto)
+        #expect(await restarted.snapshot().valueDecisions[fingerprint]?.decision == .testOrDevelopment)
+        let resumed = DetectionPipeline(store: restarted, cryptography: fixture.crypto, normalizer: normalizer,
+            detector: PipelineDetector(), detectorVersion: pipelineDetectorVersion, liveSince: now.addingTimeInterval(-60))
+        try await enqueuePipeline("later", into: restarted)
+        #expect(try await resumed.processNext() == .processed)
+        let later = await restarted.snapshot()
+        #expect(later.occurrences.count == 2)
+        #expect(later.alertDecisions.isEmpty)
+        #expect(await restarted.pendingLiveAlerts().isEmpty)
+        #expect(later.valueDecisions[fingerprint]?.decision == .testOrDevelopment)
+        try inspectPipelineFiles(in: fixture.directory)
+        try await restarted.close()
+    }
+
     @Test func acknowledgementAndRemovalDuringScanRetryAsMetadataOnlyAfterRestart() async throws {
         let fixture = try await PipelineFixture()
         defer { fixture.remove() }

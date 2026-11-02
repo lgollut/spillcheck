@@ -578,11 +578,11 @@ final class AppRuntime {
                 await runtime.reveal(entry: entry, occurrenceID: occurrence, generation: generation)
             }
         }
-        model.onReview = { [weak self] id, state in
-            self?.performAction { runtime in await runtime.mutateInventory(.review(id, state)) }
+        model.onDecide = { [weak self] fingerprint, decision in
+            self?.performAction { runtime in await runtime.mutateInventory(.decide(fingerprint, decision)) }
         }
-        model.onReviewAll = { [weak self] ids, state in
-            self?.performAction { runtime in await runtime.mutateInventory(.reviewAll(ids, state)) }
+        model.onDecideUnlocated = { [weak self] resultID, decision in
+            self?.performAction { runtime in await runtime.mutateInventory(.decideUnlocated(resultID, decision)) }
         }
         model.onAcknowledge = { [weak self] fingerprint, acknowledgement in
             self?.performAction { runtime in await runtime.mutateInventory(.acknowledge(fingerprint, acknowledgement)) }
@@ -721,7 +721,7 @@ final class AppRuntime {
     private static func viewingID(_ entry: InventoryEntryID?) -> UUID? {
         switch entry {
         case .value(let valueID), .unlocated(let valueID): valueID
-        case .obsoleteMarker, nil: nil
+        case .obsoleteMarker, .rememberedDecision, nil: nil
         }
     }
 
@@ -752,7 +752,7 @@ final class AppRuntime {
                 guard selection.valueID == valueID else { return }
             case .unlocated(let resultID):
                 selection = try InventoryRevealSelection.unlocatedSource(in: snapshot, resultID: resultID)
-            case .obsoleteMarker: return
+            case .obsoleteMarker, .rememberedDecision: return
             }
             guard model.selectedEntryID == entry, generation == viewingGeneration,
                   occurrenceID == model.selectedOccurrenceID,
@@ -768,8 +768,10 @@ final class AppRuntime {
     }
 
     private enum InventoryMutation {
+        /// Per-appearance review, kept for the acceptance fixture that builds an older vault's state.
         case review(UUID, OccurrenceReview)
-        case reviewAll([UUID], OccurrenceReview)
+        case decide(ValueFingerprint, ValueDecision?)
+        case decideUnlocated(UUID, ValueDecision?)
         case acknowledge(ValueFingerprint, ObsoleteAcknowledgement)
         case remove(ValueFingerprint)
         case forget(ValueFingerprint)
@@ -799,14 +801,18 @@ final class AppRuntime {
                 recordWorkflowEvent("review-" + state.rawValue)
                 #endif
                 model.actionMessage = "Review saved for this appearance. Other appearances are unchanged."
-            case .reviewAll(let ids, let state):
-                for id in ids { try await store.review(id, as: state) }
+            case .decide(let fingerprint, let decision):
+                try await store.decide(fingerprint, as: decision, at: .now)
                 #if DEBUG
-                recordWorkflowEvent("review-all-" + state.rawValue)
+                recordWorkflowEvent("decide-" + (decision?.rawValue ?? "cleared"))
                 #endif
-                model.actionMessage = state == .falsePositive
-                    ? "Marked as not a secret. New appearances are still checked."
-                    : "Marked as possibly a secret again."
+                model.actionMessage = Self.decisionMessage(decision)
+            case .decideUnlocated(let resultID, let decision):
+                try await store.decide(unlocated: resultID, as: decision, at: .now)
+                #if DEBUG
+                recordWorkflowEvent("decide-unlocated-" + (decision?.rawValue ?? "cleared"))
+                #endif
+                model.actionMessage = Self.decisionMessage(decision)
             case .acknowledge(let fingerprint, let acknowledgement):
                 try await store.acknowledgeObsolete(fingerprint, as: acknowledgement, at: .now)
                 #if DEBUG
@@ -822,9 +828,11 @@ final class AppRuntime {
                 recordWorkflowEvent("content-removed")
                 #endif
                 notifications.cancel(identifiers: plan.notificationIdentifiers)
-                model.actionMessage = plan.retainedObsoleteMarker == nil
-                    ? "Retained content removed. Agent histories weren’t touched. If it appears again, it’s treated as new."
-                    : "Retained content removed. It stays recognized as obsolete."
+                model.actionMessage = plan.retainedObsoleteMarker != nil
+                    ? "Retained content removed. It stays recognized as obsolete."
+                    : plan.retainedDecision != nil
+                    ? "Retained content removed. Your decision still covers later appearances."
+                    : "Retained content removed. Agent histories weren’t touched. If it appears again, it’s treated as new."
             case .forget(let fingerprint):
                 hide()
                 try await store.forgetObsoleteMarker(fingerprint)
@@ -845,6 +853,17 @@ final class AppRuntime {
             await refresh()
         } catch {
             model.actionMessage = "The change could not be saved. Reload the inventory and try again."
+        }
+    }
+
+    private static func decisionMessage(_ decision: ValueDecision?) -> String {
+        switch decision {
+        case .needsRotation?:
+            "Marked as needing rotation. Change it at its service, then mark it rotated or revoked."
+        case let decision?:
+            "Marked “\(decision.displayName)”. Later appearances stay quiet."
+        case nil:
+            "Back in review. Later appearances alert and wait for review as before."
         }
     }
 

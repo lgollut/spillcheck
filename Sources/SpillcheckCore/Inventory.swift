@@ -37,9 +37,14 @@ public struct InventorySummary: Sendable {
     public let obsoleteAppearanceCount: Int
     public let metadataOnlyOccurrenceCount: Int
     public let obsoleteMarker: ObsoleteValueMarker?
+    public let decision: ValueDecisionRecord?
 
     public var occurrenceCount: Int { reviewCounts.total + metadataOnlyOccurrenceCount }
     public var canRevealRetainedValue: Bool { record.protectedValue != nil }
+    /// Appearances recorded after the value was decided.
+    public var appearancesSinceDecision: Int {
+        decision.map { max(0, occurrenceCount - $0.appearancesAtDecision) } ?? 0
+    }
 }
 
 public struct AlertEligibilityKey: Hashable, Codable, Sendable {
@@ -117,6 +122,7 @@ public struct ContentRemovalPlan: Sendable {
     public let notificationIdentifiers: Set<String>
     public let sourceItems: Set<SourceIdentity>
     public let retainedObsoleteMarker: ObsoleteValueMarker?
+    public let retainedDecision: ValueDecisionRecord?
 }
 
 public struct AnalysisReceipt: Hashable, Codable, Sendable {
@@ -178,6 +184,10 @@ public struct InventorySnapshot: Codable, Sendable {
     public let valueLabels: [ValueFingerprint: MaskedValueLabel]
     public let unlocatedLabels: [UUID: MaskedValueLabel]
     public let nextValueLabel: Int
+    /// Decisions about exact values. A vault written before decisions existed has none stored;
+    /// decoding derives them from its per-appearance reviews.
+    public let valueDecisions: [ValueFingerprint: ValueDecisionRecord]
+    public let unlocatedDecisions: [UUID: UnlocatedDecisionRecord]
 
     public init(
         schemaVersion: Int = 1,
@@ -193,7 +203,9 @@ public struct InventorySnapshot: Codable, Sendable {
         conversationLabels: [SessionIdentity: MaskedConversationLabel] = [:],
         historicalNotificationDecisions: [UUID: HistoricalNotificationDecision] = [:],
         valueLabels: [ValueFingerprint: MaskedValueLabel] = [:], unlocatedLabels: [UUID: MaskedValueLabel] = [:],
-        nextValueLabel: Int = 1
+        nextValueLabel: Int = 1,
+        valueDecisions: [ValueFingerprint: ValueDecisionRecord] = [:],
+        unlocatedDecisions: [UUID: UnlocatedDecisionRecord] = [:]
     ) {
         self.schemaVersion = schemaVersion
         self.records = records
@@ -213,21 +225,31 @@ public struct InventorySnapshot: Codable, Sendable {
         self.valueLabels = valueLabels
         self.unlocatedLabels = unlocatedLabels
         self.nextValueLabel = nextValueLabel
+        self.valueDecisions = valueDecisions
+        self.unlocatedDecisions = unlocatedDecisions
     }
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion, records, occurrences, obsoleteAppearances, obsoleteMarkers, alertDecisions, unlocatedResults
         case analysisReceipts, locationReceipts, strongSignalReceipts, unlocatedReceipts, sourceKinds, sourceTimes
         case conversationLabels, historicalNotificationDecisions, valueLabels, unlocatedLabels, nextValueLabel
+        case valueDecisions, unlocatedDecisions
     }
 
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        let records = try c.decode([ValueFingerprint: InventoryRecord].self, forKey: .records)
+        let occurrences = try c.decode([UUID: Occurrence].self, forKey: .occurrences)
+        let obsoleteAppearances = try c.decode([UUID: ObsoleteAppearance].self, forKey: .obsoleteAppearances)
+        let obsoleteMarkers = try c.decode([ValueFingerprint: ObsoleteValueMarker].self, forKey: .obsoleteMarkers)
+        let valueDecisions = try c.decodeIfPresent([ValueFingerprint: ValueDecisionRecord].self, forKey: .valueDecisions)
+            ?? ValueDecisionRecord.derived(records: records, occurrences: occurrences,
+                                           obsoleteAppearances: obsoleteAppearances, obsoleteMarkers: obsoleteMarkers)
         self.init(schemaVersion: try c.decode(Int.self, forKey: .schemaVersion),
-            records: try c.decode([ValueFingerprint: InventoryRecord].self, forKey: .records),
-            occurrences: try c.decode([UUID: Occurrence].self, forKey: .occurrences),
-            obsoleteAppearances: try c.decode([UUID: ObsoleteAppearance].self, forKey: .obsoleteAppearances),
-            obsoleteMarkers: try c.decode([ValueFingerprint: ObsoleteValueMarker].self, forKey: .obsoleteMarkers),
+            records: records,
+            occurrences: occurrences,
+            obsoleteAppearances: obsoleteAppearances,
+            obsoleteMarkers: obsoleteMarkers,
             alertDecisions: try c.decode([UUID: AlertDecision].self, forKey: .alertDecisions),
             unlocatedResults: try c.decode([UUID: UnlocatedResult].self, forKey: .unlocatedResults),
             analysisReceipts: try c.decode(Set<AnalysisReceipt>.self, forKey: .analysisReceipts),
@@ -240,7 +262,14 @@ public struct InventorySnapshot: Codable, Sendable {
             historicalNotificationDecisions: try c.decodeIfPresent([UUID: HistoricalNotificationDecision].self, forKey: .historicalNotificationDecisions) ?? [:],
             valueLabels: try c.decodeIfPresent([ValueFingerprint: MaskedValueLabel].self, forKey: .valueLabels) ?? [:],
             unlocatedLabels: try c.decodeIfPresent([UUID: MaskedValueLabel].self, forKey: .unlocatedLabels) ?? [:],
-            nextValueLabel: try c.decodeIfPresent(Int.self, forKey: .nextValueLabel) ?? 1)
+            nextValueLabel: try c.decodeIfPresent(Int.self, forKey: .nextValueLabel) ?? 1,
+            valueDecisions: valueDecisions,
+            unlocatedDecisions: try c.decodeIfPresent([UUID: UnlocatedDecisionRecord].self, forKey: .unlocatedDecisions) ?? [:])
+    }
+
+    /// Later appearances of a dismissed value stay quiet: no alert, no catch-up count.
+    func dismisses(_ fingerprint: ValueFingerprint) -> Bool {
+        obsoleteMarkers[fingerprint] == nil && valueDecisions[fingerprint]?.decision.dismissesValue == true
     }
 }
 
@@ -252,7 +281,8 @@ extension InventorySnapshot {
         let recordsByID = Dictionary(uniqueKeysWithValues: records.values.map { ($0.id, $0) })
         for occurrence in occurrences.values {
             guard case .historical(let audit) = occurrence.source.origin.provenance,
-                  occurrence.review != .falsePositive else { continue }
+                  occurrence.review != .falsePositive,
+                  recordsByID[occurrence.valueID].map({ dismisses($0.fingerprint) }) != true else { continue }
             var summary = summaries[audit.id] ?? HistoricalAuditSummary(audit: audit)
             let obsolete = occurrence.classification != .ordinary
                 || recordsByID[occurrence.valueID].map { obsoleteMarkers[$0.fingerprint] != nil } == true
@@ -287,6 +317,8 @@ public struct InventoryLedger: Sendable {
     public private(set) var historicalNotificationDecisions: [UUID: HistoricalNotificationDecision] = [:]
     public private(set) var valueLabels: [ValueFingerprint: MaskedValueLabel] = [:]
     public private(set) var unlocatedLabels: [UUID: MaskedValueLabel] = [:]
+    public private(set) var valueDecisions: [ValueFingerprint: ValueDecisionRecord] = [:]
+    public private(set) var unlocatedDecisions: [UUID: UnlocatedDecisionRecord] = [:]
     private var nextValueLabel = 1
     private var analysisReceipts: Set<AnalysisReceipt> = []
     private var locationReceipts: [OccurrenceIdentity: LocationReceipt] = [:]
@@ -304,7 +336,8 @@ public struct InventoryLedger: Sendable {
             analysisReceipts: analysisReceipts, locationReceipts: locationReceipts,
             strongSignalReceipts: strongSignalReceipts, unlocatedReceipts: unlocatedReceipts, sourceKinds: sourceKinds,
             sourceTimes: sourceTimes, conversationLabels: conversationLabels, historicalNotificationDecisions: historicalNotificationDecisions,
-            valueLabels: valueLabels, unlocatedLabels: unlocatedLabels, nextValueLabel: nextValueLabel
+            valueLabels: valueLabels, unlocatedLabels: unlocatedLabels, nextValueLabel: nextValueLabel,
+            valueDecisions: valueDecisions, unlocatedDecisions: unlocatedDecisions
         )
     }
 
@@ -324,6 +357,10 @@ public struct InventoryLedger: Sendable {
         sourceTimes = snapshot.sourceTimes
         conversationLabels = snapshot.conversationLabels
         historicalNotificationDecisions = snapshot.historicalNotificationDecisions
+        // Rotation or revocation takes precedence over a decision, and a decision about an
+        // unlocated result lasts as long as that result.
+        valueDecisions = snapshot.valueDecisions.filter { snapshot.obsoleteMarkers[$0.key] == nil }
+        unlocatedDecisions = snapshot.unlocatedDecisions.filter { snapshot.unlocatedResults[$0.key] != nil }
         let sessions = Set(snapshot.sourceKinds.keys.map(\.session))
             .union(snapshot.occurrences.values.map { $0.source.identity.session })
             .union(snapshot.obsoleteAppearances.values.map { $0.source.session })
@@ -334,7 +371,9 @@ public struct InventoryLedger: Sendable {
         // Labels follow the entries they name. Older snapshots receive labels in first-seen order.
         // A damaged label is cosmetic: drop duplicates and renumber rather than reject the vault.
         var usedLabels: Set<Int> = []
-        valueLabels = snapshot.valueLabels.filter { records[$0.key] != nil || obsoleteMarkers[$0.key] != nil }
+        valueLabels = snapshot.valueLabels.filter {
+            records[$0.key] != nil || obsoleteMarkers[$0.key] != nil || valueDecisions[$0.key] != nil
+        }
             .sorted { $0.value.index < $1.value.index }
             .reduce(into: [:]) { if usedLabels.insert($1.value.index).inserted { $0[$1.key] = $1.value } }
         unlocatedLabels = snapshot.unlocatedLabels.filter { unlocatedResults[$0.key] != nil }
@@ -347,6 +386,9 @@ public struct InventoryLedger: Sendable {
         }
         for marker in obsoleteMarkers.values.sorted(by: { $0.acknowledgedAt < $1.acknowledgedAt }) {
             assignValueLabel(marker.fingerprint)
+        }
+        for decision in valueDecisions.values.sorted(by: { $0.decidedAt < $1.decidedAt }) {
+            assignValueLabel(decision.fingerprint)
         }
         for result in unlocatedResults.values.sorted(by: { ($0.source.contentTime, $0.id.uuidString) < ($1.source.contentTime, $1.id.uuidString) })
             where unlocatedLabels[result.id] == nil {
@@ -418,11 +460,41 @@ public struct InventoryLedger: Sendable {
             obsoleteAppearanceCount: appearances.filter { $0.classification == .obsolete }.count +
                 obsoleteAppearances.values.filter { $0.valueID == record.id }.count,
             metadataOnlyOccurrenceCount: obsoleteAppearances.values.filter { $0.valueID == record.id }.count,
-            obsoleteMarker: obsoleteMarkers[fingerprint]
+            obsoleteMarker: obsoleteMarkers[fingerprint],
+            decision: valueDecisions[fingerprint]
         )
     }
 
-    /// Manual review changes no alert eligibility and never issues a notification.
+    /// Records the user's decision about an exact value; `nil` returns it to review. The decision
+    /// covers later appearances too: a dismissed value stays quiet, and one that needs rotation
+    /// still alerts in a new conversation. A value acknowledged rotated or revoked needs that
+    /// acknowledgement forgotten first. Deciding never issues a notification.
+    public mutating func decide(_ fingerprint: ValueFingerprint, as decision: ValueDecision?, at time: Date) throws {
+        guard records[fingerprint] != nil || valueDecisions[fingerprint] != nil else { throw ContractError.unknownValue }
+        guard obsoleteMarkers[fingerprint] == nil else { throw ContractError.invalidState }
+        guard time.timeIntervalSince1970.isFinite else { throw ContractError.invalidTime }
+        if let decision {
+            valueDecisions[fingerprint] = ValueDecisionRecord(
+                fingerprint: fingerprint, decision: decision, decidedAt: time,
+                appearancesAtDecision: summary(for: fingerprint)?.occurrenceCount ?? 0
+            )
+        } else {
+            valueDecisions.removeValue(forKey: fingerprint)
+            if records[fingerprint] == nil { valueLabels.removeValue(forKey: fingerprint) }
+        }
+        try refreshPendingNotifications()
+    }
+
+    /// A detection whose value wasn't located can't be recognized again, so its decision covers
+    /// that result only. `nil` returns it to review.
+    public mutating func decide(unlocated resultID: UUID, as decision: ValueDecision?, at time: Date) throws {
+        guard unlocatedResults[resultID] != nil else { throw ContractError.unknownOccurrence }
+        guard time.timeIntervalSince1970.isFinite else { throw ContractError.invalidTime }
+        unlocatedDecisions[resultID] = decision.map { UnlocatedDecisionRecord(resultID: resultID, decision: $0, decidedAt: time) }
+    }
+
+    /// Per-appearance review predates value decisions (`decide`), which the app uses instead. It
+    /// remains for vaults and acceptance fixtures from older builds, and never issues a notification.
     public mutating func review(_ occurrenceID: UUID, as state: OccurrenceReview) throws {
         guard var occurrence = occurrences[occurrenceID] else { throw ContractError.unknownOccurrence }
         occurrence.review = state
@@ -433,13 +505,15 @@ public struct InventoryLedger: Sendable {
     public mutating func acknowledgeObsolete(
         _ fingerprint: ValueFingerprint, as acknowledgement: ObsoleteAcknowledgement, at time: Date
     ) throws {
-        guard records[fingerprint] != nil || obsoleteMarkers[fingerprint] != nil else {
+        guard records[fingerprint] != nil || obsoleteMarkers[fingerprint] != nil || valueDecisions[fingerprint] != nil else {
             throw ContractError.unknownValue
         }
         guard time.timeIntervalSince1970.isFinite else { throw ContractError.invalidTime }
         obsoleteMarkers[fingerprint] = ObsoleteValueMarker(
             fingerprint: fingerprint, acknowledgement: acknowledgement, acknowledgedAt: time
         )
+        // Rotation or revocation settles the value, whatever was decided before.
+        valueDecisions.removeValue(forKey: fingerprint)
         try refreshPendingNotifications()
     }
 
@@ -465,6 +539,7 @@ public struct InventoryLedger: Sendable {
 
     public func alertHasEligibleContent(_ alert: AlertDecision) -> Bool {
         guard alert.delivery != .cancelled, obsoleteMarkers[alert.eligibility.fingerprint] == nil,
+              valueDecisions[alert.eligibility.fingerprint]?.decision.dismissesValue != true,
               records[alert.eligibility.fingerprint]?.id == alert.valueID else { return false }
         return occurrences.values.contains {
             $0.valueID == alert.valueID && $0.source.identity.session == alert.eligibility.session
@@ -547,13 +622,22 @@ public struct InventoryLedger: Sendable {
             }
             if let id, occurrenceIDs.contains(id) { locationReceipts[identity] = .removed }
         }
-        if obsoleteMarkers[fingerprint] == nil { valueLabels.removeValue(forKey: fingerprint) }
+        // A decision outlives the content, like the obsolete marker. Its appearances are gone, so
+        // counting starts again from none.
+        if var decision = valueDecisions[fingerprint] {
+            decision.appearancesAtDecision = 0
+            valueDecisions[fingerprint] = decision
+        }
+        if obsoleteMarkers[fingerprint] == nil && valueDecisions[fingerprint] == nil {
+            valueLabels.removeValue(forKey: fingerprint)
+        }
         try refreshPendingNotifications()
         return ContentRemovalPlan(
             removedValueID: record.id, payloadReferences: payloads.subtracting(activePayloadReferences), occurrenceIDs: occurrenceIDs,
             notificationIdentifiers: Set(removedAlerts.map(\.notificationIdentifier)),
             sourceItems: Set(removedOccurrences.map { $0.identity.source } + removedAppearances.map(\.source)),
-            retainedObsoleteMarker: obsoleteMarkers[fingerprint]
+            retainedObsoleteMarker: obsoleteMarkers[fingerprint],
+            retainedDecision: valueDecisions[fingerprint]
         )
     }
 
@@ -607,6 +691,7 @@ public struct InventoryLedger: Sendable {
                     updateCategories(for: detection.fingerprint, evidence: detection.evidence)
                     if marker == nil, occurrence.classification == .ordinary,
                        occurrence.review != .falsePositive, occurrence.detectorSignal == .strong,
+                       valueDecisions[detection.fingerprint]?.decision.dismissesValue != true,
                        let updatedRecord = records[detection.fingerprint] {
                         let key = AlertEligibilityKey(
                             fingerprint: detection.fingerprint, session: analysis.source.identity.session
@@ -672,16 +757,17 @@ public struct InventoryLedger: Sendable {
             insertedOccurrenceIDs.insert(occurrence.id)
             if let excerpt = detection.protectedExcerpt { retainedPayloads.insert(excerpt) }
             addedEvidenceCount += detection.evidence.count
-            if marker == nil {
+            if marker != nil {
+                insertedObsoleteIDs.insert(occurrence.id)
+            } else if valueDecisions[detection.fingerprint]?.decision.dismissesValue != true {
                 ordinaryValueIDs.insert(record.id)
                 historicalOrdinaryIDs.insert(occurrence.id)
                 if occurrence.detectorSignal == .strong,
                    let alert = makeEligibleDecision(for: record, source: analysis.source) {
                     alerts.append(alert)
                 }
-            } else {
-                insertedObsoleteIDs.insert(occurrence.id)
             }
+            // A dismissed value's appearance is kept and counted, with no alert or catch-up count.
         }
 
         for finding in analysis.unlocated {
@@ -801,6 +887,15 @@ public struct InventoryLedger: Sendable {
         }
         for (fingerprint, marker) in snapshot.obsoleteMarkers {
             guard fingerprint == marker.fingerprint, marker.acknowledgedAt.timeIntervalSince1970.isFinite else {
+                throw ContractError.invalidSnapshot
+            }
+        }
+        for (fingerprint, decision) in snapshot.valueDecisions {
+            guard fingerprint == decision.fingerprint, decision.decidedAt.timeIntervalSince1970.isFinite,
+                  decision.appearancesAtDecision >= 0 else { throw ContractError.invalidSnapshot }
+        }
+        for (id, decision) in snapshot.unlocatedDecisions {
+            guard id == decision.resultID, decision.decidedAt.timeIntervalSince1970.isFinite else {
                 throw ContractError.invalidSnapshot
             }
         }

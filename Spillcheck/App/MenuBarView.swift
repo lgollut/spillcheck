@@ -134,11 +134,11 @@ struct MenuBarView: View {
 
     private var needsReviewCard: some View {
         let values = model.needsReview
-        let occurrences = values.reduce(0) { $0 + max($1.unreviewed, $1.unlocated ? 1 : 0) }
+        let occurrences = values.reduce(0) { $0 + max($1.occurrences.count, $1.unlocated ? 1 : 0) }
         let title = model.inventoryStatusTitle ?? (values.isEmpty ? "Nothing awaiting review" : "\(plural(values.count, "value")) need\(values.count == 1 ? "s" : "") review")
         let subtitle = model.storageSummaryText ?? (values.isEmpty
             ? (model.monitoringProven ? "In analyzed content. Coverage may be partial." : "Finish setup to start monitoring.")
-            : "\(plural(occurrences, "unreviewed occurrence")) · latest \(DisplayTime.short(values[0].entry.observedAt))")
+            : "\(plural(occurrences, "appearance")) · latest \(DisplayTime.short(values[0].entry.observedAt))")
         return Button {
             if model.storageUnavailable {
                 model.route = .inventory

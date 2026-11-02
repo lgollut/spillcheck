@@ -67,20 +67,37 @@ without authorizing access to existing ones. Each retained payload has a fresh
 data key wrapped for the inventory key; private-key use requires authorization
 through `LAPersistedRight`.
 
+The inventory ledger is sealed as separately stored segments
+([ADR 0008](adr/0008-partitioned-sealed-ledger.md)): a small header in
+`store_state`, three parts in `ledger_parts` (findings, notification decisions,
+conversation labels) and 64 buckets of per-source bookkeeping in `ledger_buckets`.
+Each is sealed under a binding derived from the vault and its slot.
+`SourceBookkeeping.swift` journals the sources a commit touches and
+`PartitionedLedgerState.swift` plans which segments to rewrite;
+`ProtectedStoreLedger.swift` seals, opens and checks them. Opening never writes.
+A vault from before the layout converts in its first ordinary write, and older
+builds cannot open it afterwards.
+
 `ProtectionBootstrapJournal.swift` coordinates key creation and store startup.
 Missing keys with existing protected state are an error, not permission to
 create a replacement vault. Raw values, excerpts, titles and paths stay encrypted
 at rest; diagnostics and searchable summaries use controlled metadata.
 
 `InventoryViewingWorkflow.swift` and the app's `ViewingController.swift` manage
-reveals. One authentication unlocks a viewing session, and revealing needs no
-further prompt while it lasts. A revealed value stays revealed across its
-appearances. Hiding content or selecting another entry clears what was shown
-without ending the session. The session expires after five
+reveals. One authentication unlocks a viewing session. While it lasts, the app
+shows each selection's value and context on its own, through reveals that may
+not prompt: a locked or expired session fails them, and the content stays
+masked. Hide values masks content across selections without ending the
+session. The session expires after five
 minutes of inactivity and ends on locking, window closure, sleep or macOS
 session lock. Closing a window keeps
 monitoring active; pause suspends collection, processing and alerts; quit stops
 owned workers. Monitoring necessarily handles newly captured plaintext in memory.
+
+Read marks for the inbox are the one inventory fact kept outside the vault: the
+app's preferences store, per entry number, the time of the latest appearance the
+user has seen, plus a baseline set on first use. Entry numbers and times say
+nothing about a value or its context. See [ADR 0011](adr/0011-read-marks-outside-the-vault.md).
 
 Deletion and obsolete-value recognition are separate operations. Removing
 retained content preserves independent source receipts against historical
@@ -89,9 +106,16 @@ marker until explicit forgetting. See [ADR 0004](adr/0004-remember-obsolete-valu
 
 ## Installed-data compatibility
 
-The product name is Spillcheck, but `com.leakret.app` remains the provisioned
-bundle identity and production key-service prefix. Preserve its Keychain access
-group and macOS registrations when changing display names or signing settings.
+The bundle identifier `com.spillcheck.app` sets the Keychain access group that
+holds the vault keys. macOS also keys notification permission, the login item and
+preferences to it. Changing it separates every installed copy from its vault, so
+treat it as storage, not branding. Vaults created by earlier `com.leakret.app`
+builds, including any moved from `Application Support/Leakret`, open only with a
+build signed under that identity.
+
+The key-service prefix `com.leakret.app` is a separate storage name. It appears
+in every Keychain service name and in each vault manifest's inventory right
+identifier, and does not follow the bundle identifier.
 
 `AppStorageLocation.swift` moves the whole owned `Application Support/Leakret`
 directory to `Application Support/Spillcheck` before opening it, including SQLite

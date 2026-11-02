@@ -88,6 +88,8 @@ jobs:
           # Blocking process/socket probes have short deadlines. Isolate test
           # cases from each other's load while retaining concurrency within them.
           python3 scripts/prepare-scanner.py
+          # Debug builds read the sealed ledger back after every write and compare it with memory.
+          export SPILLCHECK_VERIFY_LEDGER_LAYOUT=1
           swift test --no-parallel
       - name: Record optional test scope
         run: |

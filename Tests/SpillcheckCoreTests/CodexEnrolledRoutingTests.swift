@@ -230,13 +230,15 @@ struct CodexEnrolledRoutingTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let authorities = CodexTestAuthority(), history = CodexTestHistory()
         try await authorities.record(enrolledChoice("existing", authority: CodexCollectionAuthority.publicNativeItems.rawValue))
+        // The store runs on the wall clock, so date the items with it to keep them inside the audit lookback.
+        let now = Date(timeIntervalSince1970: floor(Date().timeIntervalSince1970))
         for id in ["new", "existing"] {
-            try await history.configure(id, thread: codexThread(id), pages: [.init(data: [codexItem()])])
+            try await history.configure(id, thread: codexThread(id), pages: [.init(data: [codexItem(timestamp: now.timeIntervalSince1970 * 1000)])])
         }
         let adapter = try CodexAdapter(profileID: "test", agentVersion: "0.162.1", interface: .t3,
             history: history, authorityLookup: { await authorities.lookup($0) },
             authorityRecorder: { _ in throw StorageError.capacityExceeded(.sourceAuthorities) })
-        let crypto = try BackgroundCryptography.ephemeralForTesting(), now = Date()
+        let crypto = try BackgroundCryptography.ephemeralForTesting()
         let audit = try HistoricalAuditContext(reason: .restart, endingAt: now)
         let first = try await adapter.normalize(adapter.packet(.init(audit: audit, threads: ["new", "existing"])),
             capturedAt: now, cryptography: crypto)
@@ -303,7 +305,9 @@ struct CodexEnrolledRoutingTests {
             await #expect(throws: StorageError.databaseUnavailable) { try await monitor.pollOnce(at: now.addingTimeInterval(step)) }
         }
         let gaps = await captured.gaps
-        #expect(gaps.count == 2 && gaps.allSatisfy {
+        // A failing source is backed off and reports its gap once per outage, so the second pass
+        // is a quiet retry.
+        #expect(gaps.count == 1 && gaps.allSatisfy {
             $0.reason == .deliveryUncertain && $0.recovery?.session?.sessionID == "broken" })
         let polled = try await captured.packets.map {
             try JSONDecoder().decode(CodexJSON.self, from: $0.eventJSON)["session_id"].string }

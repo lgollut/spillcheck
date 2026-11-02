@@ -39,10 +39,22 @@ public actor DetectionPipeline {
     private let normalizer: any CaptureNormalizer
     private let detector: any SecretDetector
     private let detectorVersion: String
+    private let processingBudget: Duration
     private let onActivity: @Sendable (PipelineActivity) async -> Void
+    /// How long the running worker waits when nothing was claimable or a claim failed.
+    private let idleWait: Duration
     private var liveSince: Date
     private var worker: Task<Void, Never>?
     private var processing = false
+    /// Sources this attempt added to the inventory. Their receipts let the next attempt skip them,
+    /// so an attempt that ran out of time after adding some has advanced. Sources scanned with
+    /// coverage gaps are scanned again on every attempt and add nothing the second time.
+    private var committedSources = 0
+    /// Worker time live captures may still use before history gets its next turn. A history
+    /// attempt grants live work as much time as it took, so slow catch-up passes cannot crowd out
+    /// live captures; history still waits for four live claims too. An idle worker owes nothing.
+    private var liveTimeOwed: Duration = .zero
+    private var liveClaimsSinceHistory = 0
     private var lastCompaction = Date.distantPast
     private var failureObserver: (@Sendable (PipelineFailureDiagnostic) async -> Void)?
     private var captureCompletionObserver: (@Sendable (UUID) async -> Void)?
@@ -64,13 +76,16 @@ public actor DetectionPipeline {
 
     public init(store: ProtectedStore, cryptography: BackgroundCryptography,
                 normalizer: any CaptureNormalizer, detector: any SecretDetector,
-                detectorVersion: String, liveSince: Date = Date(),
+                detectorVersion: String, liveSince: Date = Date(), processingBudget: Duration = .seconds(110),
+                idleWait: Duration = .milliseconds(250),
                 onActivity: @escaping @Sendable (PipelineActivity) async -> Void = { _ in }) {
         self.store = store
+        self.idleWait = idleWait
         self.cryptography = cryptography
         self.normalizer = normalizer
         self.detector = detector
         self.detectorVersion = detectorVersion
+        self.processingBudget = processingBudget
         self.liveSince = liveSince
         self.onActivity = onActivity
     }
@@ -81,12 +96,16 @@ public actor DetectionPipeline {
         worker = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { break }
+                var wait = true
                 do {
-                    if try await self.processNext() == .idle { await self.compactIfDue() }
+                    if try await self.processNext() == .idle { await self.compactIfDue() } else { wait = false }
                 }
                 catch is CancellationError { break }
                 catch { /* Only controlled coverage errors enter persistence, never raw diagnostics. */ }
-                do { try await Task.sleep(for: .milliseconds(250)) } catch { break }
+                // Queued captures run back to back; the worker waits only when none was claimable
+                // or a claim failed, so a persistent failure cannot spin.
+                if wait { do { try await Task.sleep(for: self.idleWait) } catch { break } }
+                else { await Task.yield() }
             }
         }
     }
@@ -112,14 +131,21 @@ public actor DetectionPipeline {
     public func processNext(at now: Date = Date()) async throws -> PipelineOutcome {
         guard !processing else { throw PipelineError.alreadyProcessing }
         guard !Task.isCancelled, let permit = await store.processingPermit() else { return .idle }
-        guard let capture = try await store.nextPending(at: now, permit: permit) else { return .idle }
+        let historyTurn = liveTimeOwed <= .zero && liveClaimsSinceHistory >= 4
+        guard let capture = try await store.nextPending(at: now, permit: permit, historyTurn: historyTurn) else {
+            liveTimeOwed = .zero
+            return .idle
+        }
+        let started = ContinuousClock.now
+        defer { account(capture, elapsed: ContinuousClock.now - started) }
         processing = true
+        committedSources = 0
         await publish(processing: true)
         do {
             try await withThrowingTaskGroup(of: Void.self) { group in
                 group.addTask { try await self.process(capture, permit: permit, now: now) }
                 group.addTask {
-                    try await Task.sleep(for: .seconds(110))
+                    try await Task.sleep(for: self.processingBudget)
                     throw PipelineError.budgetExhausted
                 }
                 defer { group.cancelAll() }
@@ -139,8 +165,18 @@ public actor DetectionPipeline {
                 await failureObserver(.init(stage: failureStage, code: Self.diagnosticCode(error), reason: Self.reason(for: error)))
             }
             // The store generation rejects retry work after pause, deletion or shutdown too.
-            try await store.retry(capture, reason: Self.reason(for: error), at: Date(), permit: permit)
+            let progressed = error as? PipelineError == .budgetExhausted && committedSources > 0
+            try await store.retry(capture, reason: Self.reason(for: error), diagnosticCode: Self.lossDiagnostic(for: error),
+                                  at: Date(), permit: permit, progressed: progressed)
             return .retryScheduled
+        }
+    }
+
+    private func account(_ capture: PendingCapture, elapsed: Duration) {
+        if capture.isHistorical {
+            liveTimeOwed = elapsed; liveClaimsSinceHistory = 0
+        } else {
+            liveTimeOwed -= elapsed; liveClaimsSinceHistory = min(4, liveClaimsSinceHistory + 1)
         }
     }
 
@@ -210,7 +246,8 @@ public actor DetectionPipeline {
             let prepared = try await prepare(source: source, context: collected.context, output: output, version: version)
             try Task.checkCancellation()
             diagnosticStage(.commitSource)
-            _ = try await store.commit(prepared.analysis, payloads: prepared.payloads, linking: capture, permit: permit)
+            let transition = try await store.commit(prepared.analysis, payloads: prepared.payloads, linking: capture, permit: permit)
+            if transition.outcome == .processed { committedSources += 1 }
         }
         if reducedCoverage {
             // Retryable scanner work retains its queue claim and source progress. Persist its
@@ -477,6 +514,13 @@ public actor DetectionPipeline {
     private func publish(processing: Bool) async {
         let count = (try? await store.queueStatistics().count) ?? 0
         await onActivity(PipelineActivity(processing: processing, pendingCount: count))
+    }
+
+    /// A loss explained better by its cause than by its reason. A capture whose work or next page
+    /// found the work ledger full is still a rejected capture, but the remedy is storage, not a reread.
+    static func lossDiagnostic(for error: any Error) -> CoverageDiagnosticCode? {
+        if case .capacityExceeded(.collectionWork)? = error as? StorageError { return .workStorageLimit }
+        return nil
     }
 
     private static func reason(for error: any Error) -> CoverageGapReason {

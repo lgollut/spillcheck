@@ -59,14 +59,59 @@ struct CodexHistoryClientTests {
         #expect(ProcessInfo.processInfo.systemUptime - repeatedStart < 0.1)
         #expect(await client.lastShutdownCompletedWithinDeadline == true)
     }
-    @Test func unsafeServerRequestsMalformedReportsAndRemoteErrorsAreControlledAndReaped() async throws {
+    @Test func unsafeServerRequestsMalformedReportsAndRemoteErrorsAreControlled() async throws {
         for (mode, expected) in [("unsafe", CodexHistoryError.unsafeMethod), ("malformed", .malformedResponse), ("remote", .remoteFailure(code: -32001))] {
             let (client, directory) = try fixture(mode)
             defer { try? FileManager.default.removeItem(at: directory) }
             await #expect(throws: expected) { try await client.readThread("synthetic") }
-            #expect(try exited(directory))
+            // An unexpected request or unreadable reply stops the reader; an error reply leaves it running.
+            #expect(try exited(directory) == (mode != "remote"))
             await client.close()
+            #expect(try exited(directory))
         }
+    }
+    @Test func threadDiscoveryListsThreadsRecordedByAppServerClients() async throws {
+        // T3 Code, the Codex terminal UI and Codex Desktop record their threads with source "vscode".
+        let (client, directory) = try fixture("source-filter")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let page = try await client.listThreads(cursor: nil)
+        #expect(page.data.map { $0["source"].string } == ["vscode"])
+        await client.close()
+    }
+    @Test(arguments: [("remote", CodexHistoryError.remoteFailure(code: -32001)),
+                      ("missing-method", .missingMethod("thread/read")),
+                      ("rejected-parameters", .rejectedParameters("thread/read"))])
+    func anErrorReplyLeavesTheReaderRunningForTheNextRequest(mode: String, expected: CodexHistoryError) async throws {
+        // A deleted thread answers "thread not loaded". Stopping the reader for that answer made
+        // every later poll start a new app-server, about one launch a second.
+        let (client, directory) = try fixture("normal")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let pid = { try String(contentsOf: directory.appendingPathComponent("work/server.pid"), encoding: .utf8) }
+        _ = try await client.readThread("synthetic")
+        let reader = try pid()
+        let modeURL = directory.appendingPathComponent("work/mode")
+        try Data(mode.utf8).write(to: modeURL)
+        await #expect(throws: expected) { try await client.readThread("synthetic") }
+        #expect(!(try exited(directory)))
+        try Data("normal".utf8).write(to: modeURL)
+        _ = try await client.readThread("synthetic")
+        #expect(try pid() == reader)
+        await client.close()
+        #expect(try exited(directory))
+    }
+    @Test func aLargeReplyIsReadInTimeProportionalToItsSize() async throws {
+        // Item pages from the app-server reach several hundred kilobytes on one line. The reader
+        // searched the whole buffered reply for its end again after every piece it read.
+        let (client, directory) = try fixture("large", maximumBytes: 8 * 1024 * 1024)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        _ = try await client.readThread("synthetic")
+        let started = ProcessInfo.processInfo.systemUptime
+        let result = try await client.readThread("synthetic")
+        let elapsed = ProcessInfo.processInfo.systemUptime - started
+        #expect(result.thread["padding"].string?.utf8.count == 6 * 1024 * 1024)
+        #expect(result.bytesRead > 6 * 1024 * 1024)
+        #expect(elapsed < 1.5, "\(elapsed)")
+        await client.close()
     }
     @Test func actualReaderVersionIsObservedAndOperationsAreAssessedSeparately() async throws {
         let (client, directory) = try fixture("new-version", configuredVersion: "0.1.0")
@@ -97,7 +142,7 @@ struct CodexHistoryClientTests {
         }
         #expect(await client.assessment(scope: scope).usableOperations.isEmpty)
         #expect(await client.assessment(scope: scope).failures == [.init(reason: .missingMethod, operation: .liveRead)])
-        #expect(try exited(directory))
+        #expect(!(try exited(directory)))
         try Data("normal".utf8).write(to: mode)
         _ = try await client.listItems(threadID: "synthetic", cursor: nil)
         #expect(await client.assessment(scope: scope).usableOperations == [.liveRead, .historicalRead])
@@ -196,7 +241,7 @@ struct CodexHistoryClientTests {
             let (client, directory) = try fixture(mode)
             defer { try? FileManager.default.removeItem(at: directory) }
             await #expect(throws: expected) { try await client.readThread("synthetic") }
-            if mode != "invalid-version" { #expect(try exited(directory)) }
+            if mode != "invalid-version" { #expect(!(try exited(directory))) }
             await client.close()
         }
     }

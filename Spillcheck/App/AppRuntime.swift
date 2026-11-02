@@ -91,7 +91,8 @@ private struct ObservedClaudeNormalizer: CaptureNormalizer {
 private struct ObservedCodexNormalizer: CaptureNormalizer {
     let adapter: CodexAdapter
     let onSelection: @Sendable ([CodexActiveSource]) async -> Void
-    let onObservation: @Sendable ([CodexActiveSource]) async -> Void
+    let onObservation: @Sendable (CollectionBatch, CodexCollectionAuthority) async -> Void
+    let onPollOutcome: @Sendable (String, Date, Bool) async -> Void
     let onBatch: @Sendable (CollectionBatch, CaptureMetadata) async -> Void
     func normalize(_ packet: CapturePacket, capturedAt: Date,
                    cryptography: BackgroundCryptography) async throws -> CollectionBatch {
@@ -115,22 +116,24 @@ private struct ObservedCodexNormalizer: CaptureNormalizer {
             }
             await onSelection(selections)
         }
-        let batch = try await adapter.normalize(packet, capturedAt: capturedAt, cryptography: cryptography)
-        await onBatch(batch, packet.metadata)
-        if !batch.sources.isEmpty {
-            var observed: [CodexActiveSource] = []
-            var threads = Set<String>()
-            for source in batch.sources {
-                guard case .live = source.record.metadata.origin.provenance,
-                      threads.insert(source.record.metadata.identity.session.sessionID).inserted else { continue }
-                if let selected = try? CodexActiveSource(threadID: source.record.metadata.identity.session.sessionID,
-                    interface: source.record.metadata.origin.interface, authority: adapter.authority,
-                    transcriptURL: source.context?.transcriptPath.map { URL(fileURLWithPath: $0) }) {
-                    observed.append(selected)
-                }
-            }
-            await onObservation(observed)
+        // The monitor backs off a thread whose polls keep failing, such as one its app deleted.
+        let polled = (try? JSONSerialization.jsonObject(with: packet.eventJSON) as? [String: Any]).flatMap { event in
+            ["SpillcheckHistoryPoll", "LeakretHistoryPoll"].contains(event["hook_event_name"] as? String ?? "")
+                ? event["session_id"] as? String : nil
         }
+        let batch: CollectionBatch
+        do { batch = try await adapter.normalize(packet, capturedAt: capturedAt, cryptography: cryptography) }
+        catch {
+            // Cancellation and the pipeline's controlled pause errors say nothing about the thread. The
+            // pipeline retries a failed poll, so the monitor counts attempts of one poll (same capturedAt) once.
+            let inconclusive = Task.isCancelled || error is CancellationError
+                || [.monitoringPaused, .staleProcessingPermit, .staleClaim].contains(error as? StorageError)
+            if let polled, !inconclusive { await onPollOutcome(polled, capturedAt, false) }
+            throw error
+        }
+        if let polled { await onPollOutcome(polled, capturedAt, true) }
+        await onBatch(batch, packet.metadata)
+        if !batch.sources.isEmpty { await onObservation(batch, adapter.authority) }
         return batch
     }
 }
@@ -147,6 +150,10 @@ final class AppRuntime {
     private var startupPhase = StorageStartupFailure.Phase.preparingStorage
     private var refreshTask: Task<Void, Never>?
     private var pipeline: DetectionPipeline?
+    /// Held while monitoring is on and captures wait. Without it macOS naps the app whenever none
+    /// of its windows is visible, for example while the screen is locked: the worker then gets
+    /// almost no processor time and the queue grows while agents keep working.
+    private var analysisActivity: NSObjectProtocol?
     private var activeMonitor: ClaudeActiveTranscriptMonitor?
     private var codexMonitor: CodexActiveHistoryMonitor?
     private var codexHistory: CodexAppServerHistoryClient?
@@ -172,6 +179,9 @@ final class AppRuntime {
     private var publishedRevision: Int64?
     private var publishedDay: Date?
     var onShowInventory: (() -> Void)?
+    /// Whether a window or panel that shows report-derived content is on screen. Until the app
+    /// delegate says otherwise the report is treated as shown, which keeps the shorter interval.
+    var reportUIVisible: () -> Bool = { true }
     #if DEBUG
     private var acceptanceReportURL: URL?
     private var acceptanceDeadline: Date?
@@ -250,6 +260,10 @@ final class AppRuntime {
     private var eventMonitor: Any?
     private var workspaceObservers: [NSObjectProtocol] = []
     private var lockObserver: NSObjectProtocol?
+    private var unlockObserver: NSObjectProtocol?
+    /// Set when startup could not read the device keys because the Mac was locked. The keys are
+    /// readable only while unlocked, so the next unlock starts storage again.
+    private var startupAwaitsUnlock = false
     private var activationObserver: NSObjectProtocol?
 
     init(model: AppModel) {
@@ -425,8 +439,17 @@ final class AppRuntime {
                         try await opened.recordCoverageGap(failure.gap)
                         throw CaptureTransportError.rejectionRecorded
                     }
-                    let insertion = try await opened.enqueue(packet.body, capturedAt: .now, permit: permit,
-                        scope: scope, historicalAudit: historicalAudit, workContext: context)
+                    let insertion: QueueInsertion
+                    do {
+                        insertion = try await opened.enqueue(packet.body, capturedAt: .now, permit: permit,
+                            scope: scope, historicalAudit: historicalAudit, workContext: context)
+                    } catch StorageError.capacityExceeded(.collectionWork) {
+                        // As with an admission limit, name the cause on the configured route and
+                        // suppress the generic transport gap only once that record commits.
+                        try await opened.recordCoverageGap(
+                            CollectionCapacityRejection(resource: .collectionWork, scope: context.scope).gap)
+                        throw CaptureTransportError.rejectionRecorded
+                    }
                     let queueID: UUID
                     switch insertion {
                     case .inserted(let id), .alreadyQueued(let id), .alreadyProcessed(let id): queueID = id
@@ -451,7 +474,7 @@ final class AppRuntime {
             refreshTask = Task { [weak self] in
                 while !Task.isCancelled {
                     do { try await Task.sleep(for: .seconds(1)) } catch { break }
-                    await self?.refresh()
+                    await self?.refresh(periodic: true)
                 }
             }
         } catch is CancellationError {
@@ -467,6 +490,8 @@ final class AppRuntime {
             model.startupFailure = StorageStartupFailure(error: error, phase: startupPhase)
             model.storageMessage = Self.storageFailureMessage(error)
             model.pauseAfterBarrier()
+            startupAwaitsUnlock = startupPhase == .loadingDeviceKeys
+                && (error as? KeyUnavailable).map(Self.isLockedKeychain) == true
             #if DEBUG
             writeOpeningReport(phase: Self.controlledFailure(error))
             #endif
@@ -486,6 +511,8 @@ final class AppRuntime {
             self?.viewingGeneration = UUID()
             self?.viewing?.didInvalidate(reason)
             self?.model.clearRevealedContent()
+            // The next unlock shows values again.
+            self?.model.valuesHidden = false
         }
         let ownedSetup = AgentSetupController(store: store,
             helperURL: Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/spillcheck-hook"),
@@ -536,6 +563,8 @@ final class AppRuntime {
                 self.model.route = .coverage
                 self.model.actionMessage = "Collection has a scoped limitation. Review the affected route and content in Coverage."
             }
+            // The selection may not have changed, so it wouldn't show again on its own.
+            self.showSelectionIfUnlocked()
             self.onShowInventory?()
         }
         await notifications.refreshPermission()
@@ -547,45 +576,30 @@ final class AppRuntime {
             self?.viewingGeneration = UUID()
             self?.viewing?.select(valueID: Self.viewingID(entry))
             self?.sourceOpening.cancel()
+            self?.showSelectionIfUnlocked()
         }
         model.onOccurrenceSelectionChanged = { [weak self] occurrence in
             guard let self else { return }
             self.viewingGeneration = UUID()
             self.sourceOpening.cancel()
-            // Revealing covers the whole value, so another of its appearances stays revealed and shows
-            // its own context. A new entry selects its default appearance before the viewing selection
-            // follows, so that change is not mistaken for one within the revealed entry.
-            if let viewing = self.viewing, viewing.state == .revealed || viewing.state == .authenticating,
-               let entry = self.model.selectedEntryID, let id = Self.viewingID(entry), viewing.selectedValueID == id {
-                let generation = self.viewingGeneration
-                self.performAction { runtime in
-                    await runtime.reveal(entry: entry, occurrenceID: occurrence, generation: generation)
-                }
+            // The value stays on screen while another of its appearances loads its own context. A new
+            // entry selects its default appearance before the viewing selection follows, so that change
+            // is not mistaken for one within the shown entry.
+            if let viewing = self.viewing, let entry = self.model.selectedEntryID, let id = Self.viewingID(entry),
+               viewing.selectedValueID == id, viewing.isAuthorized, !self.model.valuesHidden {
+                self.showSelectionIfUnlocked()
             } else {
                 self.viewing?.hide()
             }
         }
         model.onHide = { [weak self] in self?.hide() }
+        model.onShowValues = { [weak self] in self?.showSelectionIfUnlocked() }
         model.onLock = { [weak self] in self?.lock() }
         model.onUnlock = { [weak self] in
             self?.performAction { runtime in await runtime.unlock() }
         }
-        model.onReveal = { [weak self] entry, occurrence in
-            guard let self else { return }
-            self.model.selectedOccurrenceID = occurrence
-            let generation = self.viewingGeneration
-            self.performAction { runtime in
-                await runtime.reveal(entry: entry, occurrenceID: occurrence, generation: generation)
-            }
-        }
-        model.onReview = { [weak self] id, state in
-            self?.performAction { runtime in await runtime.mutateInventory(.review(id, state)) }
-        }
-        model.onReviewAll = { [weak self] ids, state in
-            self?.performAction { runtime in await runtime.mutateInventory(.reviewAll(ids, state)) }
-        }
-        model.onAcknowledge = { [weak self] fingerprint, acknowledgement in
-            self?.performAction { runtime in await runtime.mutateInventory(.acknowledge(fingerprint, acknowledgement)) }
+        model.onApply = { [weak self] changes, undoing in
+            self?.performAction { runtime in await runtime.mutateInventory(.apply(changes, undoing: undoing)) }
         }
         model.onRemoveContent = { [weak self] fingerprint in
             self?.performAction { runtime in await runtime.mutateInventory(.remove(fingerprint)) }
@@ -721,20 +735,35 @@ final class AppRuntime {
     private static func viewingID(_ entry: InventoryEntryID?) -> UUID? {
         switch entry {
         case .value(let valueID), .unlocated(let valueID): valueID
-        case .obsoleteMarker, nil: nil
+        case .obsoleteMarker, .rememberedDecision, nil: nil
         }
     }
 
     private func unlock() async {
         guard let viewing, model.windowVisible, !terminating else { return }
-        do { try await viewing.unlock() }
-        catch ViewingAuthorizationError.denied, ViewingAuthorizationError.unavailable {
+        do {
+            try await viewing.unlock()
+            model.valuesHidden = false
+            showSelectionIfUnlocked()
+        } catch ViewingAuthorizationError.denied, ViewingAuthorizationError.unavailable {
             model.actionMessage = "Authentication failed. Values stay hidden."
         } catch {}
     }
 
+    /// While the session is unlocked and values aren't hidden, whatever is selected shows its value
+    /// and the selected appearance's context, with no prompt and no Reveal action.
+    private func showSelectionIfUnlocked() {
+        guard let viewing, viewing.isAuthorized, !model.valuesHidden, model.windowVisible, !terminating,
+              let entry = model.selectedEntryID, Self.viewingID(entry) != nil else { return }
+        let occurrence = model.selectedOccurrenceID, generation = viewingGeneration
+        performAction { runtime in
+            await runtime.reveal(entry: entry, occurrenceID: occurrence, generation: generation)
+        }
+    }
+
+    /// Never prompts: a session that is locked, or locks meanwhile, leaves the selection masked.
     private func reveal(entry: InventoryEntryID, occurrenceID: UUID?, generation: UUID) async {
-        guard let store, let viewing, entry == model.selectedEntryID,
+        guard let store, let viewing, viewing.isAuthorized, !model.valuesHidden, entry == model.selectedEntryID,
               occurrenceID == model.selectedOccurrenceID,
               generation == viewingGeneration, model.windowVisible else { return }
         do {
@@ -752,25 +781,23 @@ final class AppRuntime {
                 guard selection.valueID == valueID else { return }
             case .unlocated(let resultID):
                 selection = try InventoryRevealSelection.unlocatedSource(in: snapshot, resultID: resultID)
-            case .obsoleteMarker: return
+            case .obsoleteMarker, .rememberedDecision: return
             }
             guard model.selectedEntryID == entry, generation == viewingGeneration,
-                  occurrenceID == model.selectedOccurrenceID,
+                  occurrenceID == model.selectedOccurrenceID, !model.valuesHidden,
                   model.windowVisible, !terminating, !Task.isCancelled else { return }
             viewing.select(valueID: selection.valueID)
-            await viewing.reveal(selection)
+            await viewing.reveal(selection, prompting: false)
         } catch {
-            if model.selectedEntryID == entry, generation == viewingGeneration,
-               occurrenceID == model.selectedOccurrenceID {
-                model.viewingMessage = "No retained content is available for this appearance."
-            }
+            // Nothing retained to show, which the detail already says. Shown on its own, so it stays silent.
         }
     }
 
     private enum InventoryMutation {
+        /// Per-appearance review, kept for the acceptance fixture that builds an older vault's state.
         case review(UUID, OccurrenceReview)
-        case reviewAll([UUID], OccurrenceReview)
-        case acknowledge(ValueFingerprint, ObsoleteAcknowledgement)
+        /// Decisions, rotations and revocations, applied as one write. Undoing applies their inverse.
+        case apply([InventoryDecisionChange], undoing: Bool)
         case remove(ValueFingerprint)
         case forget(ValueFingerprint)
     }
@@ -799,22 +826,16 @@ final class AppRuntime {
                 recordWorkflowEvent("review-" + state.rawValue)
                 #endif
                 model.actionMessage = "Review saved for this appearance. Other appearances are unchanged."
-            case .reviewAll(let ids, let state):
-                for id in ids { try await store.review(id, as: state) }
+            case .apply(let changes, let undoing):
+                try await store.apply(changes, at: .now)
                 #if DEBUG
-                recordWorkflowEvent("review-all-" + state.rawValue)
+                for change in changes { recordWorkflowEvent(undoing ? "undo" : Self.eventName(change)) }
                 #endif
-                model.actionMessage = state == .falsePositive
-                    ? "Marked as not a secret. New appearances are still checked."
-                    : "Marked as possibly a secret again."
-            case .acknowledge(let fingerprint, let acknowledgement):
-                try await store.acknowledgeObsolete(fingerprint, as: acknowledgement, at: .now)
-                #if DEBUG
-                recordWorkflowEvent("acknowledge-" + acknowledgement.rawValue)
-                #endif
-                // The selected value moves into the rotated or revoked section; keep it in view.
-                model.handledExpanded = true
-                model.actionMessage = "Acknowledged as \(acknowledgement.rawValue). Later appearances will show as obsolete, without alerts. This wasn’t checked with the service."
+                if undoing {
+                    model.actionMessage = "Undone."
+                } else {
+                    model.offerUndo(InventoryDecisionChange.inverse(of: changes, in: before), message: Self.message(for: changes))
+                }
             case .remove(let fingerprint):
                 hide()
                 let plan = try await store.removeContent(for: fingerprint)
@@ -822,9 +843,11 @@ final class AppRuntime {
                 recordWorkflowEvent("content-removed")
                 #endif
                 notifications.cancel(identifiers: plan.notificationIdentifiers)
-                model.actionMessage = plan.retainedObsoleteMarker == nil
-                    ? "Retained content removed. Agent histories weren’t touched. If it appears again, it’s treated as new."
-                    : "Retained content removed. It stays recognized as obsolete."
+                model.actionMessage = plan.retainedObsoleteMarker != nil
+                    ? "Retained content removed. It stays recognized as obsolete."
+                    : plan.retainedDecision != nil
+                    ? "Retained content removed. Your decision still covers later appearances."
+                    : "Retained content removed. Agent histories weren’t touched. If it appears again, it’s treated as new."
             case .forget(let fingerprint):
                 hide()
                 try await store.forgetObsoleteMarker(fingerprint)
@@ -843,10 +866,49 @@ final class AppRuntime {
                 }
             }
             await refresh()
+            if case .apply(let changes, true) = mutation { model.reselect(changes) }
+            // Removal and forgetting hide what was shown; what is still selected shows again.
+            if viewing?.state == .masked { showSelectionIfUnlocked() }
         } catch {
+            model.undo = nil
             model.actionMessage = "The change could not be saved. Reload the inventory and try again."
         }
     }
+
+    private static func message(for changes: [InventoryDecisionChange]) -> String {
+        let count = changes.count
+        switch changes.first {
+        case .decide(_, let decision)?, .decideUnlocated(_, let decision)?:
+            switch decision {
+            case .needsRotation?:
+                return count == 1 ? "Moved to To rotate. Change it at its service, then mark it rotated."
+                    : "\(count) values moved to To rotate. Change them at their services, then mark them rotated."
+            case let decision?:
+                return (count == 1 ? "Marked" : "\(count) values marked") + " “\(decision.displayName)”. Later appearances stay quiet."
+            case nil:
+                return (count == 1 ? "Back to review." : "\(count) values are back to review.")
+                    + " Later appearances alert and wait for review as before."
+            }
+        case .acknowledge(_, let acknowledgement)?:
+            return (count == 1 ? "Marked" : "\(count) values marked") + " \(acknowledgement.rawValue)."
+                + " Later appearances show as obsolete, without alerts. Spillcheck didn’t check this with the service."
+        case .forgetMarker?:
+            return "Obsolete recognition forgotten. New appearances will be evaluated normally."
+        case nil:
+            return ""
+        }
+    }
+
+    #if DEBUG
+    private static func eventName(_ change: InventoryDecisionChange) -> String {
+        switch change {
+        case .decide(_, let decision): "decide-" + (decision?.rawValue ?? "cleared")
+        case .decideUnlocated(_, let decision): "decide-unlocated-" + (decision?.rawValue ?? "cleared")
+        case .acknowledge(_, let acknowledgement): "acknowledge-" + acknowledgement.rawValue
+        case .forgetMarker: "marker-forgotten"
+        }
+    }
+    #endif
 
     private func sourceReference(id: UUID, snapshot: InventorySnapshot) -> (SessionIdentity, Bool)? {
         if let occurrence = snapshot.occurrences[id] { return (occurrence.source.identity.session, occurrence.protectedExcerpt != nil) }
@@ -1093,8 +1155,36 @@ final class AppRuntime {
         await refresh()
     }
 
-    func refresh() async {
-        guard let store, !terminating else { return }
+    private func holdAnalysisActivity(_ busy: Bool) {
+        if busy, analysisActivity == nil {
+            analysisActivity = ProcessInfo.processInfo.beginActivity(
+                options: .userInitiatedAllowingIdleSystemSleep, reason: "Analyzing captured agent activity")
+        } else if !busy, let activity = analysisActivity {
+            ProcessInfo.processInfo.endActivity(activity)
+            analysisActivity = nil
+        }
+    }
+
+    /// Something that shows the report just appeared. The periodic refresh may have let the report
+    /// age to `hiddenInterval` while nothing did, so it is refreshed now rather than on the next tick.
+    /// Before storage is ready (still opening) or after startup failed, the store must stay untouched:
+    /// `openStorage` makes its own first refresh once it is ready, and a failed one never gets another.
+    func reportUIAppeared() {
+        guard model.storageReady else { return }
+        // Opening a window reports it twice: once when it is ordered front and again when its
+        // occlusion state follows. One refresh covers both.
+        let now = Date()
+        if let last = lastAppearanceRefresh, now.timeIntervalSince(last) < 1 { return }
+        lastAppearanceRefresh = now
+        Task { [weak self] in await self?.refresh() }
+    }
+    private var lastAppearanceRefresh: Date?
+
+    /// The once-a-second `periodic` refresh may show a coverage report a few seconds old, or half a
+    /// minute while nothing shows it; every other caller has just changed something and gets an
+    /// up-to-date one.
+    func refresh(periodic: Bool = false) async {
+        guard let store, !terminating else { holdAnalysisActivity(false); return }
         do {
             #if DEBUG
             if let recovery = acceptanceRecovery, !acceptanceCodexPollingStopped,
@@ -1117,13 +1207,30 @@ final class AppRuntime {
             #endif
             _ = try await store.maintainQueue()
             try await store.expireCoverageRecovery(at: .now)
-            let report = try await store.coverageReport()
+            var acceptanceRun = false
+            #if DEBUG
+            // Acceptance runs act on the report as soon as their control file appears.
+            acceptanceRun = acceptanceRecovery != nil
+            #endif
+            let minimumInterval = CoverageReportRefreshPolicy.minimumInterval(
+                periodic: periodic, reportUIVisible: reportUIVisible(), acceptanceRecovery: acceptanceRun)
+            // The queue's size drives the shown activity, so it is read every second rather than
+            // taken from a report that may be a few seconds old. Activity holds must use `queue`,
+            // never `report.queue`.
+            let queue = try await store.queueStatistics()
+            var report = try await store.recentCoverageReport(minimumInterval: minimumInterval)
+            // History work queued since the kept report was built would otherwise be missing from
+            // its agents, and the "Catching up" label would disappear until the next rebuild.
+            if minimumInterval > 0, report.predatesHistoryWork(queued: queue.historicalCount, knownProviders: model.catchingUpProviders) {
+                report = try await store.recentCoverageReport()
+            }
             // Unchanged records are not reassigned, so views reading the report aren't invalidated
             // every second. The kept report's window ends earlier; exports query a fresh report.
             if model.coverageReport?.hasSameRecords(as: report) != true { model.coverageReport = report }
             if model.historyProgress != report.history.items { model.historyProgress = report.history.items }
-            model.updateQueue(count: report.queue.count)
-            model.updateHistoryWork(queued: report.queue.historicalCount, providers: report.providersReadingHistory)
+            model.updateQueue(count: queue.count)
+            holdAnalysisActivity(model.monitoringEnabled && queue.count > 0)
+            model.updateHistoryWork(queued: queue.historicalCount, providers: report.providersReadingHistory)
             model.refreshCollectionLimitations()
             await refreshSetup()
             #if DEBUG
@@ -1157,10 +1264,12 @@ final class AppRuntime {
             await publishSnapshot(from: store)
             await deliverNotifications()
             #if DEBUG
-            await writeAcceptanceReport(statistics: report.queue, gaps: model.unresolvedCoverageGaps)
+            await writeAcceptanceReport(statistics: queue, gaps: model.unresolvedCoverageGaps)
             #endif
         } catch {
             model.storageMessage = Self.storageFailureMessage(error)
+            // Keep the activity while monitoring runs: analysis can go on while a report fails.
+            if !model.monitoringEnabled { holdAnalysisActivity(false) }
         }
     }
 
@@ -1380,7 +1489,7 @@ final class AppRuntime {
                 acceptanceInventoryReviewApplied = true
             } else if acknowledgement {
                 try InventoryStateAcceptance.requireRetainedRevocation(snapshot, fingerprint: fingerprint)
-                await mutateInventory(.acknowledge(fingerprint, .revoked))
+                await mutateInventory(.apply([.acknowledge(fingerprint, .revoked)], undoing: false))
                 guard InventoryStateAcceptance.phase(await store.snapshot(), fingerprint: fingerprint, upgradeState: true)
                         == "reviewed-revoked7" else { throw InventoryStateAcceptance.Failure.postconditionFailed }
                 acceptanceInventoryAcknowledgementApplied = true
@@ -1391,7 +1500,7 @@ final class AppRuntime {
                 if recovery.upgradeRemovedStateEnabled {
                     try InventoryStateAcceptance.requireRetainedRevocation(snapshot, fingerprint: fingerprint)
                 }
-                await mutateInventory(.acknowledge(fingerprint, .revoked))
+                await mutateInventory(.apply([.acknowledge(fingerprint, .revoked)], undoing: false))
                 guard await store.snapshot().obsoleteMarkers[fingerprint]?.acknowledgement == .revoked else {
                     throw InventoryStateAcceptance.Failure.postconditionFailed
                 }
@@ -1890,6 +1999,7 @@ final class AppRuntime {
         else { protection?.viewingSession.invalidate(reason: reason) }
         sourceOpening.cancel()
         model.clearRevealedContent()
+        model.valuesHidden = false
     }
 
     func shutdown() async {
@@ -2074,13 +2184,19 @@ final class AppRuntime {
             var allowedRoutes: [CaptureMetadata: CollectionCaptureRoute] = [:]
             var codexRouters: [CaptureMetadata: CodexEnrolledSessionRouter] = [:]
             let admission = admission
+            // Polls of a source whose read is still waiting are already covered by that read.
+            let reads = ActiveReadCoalescer { id in try await store.isAwaitingFirstAttempt(id) }
             let enqueue: @Sendable (CapturePacket, Date) async throws -> Void = { packet, date in
                 guard let permit = await store.processingPermit(), let scope = await admission.currentScope() else {
                     throw StorageError.monitoringPaused
                 }
-                let context = try await admission.context(for: packet, trigger: .activePoll,
-                    recordAuthority: { try await store.selectAuthority($0, permit: permit) })
-                _ = try await store.enqueue(packet.body, capturedAt: date, permit: permit, scope: scope, workContext: context)
+                try await reads.enqueue(packet) { packet in
+                    let context = try await admission.context(for: packet, trigger: .activePoll,
+                        recordAuthority: { try await store.selectAuthority($0, permit: permit) })
+                    switch try await store.enqueue(packet.body, capturedAt: date, permit: permit, scope: scope, workContext: context) {
+                    case .inserted(let id), .alreadyQueued(let id), .alreadyProcessed(let id): return id
+                    }
+                }
             }
             if let configuration = claudeConfiguration {
                 let adapter = try ClaudeAdapter(profileID: configuration.profileID, agentVersion: configuration.agentVersion,
@@ -2101,7 +2217,8 @@ final class AppRuntime {
                     let route = CollectionCaptureRoute(scope: .init(provider: .claudeCode,
                         profileID: configuration.profileID, interface: interface, path: .versionedTranscript),
                         readerVersion: configuration.agentVersion,
-                        hostVersion: interface == .t3 ? selected.first(where: { $0.provider == .claudeCode })?.t3Version : nil)
+                        hostVersion: interface == .t3 ? selected.first(where: { $0.provider == .claudeCode })?.t3Version : nil,
+                        transcriptLocator: { [adapter] in adapter.confinedTranscriptURL(path: $0) })
                     allowedRoutes[metadata] = route
                     sourceProducers[route.scope] = (route, AuthorizedHistoricalCaptureProducer(producer: adapter,
                         provider: .claudeCode, profileID: configuration.profileID, interface: interface))
@@ -2149,7 +2266,8 @@ final class AppRuntime {
                     }, checkpointLookup: { id in try await store.checkpoint(documentID: id) })
                 let normalizer = ObservedCodexNormalizer(adapter: adapter,
                     onSelection: { [weak self] sources in await self?.selectCodexSources(sources) },
-                    onObservation: { [weak self] sources in await self?.markCodexObserved(sources) },
+                    onObservation: { [weak self] batch, authority in await self?.markCodexObserved(batch, authority: authority) },
+                    onPollOutcome: { [weak self] thread, polledAt, succeeded in await self?.recordCodexPoll(thread, polledAt: polledAt, succeeded: succeeded) },
                     onBatch: { [weak self] batch, metadata in await self?.observeCollection(batch, metadata: metadata,
                         path: configuration.authority.collectionPath) })
                 let metadata = try CaptureMetadata(agent: .codex, interface: interface, profileID: configuration.profileID)
@@ -2322,18 +2440,26 @@ final class AppRuntime {
         let required = batch.coverageGaps.filter { $0.requiresAnalysis && $0.reason != .budgetExhausted }
         if required.contains(where: { $0.operation == nil }) { operations.removeAll() }
         operations.subtract(required.compactMap(\.operation))
-        model.collectionAssessments[scope] = CollectionAssessment(scope: scope,
+        let assessment = CollectionAssessment(scope: scope,
             observedExecutableVersion: version,
             format: path == .hook ? nil : metadata.agent == .claudeCode ? .claudeTranscript
                 : path == .versionedTranscript ? .codexNativeRollout : .codexPublicHistory,
             usableOperations: operations, unavailableContent: Set(required.compactMap(\.contentType)),
             failures: required.map { .init(reason: $0.operation == nil ? .changedContentFormat : .sourceUnavailable,
                                           operation: $0.operation, contentType: $0.contentType) })
+        // Every processed capture lands here. Writing an unchanged assessment would still
+        // invalidate the coverage window, which then re-laid itself out for every capture.
+        if previous != assessment { model.collectionAssessments[scope] = assessment }
     }
 
-    private func markCodexObserved(_ sources: [CodexActiveSource]) async {
+    private func markCodexObserved(_ batch: CollectionBatch, authority: CodexCollectionAuthority) async {
         collectionObserved = true
-        await selectCodexSources(sources)
+        await codexMonitor?.observe(batch, authority: authority)
+    }
+
+    private func recordCodexPoll(_ thread: String, polledAt: Date, succeeded: Bool) async {
+        if succeeded { await codexMonitor?.recordPollSuccess(thread: thread) }
+        else { await codexMonitor?.recordPollFailure(thread: thread, polledAt: polledAt) }
     }
 
     private func selectCodexSources(_ sources: [CodexActiveSource]) async {
@@ -2348,13 +2474,17 @@ final class AppRuntime {
         guard (try? await store.queueStatistics().historicalCount) == 0,
               model.monitoringEnabled, !model.monitoringTransition,
               !model.agentSetupBusy.contains(provider) else { return }
-        let queued = await enqueueHistory(provider: provider, reassessing: true)
-        model.showToast(queued ? "Reading the last 7 days of this agent’s history."
-                               : "History could not be queued. Check this agent in Settings.")
+        switch await enqueueHistory(provider: provider, reassessing: true) {
+        case .queued: model.showToast("Reading the last 7 days of this agent’s history.")
+        case .storageFull: model.showToast("History could not be queued because collection storage is full.")
+        case .notQueued: model.showToast("History could not be queued. Check this agent in Settings.")
+        }
         await refresh()
     }
 
-    private enum SourceRetryOutcome { case unavailable, alreadyReading, reading, recovered, incomplete, unverifiable, failed, cancelled }
+    private enum SourceRetryOutcome {
+        case unavailable, alreadyReading, reading, recovered, incomplete, unverifiable, failed, storageFull, cancelled
+    }
 
     /// Retries each retained original selection in turn. Readers revalidate its authorized root and authority.
     private func retrySources(_ requested: [CoverageSourceRetryDescriptor]) async {
@@ -2382,6 +2512,7 @@ final class AppRuntime {
         func count(_ matching: Set<SourceRetryOutcome>) -> Int { outcomes.filter(matching.contains).count }
         let parts = [(count([.recovered]), "recovered"), (count([.reading, .alreadyReading]), "still being read"),
                      (count([.incomplete, .unverifiable]), "not fully recovered"), (count([.failed]), "couldn’t be queued"),
+                     (count([.storageFull]), "couldn’t be queued because collection storage is full"),
                      (count([.unavailable]), "skipped")]
             .filter { $0.0 > 0 }.map { "\($0.0.formatted()) \($0.1)" }
         return "Retry finished for \(plural(outcomes.count, "source")): \(parts.joined(separator: ", "))."
@@ -2458,6 +2589,9 @@ final class AppRuntime {
             return remaining.isEmpty ? .recovered : .incomplete
         } catch is CancellationError {
             return .cancelled
+        } catch StorageError.capacityExceeded(.collectionWork) {
+            toast("This source could not be queued because collection storage is full.")
+            return .storageFull
         } catch {
             toast("This source could not be queued. Check the agent in Settings or export diagnostics.")
             return .failed
@@ -2518,15 +2652,18 @@ final class AppRuntime {
         }
     }
 
+    private enum HistoryQueueOutcome { case queued, notQueued, storageFull }
+
     @discardableResult
-    private func enqueueHistory(provider: AgentProvider? = nil, reassessing: Bool = false) async -> Bool {
+    private func enqueueHistory(provider: AgentProvider? = nil, reassessing: Bool = false) async -> HistoryQueueOutcome {
         #if DEBUG
         // Acceptance against exact owned original-provider sessions must not enumerate unrelated history.
-        if CommandLine.arguments.contains("--acceptance-no-profile-catchup") { return false }
+        if CommandLine.arguments.contains("--acceptance-no-profile-catchup") { return .notQueued }
         #endif
         guard let store, let permit = await store.processingPermit(),
-              let scope = await admission.currentScope(), !terminating else { return false }
+              let scope = await admission.currentScope(), !terminating else { return .notQueued }
         var queued: Set<AgentProvider> = []
+        var storageFull = false
         do {
             let audit = try HistoricalAuditContext(id: reassessing ? UUID() : scope.catchupAuditID ?? UUID(),
                 reason: reassessing ? .resume : scope.catchupReason, endingAt: reassessing ? .now : scope.startedAt)
@@ -2541,6 +2678,10 @@ final class AppRuntime {
                     case .inserted, .alreadyQueued: queued.insert(route.route.scope.provider)
                     case .alreadyProcessed: break
                     }
+                } catch StorageError.capacityExceeded(.collectionWork) {
+                    storageFull = true
+                    try? await store.recordCoverageGap(CollectionCapacityRejection(resource: .collectionWork,
+                        scope: route.route.scope, operation: .historicalRead).gap)
                 } catch {
                     try? await store.recordCoverageGap(CoverageGap(reason: .sourceUnavailable,
                         scope: route.route.scope, operation: .historicalRead,
@@ -2551,7 +2692,7 @@ final class AppRuntime {
         } catch {
             try? await store.recordCoverageGap(reason: .sourceUnavailable)
         }
-        return !queued.isEmpty
+        return !queued.isEmpty ? .queued : storageFull ? .storageFull : .notQueued
     }
 
     private func installViewingLifecycle() {
@@ -2567,6 +2708,10 @@ final class AppRuntime {
         lockObserver = DistributedNotificationCenter.default().addObserver(
             forName: NSNotification.Name("com.apple.screenIsLocked"), object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated { self?.lock(.sessionLock) }
+            }
+        unlockObserver = DistributedNotificationCenter.default().addObserver(
+            forName: NSNotification.Name("com.apple.screenIsUnlocked"), object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.retryStartupAfterUnlock() }
             }
         let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
@@ -2593,6 +2738,29 @@ final class AppRuntime {
         }
     }
 
+    /// Undoes only what a failed key load changed: nothing else had started when the keys were
+    /// unreadable, so storage starts again from the beginning.
+    private func retryStartupAfterUnlock() {
+        guard startupAwaitsUnlock, !terminating, model.storageFailed else { return }
+        startupAwaitsUnlock = false
+        monitoringRequested = true
+        updateNotificationGate()
+        model.storageFailed = false
+        model.startupFailure = nil
+        model.storageMessage = nil
+        model.resumeAfterBarrier()
+        startup = Task { [weak self] in
+            // The unlock notification can arrive just before the keys become readable.
+            guard (try? await Task.sleep(for: .seconds(2))) != nil else { return }
+            await self?.openStorage()
+        }
+    }
+
+    private static func isLockedKeychain(_ error: KeyUnavailable) -> Bool {
+        if case .unusableKey(_, let code) = error { return code == Int(errSecInteractionNotAllowed) }
+        return false
+    }
+
     private func removeViewingLifecycle() {
         timer?.invalidate()
         timer = nil
@@ -2602,6 +2770,8 @@ final class AppRuntime {
         workspaceObservers.removeAll()
         if let lockObserver { DistributedNotificationCenter.default().removeObserver(lockObserver) }
         lockObserver = nil
+        if let unlockObserver { DistributedNotificationCenter.default().removeObserver(unlockObserver) }
+        unlockObserver = nil
         if let activationObserver { NotificationCenter.default.removeObserver(activationObserver) }
         activationObserver = nil
     }
@@ -2619,7 +2789,7 @@ final class AppRuntime {
         }
         if let keyError = error as? KeyUnavailable, case .unusableKey(_, let code) = keyError,
            code == Int(errSecInteractionNotAllowed) {
-            return "macOS is preventing access to the vault’s device keys. Make sure your Mac is unlocked, then quit and reopen Spillcheck. Existing storage is preserved."
+            return "macOS is preventing access to the vault’s device keys while your Mac is locked. Spillcheck opens the vault the next time you unlock your Mac; to open it now, quit and reopen Spillcheck. Existing storage is preserved."
         }
         if error is KeyUnavailable { return "Vault unavailable. Required device keys could not be loaded. Existing storage is preserved." }
         if let error = error as? StorageError {

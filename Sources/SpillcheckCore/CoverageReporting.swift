@@ -145,6 +145,13 @@ public struct CoverageReport: Sendable {
     /// work `queue.historicalCount` counts. Work beyond this report's bound is not attributed.
     public var providersReadingHistory: Set<AgentProvider> { lookup.providersReadingHistory }
 
+    /// Whether this report was built before recent-history work that the live queue now shows:
+    /// none was queued then, or an agent the app already knows is reading is missing. The
+    /// periodic refresh rebuilds such a report instead of letting it erase that agent.
+    public func predatesHistoryWork(queued: Int, knownProviders: Set<AgentProvider>) -> Bool {
+        queued > 0 && (queue.historicalCount == 0 || !knownProviders.isSubset(of: providersReadingHistory))
+    }
+
     /// Whether queued or in-progress work already reads this source.
     public func hasPendingWork(for source: CoverageSourceRetryDescriptor) -> Bool {
         guard let key = Lookup.SourceKey(source) else { return false }
@@ -162,9 +169,10 @@ public struct CoverageReport: Sendable {
     public func hasRecoveredBacklog(_ event: StoredCoverageGapEvent) -> Bool {
         guard event.isIntermediateBacklog, event.gap.reason == .budgetExhausted,
               event.gap.recovery == nil, let audit = event.audit else { return false }
-        if let workID = event.workID {
-            guard !work.isTruncated, lookup.workByID[workID] != nil,
-                  !lookup.auditsWithUnsettledWork.contains(audit) else { return false }
+        // Only completed or recovered work is pruned, so an event whose work row is gone settled
+        // with it. A truncated page may hide unsettled work of the audit, so it settles nothing.
+        if event.workID != nil {
+            guard !work.isTruncated, !lookup.auditsWithUnsettledWork.contains(audit) else { return false }
         }
         return lookup.latestSettledHistory[audit].map { $0 >= event.observedAt } == true
     }
@@ -248,5 +256,22 @@ public struct CoverageReport: Sendable {
                 latestReads[key] = max(latestReads[key] ?? read.succeededAt, read.succeededAt)
             }
         }
+    }
+}
+
+/// How stale the once-a-second refresh may let the coverage report get. Rebuilding it costs a few
+/// hundred milliseconds on a large vault, which is wasted while nothing on screen shows its content.
+public enum CoverageReportRefreshPolicy {
+    /// While a window or panel that shows report-derived content is on screen.
+    public static let visibleInterval: TimeInterval = 5
+    /// Otherwise only the status item's tooltip reads the report, so it may lag this long.
+    public static let hiddenInterval: TimeInterval = 30
+
+    /// The longest a report may be reused before a refresh rebuilds it. Anything that is not the
+    /// periodic tick has just changed something and wants a current report, and so does an
+    /// acceptance run, which acts on the report as soon as its control file appears.
+    public static func minimumInterval(periodic: Bool, reportUIVisible: Bool, acceptanceRecovery: Bool) -> TimeInterval {
+        guard periodic, !acceptanceRecovery else { return 0 }
+        return reportUIVisible ? visibleInterval : hiddenInterval
     }
 }

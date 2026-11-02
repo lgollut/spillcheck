@@ -18,6 +18,9 @@ public struct ClaudeActiveSource: Sendable {
 /// Lightweight polling for interfaces where hook registration has not been measured. No payload
 /// reads occur here. Queue admission owns monitoring permits; the observer marks a change only after
 /// the enqueue callback returns successfully. Normalization performs the bounded, safe content read.
+/// A selected conversation is checked on every pass while it changes, and less often as it stays
+/// unchanged; selecting it again, as each hook for its session does, makes it current again. It is
+/// never dropped, because a conversation without hooks has only this monitor.
 public actor ClaudeActiveTranscriptMonitor {
     public typealias Enqueue = @Sendable (CapturePacket, Date) async throws -> Void
     public typealias GapHandler = @Sendable (CoverageGap) async -> Void
@@ -26,8 +29,19 @@ public actor ClaudeActiveTranscriptMonitor {
     private let enqueue: Enqueue
     private let onGap: GapHandler
     private var signatures: [String: Signature] = [:]
+    /// Keyed by the selected conversation's transcript path; its native children count toward it.
+    private var lastChange: [String: Date] = [:]
+    private var nextCheck: [String: Date] = [:]
     private var task: Task<Void, Never>?
     private var generation: UUID = UUID()
+    private var deliveryBackoff = DeliveryBackoff()
+    /// The polling interval, which a failing source's retries back off from.
+    private static let cadence: TimeInterval = 0.25
+    /// What each parent's previous scan saw: every candidate child's modification time, and when a
+    /// budget gap was last recorded for it. Both are in memory only; a restart looks afresh.
+    private struct ChildHistory { var modified: [String: Int64]; var lastGap: Date? }
+    private var childHistory: [String: ChildHistory] = [:]
+    private static let gapInterval: TimeInterval = 300
     private struct Signature: Equatable, Sendable {
         let device: UInt64, inode: UInt64, size: Int64, modifiedSeconds: Int64, modifiedNanos: Int64
     }
@@ -40,13 +54,27 @@ public actor ClaudeActiveTranscriptMonitor {
                 onGap: @escaping GapHandler = { _ in }) throws {
         guard !profileID.isEmpty else { throw ClaudeCollectionError.invalidConfiguration }
         self.profileID = profileID; self.sources = sources; self.enqueue = enqueue; self.onGap = onGap
+        let now = Date()
+        for source in sources { lastChange[source.transcriptURL.path] = now }
+    }
+
+    /// Seconds between checks of a conversation unchanged for `idle` seconds.
+    public static func checkDelay(idle: TimeInterval) -> TimeInterval {
+        switch idle {
+        case ..<120: 0
+        case ..<600: 2
+        case ..<3600: 10
+        default: 30
+        }
     }
 
     @discardableResult public func pollOnce(at date: Date = Date()) async throws -> Int {
         let permit = generation
         var count = 0
         var failure: (any Error)?
-        let selected = selectedSources()
+        let due = sources.filter { (nextCheck[$0.transcriptURL.path] ?? .distantPast) <= date }
+        var changed: Set<String> = []
+        let selected = selectedSources(of: due, at: date)
         for source in selected.exhaustedSources {
             await onGap(gap(.budgetExhausted, source: source, at: date))
         }
@@ -65,6 +93,9 @@ public actor ClaudeActiveTranscriptMonitor {
             let signature = Signature(device: UInt64(info.st_dev), inode: info.st_ino, size: info.st_size,
                 modifiedSeconds: Int64(info.st_mtimespec.tv_sec), modifiedNanos: Int64(info.st_mtimespec.tv_nsec))
             guard signatures[key] != signature else { continue }
+            changed.insert((selection.parent ?? source).transcriptURL.path)
+            // The file did change, so its idle time resets; only the retry waits out the backoff.
+            guard !deliveryBackoff.isWaiting(key, at: date) else { continue }
             var event: [String: String] = ["hook_event_name": "SpillcheckTranscriptPoll", "session_id": source.sessionID,
                                           "transcript_path": source.transcriptURL.path]
             if let parent = selection.parent {
@@ -79,12 +110,22 @@ public actor ClaudeActiveTranscriptMonitor {
                 try await enqueue(packet, date)
             } catch {
                 // Report and skip this source so it cannot hold back the rest of the pass.
-                if !Task.isCancelled { await onGap(gap(.deliveryUncertain, source: source, parent: selection.parent, at: date)) }
+                if !Task.isCancelled {
+                    if deliveryBackoff.recordFailure(key, base: Self.cadence, at: date) {
+                        await onGap(gap(.deliveryUncertain, source: source, parent: selection.parent, at: date))
+                    }
+                }
                 failure = failure ?? error
                 continue
             }
             guard permit == generation, !Task.isCancelled else { return count }
+            deliveryBackoff.recordSuccess(key)
             signatures[key] = signature; count += 1
+        }
+        for parent in due {
+            let key = parent.transcriptURL.path
+            if changed.contains(key) { lastChange[key] = date }
+            nextCheck[key] = date.addingTimeInterval(Self.checkDelay(idle: date.timeIntervalSince(lastChange[key] ?? date)))
         }
         if let failure { throw failure }
         return count
@@ -107,9 +148,13 @@ public actor ClaudeActiveTranscriptMonitor {
         pending?.cancel()
         await pending?.value
     }
-    public func add(source: ClaudeActiveSource) {
-        guard !sources.contains(where: { $0.transcriptURL == source.transcriptURL && $0.sessionID == source.sessionID }) else { return }
-        sources.append(source)
+    public func add(source: ClaudeActiveSource, at date: Date = Date()) {
+        if !sources.contains(where: { $0.transcriptURL == source.transcriptURL && $0.sessionID == source.sessionID }) {
+            sources.append(source)
+        }
+        let key = source.transcriptURL.path
+        lastChange[key] = max(lastChange[key] ?? date, date)
+        nextCheck[key] = date
     }
     private func gap(_ reason: CoverageGapReason, source: ClaudeActiveSource,
                      parent: ClaudeActiveSource? = nil, at date: Date) -> CoverageGap {
@@ -125,41 +170,110 @@ public actor ClaudeActiveTranscriptMonitor {
             diagnosticCode: reason.defaultDiagnosticCode, observedAt: date)
     }
 
-    private func selectedSources() -> (sources: [SelectedSource], exhaustedSources: [ClaudeActiveSource]) {
-        var result = sources.map { SelectedSource(source: $0, parent: nil) }, exhaustedSources: [ClaudeActiveSource] = []
+    private func selectedSources(of due: [ClaudeActiveSource], at date: Date) -> (sources: [SelectedSource], exhaustedSources: [ClaudeActiveSource]) {
+        var result = due.map { SelectedSource(source: $0, parent: nil) }, exhaustedSources: [ClaudeActiveSource] = []
+        if childHistory.count > sources.count {
+            let followed = Set(sources.map(\.transcriptURL.path))
+            childHistory = childHistory.filter { followed.contains($0.key) }
+        }
         // Claude 2.1.293 native Agent sidechains are in the selected conversation's own
-        // <session>/subagents directory. This is bounded conversation-local discovery, not
-        // enumeration of the profile's histories or T3's unrelated provider sessions.
-        for parent in sources {
+        // <session>/subagents directory, and workflow agents in its subagents/workflows/<run>
+        // directories. This is bounded conversation-local discovery, not enumeration of the
+        // profile's histories or T3's unrelated provider sessions.
+        for parent in due {
             let project = claudeConfiguredURL(parent.transcriptURL.deletingLastPathComponent())
-            let directory = project.appendingPathComponent(parent.transcriptURL.deletingPathExtension().lastPathComponent).appendingPathComponent("subagents")
-            var fd = open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC)
-            if fd >= 0 {
-                for part in directory.path.split(separator:"/") {
-                    let next=String(part).withCString { openat(fd,$0,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC) }
-                    close(fd); fd=next
-                    if fd < 0 { break }
+            let subagents = project.appendingPathComponent(parent.transcriptURL.deletingPathExtension().lastPathComponent).appendingPathComponent("subagents")
+            // Every child is listed before any is polled, so the 32 most recently written ones are
+            // polled whichever folder holds them and a finished run can't crowd out a live one.
+            // The rest are not polled; their modification time only orders polling and shows change.
+            var candidates: [(url: URL, modified: timespec)] = [], runs: [String] = []
+            var inspected = 0, cutOff = false
+            // A folder that exists but could not be read; its children are kept from the last scan.
+            var incomplete = false
+            // Collects agent transcripts, or with `listingRuns` only the workflow run folders. The
+            // descriptor stays the caller's; the stream reads a duplicate of it.
+            func scan(_ directoryFD: Int32, _ directory: URL, listingRuns: Bool = false) {
+                guard !cutOff else { return }
+                let fd = fcntl(directoryFD, F_DUPFD_CLOEXEC, 0)
+                guard fd >= 0, let stream = fdopendir(fd) else { if fd >= 0 { close(fd) }; incomplete = true; return }
+                defer { closedir(stream) }
+                var listed = 0
+                while let entry = readdir(stream) {
+                    let name = withUnsafePointer(to: &entry.pointee.d_name) {
+                        $0.withMemoryRebound(to: CChar.self, capacity: Int(entry.pointee.d_namlen) + 1) { String(cString: $0) }
+                    }
+                    guard name != ".", name != ".." else { continue }
+                    listed += 1; inspected += 1
+                    if listed > 128 || inspected > 512 { cutOff = true; return }
+                    if listingRuns {
+                        guard ClaudeToolHookSelection.isSafeIdentifier(name) else { continue }
+                    } else {
+                        guard name.hasPrefix("agent-"), name.hasSuffix(".jsonl"), !name.contains("/") else { continue }
+                    }
+                    var info = stat()
+                    guard fstatat(directoryFD, name, &info, AT_SYMLINK_NOFOLLOW) == 0, info.st_uid == getuid(),
+                          (info.st_mode & S_IFMT) == (listingRuns ? S_IFDIR : S_IFREG) else { continue }
+                    if listingRuns { runs.append(name) }
+                    else { candidates.append((directory.appendingPathComponent(name), info.st_mtimespec)) }
                 }
             }
-            guard fd >= 0 else { continue }
-            guard let stream = fdopendir(fd) else { close(fd); continue }
-            defer { closedir(stream) }
-            var inspected = 0, children = 0
-            while let entry = readdir(stream) {
-                inspected += 1
-                if inspected > 128 || children >= 32 { exhaustedSources.append(parent); break }
-                let name = withUnsafePointer(to: &entry.pointee.d_name) {
-                    $0.withMemoryRebound(to: CChar.self, capacity: Int(entry.pointee.d_namlen) + 1) { String(cString: $0) }
+            // Open the conversation's subagents folder once, safely from "/"; the workflows folder and
+            // each run are then opened relative to it, without following links, so no step re-walks the path.
+            func openChild(_ parentFD: Int32, _ name: String) -> Int32? {
+                let fd = name.withCString { openat(parentFD, $0, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC) }
+                if fd < 0 {
+                    var info = stat()
+                    if fstatat(parentFD, name, &info, AT_SYMLINK_NOFOLLOW) == 0 { incomplete = true }
                 }
-                guard name.hasPrefix("agent-"), name.hasSuffix(".jsonl"), !name.contains("/") else { continue }
-                var info = stat()
-                guard fstatat(fd, name, &info, AT_SYMLINK_NOFOLLOW) == 0,
-                      (info.st_mode & S_IFMT) == S_IFREG, info.st_uid == getuid() else { continue }
-                if let child = try? ClaudeActiveSource(sessionID: parent.sessionID,
-                    transcriptURL: directory.appendingPathComponent(name), interface: parent.interface) {
-                    result.append(.init(source: child, parent: parent)); children += 1
+                return fd >= 0 ? fd : nil
+            }
+            var subagentsInfo = stat()
+            let subagentsFD = try? claudeOpenDirectory(subagents.path)
+            if subagentsFD == nil, lstat(subagents.path, &subagentsInfo) == 0 { incomplete = true }
+            if let subagentsFD {
+                defer { close(subagentsFD) }
+                scan(subagentsFD, subagents)
+                if let workflowsFD = openChild(subagentsFD, "workflows") {
+                    defer { close(workflowsFD) }
+                    let workflows = subagents.appendingPathComponent("workflows")
+                    scan(workflowsFD, workflows, listingRuns: true)
+                    for run in runs {
+                        guard !cutOff, let runFD = openChild(workflowsFD, run) else { continue }
+                        defer { close(runFD) }
+                        scan(runFD, workflows.appendingPathComponent(run))
+                    }
                 }
             }
+            candidates.sort { ($0.modified.tv_sec, $0.modified.tv_nsec) > ($1.modified.tv_sec, $1.modified.tv_nsec) }
+            for candidate in candidates.prefix(32) {
+                if let child = try? ClaudeActiveSource(sessionID: parent.sessionID, transcriptURL: candidate.url, interface: parent.interface) {
+                    result.append(.init(source: child, parent: parent))
+                }
+            }
+            // Children beyond the 32 polled are finished more often than not, so only a truncated
+            // listing, or an unpolled child that is new or has been written since the last scan,
+            // costs coverage. The first scan has nothing to compare with and reports only a cut-off.
+            let key = parent.transcriptURL.path
+            var modified: [String: Int64] = [:]
+            for candidate in candidates {
+                modified[candidate.url.path] = Int64(candidate.modified.tv_sec) &* 1_000_000_000 &+ Int64(candidate.modified.tv_nsec)
+            }
+            let previous = childHistory[key]
+            if incomplete, let previous {
+                for (path, time) in previous.modified where modified[path] == nil { modified[path] = time }
+            }
+            var unpolledChanged = false
+            if let previous {
+                unpolledChanged = candidates.dropFirst(32).contains { previous.modified[$0.url.path] != modified[$0.url.path] }
+            }
+            var lastGap = previous?.lastGap
+            if cutOff || unpolledChanged {
+                // A condition that lasts stays visible, but not on every 250 ms pass.
+                if let last = lastGap, date >= last, date.timeIntervalSince(last) < Self.gapInterval {} else {
+                    exhaustedSources.append(parent); lastGap = date
+                }
+            }
+            childHistory[key] = ChildHistory(modified: modified, lastGap: lastGap)
         }
         return (result, exhaustedSources)
     }

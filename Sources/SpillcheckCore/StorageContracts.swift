@@ -18,7 +18,7 @@ public enum StorageError: Error, Equatable, Sendable {
 
 /// Allowlisted quota names, never an upstream session or source identifier.
 public enum StorageCapacityResource: String, Codable, Sendable {
-    case sourceAuthorities, codexHookContentSlots
+    case sourceAuthorities, codexHookContentSlots, collectionWork
 }
 
 public enum StoreCapacityState: String, Codable, Sendable {
@@ -63,10 +63,15 @@ public struct StoreCapacityUsage: Equatable, Codable, Sendable {
 public struct StoreCapacitySnapshot: Equatable, Codable, Sendable {
     public let sourceAuthorities: StoreCapacityUsage
     public let codexHookContentSlots: StoreCapacityUsage
+    /// Every capture's work row. Only its encrypted bytes are bounded, so its count limit is `Int.max`.
+    /// When nothing in it can be pruned, new captures are refused until it has room again.
+    public let collectionWork: StoreCapacityUsage
 
-    public init(sourceAuthorities: StoreCapacityUsage, codexHookContentSlots: StoreCapacityUsage) {
+    public init(sourceAuthorities: StoreCapacityUsage, codexHookContentSlots: StoreCapacityUsage,
+                collectionWork: StoreCapacityUsage) {
         self.sourceAuthorities = sourceAuthorities
         self.codexHookContentSlots = codexHookContentSlots
+        self.collectionWork = collectionWork
     }
 }
 
@@ -83,6 +88,9 @@ public struct StoreLimits: Sendable {
     public let claimDuration: TimeInterval
     public let maxProtectedStateBytes: Int
     public let maxSuccessfulWorkRecords: Int
+    /// Completed work kept because it holds gap evidence. Bounded apart from `maxSuccessfulWorkRecords`
+    /// so a long catch-up that records a gap on every capture cannot fill the protected-state cap.
+    public let maxEvidenceWorkRecords: Int
     public let maxHookContentSlots: Int
     public let maxSourceAuthorities: Int
 
@@ -92,7 +100,8 @@ public struct StoreLimits: Sendable {
         maxQueueAge: TimeInterval = 24 * 60 * 60,
         maxRetryCount: UInt = 3, claimDuration: TimeInterval = 180,
         maxProtectedStateBytes: Int = 64 * 1024 * 1024, maxSuccessfulWorkRecords: Int = 2048,
-        maxHookContentSlots: Int = 16_384, maxSourceAuthorities: Int = 16_384
+        maxHookContentSlots: Int = 16_384, maxSourceAuthorities: Int = 16_384,
+        maxEvidenceWorkRecords: Int = 1024
     ) {
         self.maxEventBytes = maxEventBytes
         self.maxQueueBytes = maxQueueBytes
@@ -101,6 +110,7 @@ public struct StoreLimits: Sendable {
         self.claimDuration = claimDuration
         self.maxProtectedStateBytes = maxProtectedStateBytes
         self.maxSuccessfulWorkRecords = max(1, maxSuccessfulWorkRecords)
+        self.maxEvidenceWorkRecords = max(1, maxEvidenceWorkRecords)
         self.maxHookContentSlots = maxHookContentSlots
         self.maxSourceAuthorities = maxSourceAuthorities
     }
@@ -123,6 +133,8 @@ public struct PendingCapture: Sendable {
     public let expiresAt: Date
     public let retryCount: UInt
     public let encryptedPayload: ProtectedPayload
+    /// Recent-history work rather than a live capture.
+    public let isHistorical: Bool
 }
 
 public struct StoreQueueStatistics: Equatable, Sendable {

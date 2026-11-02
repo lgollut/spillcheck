@@ -21,8 +21,8 @@ enum InventoryViewingState: Equatable {
     }
 }
 
-/// Unlocking authorizes the viewing session once. Revealing shows one selection's content,
-/// and hiding it, or selecting something else, leaves the session unlocked.
+/// Unlocking authorizes the viewing session once. While it lasts, the app shows each selection's
+/// content without a prompt; hiding it, or selecting something else, leaves the session unlocked.
 @MainActor @Observable
 final class ViewingController {
     private(set) var content = RevealedInventoryContent()
@@ -90,9 +90,10 @@ final class ViewingController {
     }
 
     /// A newer reveal supersedes one still in flight. Adding another appearance's context to revealed
-    /// content keeps that content on screen meanwhile.
-    func reveal(_ selection: InventoryRevealSelection) async {
-        guard !unlocking else { return }
+    /// content keeps that content on screen meanwhile. Without `prompting`, content is shown only
+    /// while the session is unlocked: a locked session leaves it masked, silently, and never prompts.
+    func reveal(_ selection: InventoryRevealSelection, prompting: Bool = true) async {
+        guard !unlocking, prompting || session.isAuthorized else { return }
         let extending = state == .revealed
         let ticket: InventoryRevealGuard.Ticket
         do { ticket = try guardState.begin(selection) } catch { return }
@@ -113,7 +114,7 @@ final class ViewingController {
                       payload.binding == field.binding else { throw StorageError.payloadMissing }
                 guard guardState.accepts(ticket) else { throw ViewingAuthorizationError.invalidated }
                 let bytes = try await session.reveal(payload, binding: field.binding,
-                    localizedReason: "show protected content")
+                    localizedReason: "show protected content", prompting: prompting)
                 guard guardState.accepts(ticket), await selectionIsCurrent(selection),
                       try await loadPayload(field.reference) == payload, session.isAuthorized else {
                     throw ViewingAuthorizationError.invalidated
@@ -136,6 +137,13 @@ final class ViewingController {
             // A stale request cannot clear a newer selection or overwrite its state,
             // but its authentication may have unlocked the session.
             guard guardState.accepts(ticket) else {
+                onChange?()
+                return
+            }
+            // The session ended while content was being shown on its own: masked, not an error.
+            if !prompting, !session.isAuthorized {
+                content = RevealedInventoryContent()
+                state = .masked
                 onChange?()
                 return
             }

@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import SpillcheckCore
+@_spi(Testing) @testable import SpillcheckCore
 
 func codexSetupDirectory() throws -> URL {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent("spillcheck-codex-setup-\(UUID())").resolvingSymlinksInPath()
@@ -93,6 +93,10 @@ struct CodexSetupTests {
     }
 }
 
+private actor MonitorBox {
+    var monitor: CodexActiveHistoryMonitor?
+    func set(_ value: CodexActiveHistoryMonitor) { monitor = value }
+}
 private actor CodexMonitorSink {
     var packets: [CapturePacket] = []
     var reject = false
@@ -112,10 +116,14 @@ struct CodexMonitorTests {
         #expect(try await monitor.pollOnce() == 0)
         try Data("{}\n{}\n".utf8).write(to: path)
         await sink.rejecting(true)
-        await #expect(throws: CodexCollectionError.awaitingHistory) { try await monitor.pollOnce() }
+        let failedAt = Date()
+        await #expect(throws: CodexCollectionError.awaitingHistory) { try await monitor.pollOnce(at: failedAt) }
         await sink.rejecting(false)
-        #expect(try await monitor.pollOnce() == 1)
-        #expect(try await monitor.pollOnce() == 0)
+        // A failed enqueue is retried with backoff, so the retry waits out its delay.
+        #expect(try await monitor.pollOnce(at: failedAt) == 0)
+        let retryAt = failedAt.addingTimeInterval(2)
+        #expect(try await monitor.pollOnce(at: retryAt) == 1)
+        #expect(try await monitor.pollOnce(at: retryAt) == 0)
         #expect(await sink.count() == 2)
     }
     @Test func publicPollingUsesOnlyAdmittedExactSourcesAndKeepsSameSecondUpdatesObservable() async throws {
@@ -150,6 +158,204 @@ struct CodexMonitorTests {
         try await monitor.addSource(source, at: start.addingTimeInterval(3_700))
         #expect(try await monitor.pollOnce(at: start.addingTimeInterval(3_700)) == 1)
         #expect(await sink.count() == 4)
+        await monitor.stop()
+    }
+
+    /// Polls every second from `start`, reports each as the detection worker would, and returns
+    /// (second, thread) for each poll made.
+    private func pollEachSecond(_ monitor: CodexActiveHistoryMonitor, _ sink: CodexMonitorSink, from start: Date,
+                                seconds: ClosedRange<Int>, outcome: (String, Date) async -> Void) async throws -> [String] {
+        var polls: [String] = []
+        for second in seconds {
+            let now = start.addingTimeInterval(Double(second))
+            let before = await sink.packets.count
+            _ = try await monitor.pollOnce(at: now)
+            for packet in await sink.packets.dropFirst(before) {
+                let event = try #require(JSONSerialization.jsonObject(with: packet.eventJSON) as? [String: String])
+                let thread = try #require(event["session_id"])
+                polls.append("\(second):\(thread)")
+                await outcome(thread, now)
+            }
+        }
+        return polls
+    }
+
+    @Test func threadWhosePollsKeepFailingIsPolledExponentiallyLessOften() async throws {
+        let sink = CodexMonitorSink()
+        let monitor = try CodexActiveHistoryMonitor(profileID: "test", sources: []) { packet, _ in try await sink.accept(packet) }
+        let start = Date(timeIntervalSince1970: 1_791_434_400)
+        try await monitor.addSource(.init(threadID: "deleted", interface: .t3, authority: .publicNativeItems), at: start)
+        let polls = try await pollEachSecond(monitor, sink, from: start, seconds: 0...3_000) { thread, now in
+            await monitor.recordPollFailure(thread: thread, polledAt: now, at: now)
+        }
+        // The delay doubles with each failure on top of the cadence for how long the thread has been idle.
+        #expect(polls == ["0:deleted", "2:deleted", "6:deleted", "14:deleted", "30:deleted", "62:deleted", "126:deleted", "766:deleted"])
+        await monitor.stop()
+    }
+
+    @Test func attemptsToRetryOnePollCountAsOneFailure() async throws {
+        let sink = CodexMonitorSink()
+        let monitor = try CodexActiveHistoryMonitor(profileID: "test", sources: []) { packet, _ in try await sink.accept(packet) }
+        let start = Date(timeIntervalSince1970: 1_791_434_400)
+        try await monitor.addSource(.init(threadID: "thread", interface: .t3, authority: .publicNativeItems), at: start)
+        var polledAt: [Date] = []
+        // The pipeline attempts a failed poll four times, reporting each, the last after newer polls were made.
+        let polls = try await pollEachSecond(monitor, sink, from: start, seconds: 0...100) { thread, now in
+            polledAt.append(now)
+            for _ in 0..<4 { await monitor.recordPollFailure(thread: thread, polledAt: now, at: now) }
+            if let older = polledAt.dropLast().last { await monitor.recordPollFailure(thread: thread, polledAt: older, at: now) }
+        }
+        #expect(polls == ["0:thread", "2:thread", "6:thread", "14:thread", "30:thread", "62:thread"])
+        // Once the outage ends the next poll succeeds and the normal cadence returns.
+        await monitor.recordPollSuccess(thread: "thread", at: start.addingTimeInterval(62))
+        #expect(try await monitor.pollOnce(at: start.addingTimeInterval(63)) == 1)
+        await monitor.stop()
+    }
+
+    @Test func failureBackoffIsCappedAtAnHour() {
+        #expect(CodexActiveHistoryMonitor.publicPollDelay(idle: 0, failures: 0) == 1)
+        #expect(CodexActiveHistoryMonitor.publicPollDelay(idle: 0, failures: 3) == 8)
+        #expect(CodexActiveHistoryMonitor.publicPollDelay(idle: 300, failures: 2) == 20)
+        #expect(CodexActiveHistoryMonitor.publicPollDelay(idle: 700, failures: 6) == 1_920)
+        #expect(CodexActiveHistoryMonitor.publicPollDelay(idle: 700, failures: 7) == 3_600)
+        #expect(CodexActiveHistoryMonitor.publicPollDelay(idle: 0, failures: 5_000) == 3_600)
+        #expect(CodexActiveHistoryMonitor.publicPollDelay(idle: 3_600, failures: 3) == nil)
+    }
+
+    @Test func aSuccessfulPollRestoresTheNormalDelay() async throws {
+        let sink = CodexMonitorSink()
+        let monitor = try CodexActiveHistoryMonitor(profileID: "test", sources: []) { packet, _ in try await sink.accept(packet) }
+        let start = Date(timeIntervalSince1970: 1_791_434_400)
+        try await monitor.addSource(.init(threadID: "thread", interface: .t3, authority: .publicNativeItems), at: start)
+        for second in [0.0, 2, 6] {
+            #expect(try await monitor.pollOnce(at: start.addingTimeInterval(second)) == 1)
+            await monitor.recordPollFailure(thread: "thread", polledAt: start.addingTimeInterval(second), at: start.addingTimeInterval(second))
+        }
+        #expect(try await monitor.pollOnce(at: start.addingTimeInterval(10)) == 0)
+        #expect(try await monitor.pollOnce(at: start.addingTimeInterval(14)) == 1)
+        await monitor.recordPollSuccess(thread: "thread", at: start.addingTimeInterval(14))
+        #expect(try await monitor.pollOnce(at: start.addingTimeInterval(14.5)) == 0)
+        #expect(try await monitor.pollOnce(at: start.addingTimeInterval(15)) == 1)
+        // Failures count from zero again.
+        await monitor.recordPollFailure(thread: "thread", polledAt: start.addingTimeInterval(15), at: start.addingTimeInterval(15))
+        #expect(try await monitor.pollOnce(at: start.addingTimeInterval(16)) == 0)
+        #expect(try await monitor.pollOnce(at: start.addingTimeInterval(17)) == 1)
+        await monitor.stop()
+    }
+
+    @Test func aFailureReportedWhileTheNextPollIsBeingQueuedStillBacksOff() async throws {
+        let start = Date(timeIntervalSince1970: 1_791_434_400)
+        let sink = CodexMonitorSink(), box = MonitorBox()
+        let monitor = try CodexActiveHistoryMonitor(profileID: "test", sources: []) { packet, date in
+            // The detection worker can fail the poll before enqueue returns to the monitor.
+            await box.monitor?.recordPollFailure(thread: "thread", polledAt: date, at: date)
+            try await sink.accept(packet)
+        }
+        await box.set(monitor)
+        try await monitor.addSource(.init(threadID: "thread", interface: .t3, authority: .publicNativeItems), at: start)
+        #expect(try await monitor.pollOnce(at: start) == 1)
+        #expect(try await monitor.pollOnce(at: start.addingTimeInterval(1)) == 0)
+        #expect(try await monitor.pollOnce(at: start.addingTimeInterval(2)) == 1)
+        await monitor.stop()
+    }
+
+    @Test func aPollBeingQueuedDoesNotPullBackAFailureReportedLater() async throws {
+        let start = Date(timeIntervalSince1970: 1_791_434_400)
+        let sink = CodexMonitorSink(), box = MonitorBox()
+        let monitor = try CodexActiveHistoryMonitor(profileID: "test", sources: []) { packet, date in
+            // The failure arrives at a later time than the poll started.
+            await box.monitor?.recordPollFailure(thread: "thread", polledAt: date, at: date.addingTimeInterval(3))
+            try await sink.accept(packet)
+        }
+        await box.set(monitor)
+        try await monitor.addSource(.init(threadID: "thread", interface: .t3, authority: .publicNativeItems), at: start)
+        #expect(try await monitor.pollOnce(at: start) == 1)
+        #expect(try await monitor.pollOnce(at: start.addingTimeInterval(4)) == 0)
+        #expect(try await monitor.pollOnce(at: start.addingTimeInterval(5)) == 1)
+        await monitor.stop()
+    }
+
+    @Test func hookActivityRestoresTheNormalDelay() async throws {
+        let sink = CodexMonitorSink()
+        let monitor = try CodexActiveHistoryMonitor(profileID: "test", sources: []) { packet, _ in try await sink.accept(packet) }
+        let start = Date(timeIntervalSince1970: 1_791_434_400)
+        let source = try CodexActiveSource(threadID: "thread", interface: .t3, authority: .publicNativeItems)
+        try await monitor.addSource(source, at: start)
+        for second in [0.0, 2, 6] {
+            #expect(try await monitor.pollOnce(at: start.addingTimeInterval(second)) == 1)
+            await monitor.recordPollFailure(thread: "thread", polledAt: start.addingTimeInterval(second), at: start.addingTimeInterval(second))
+        }
+        // A hook proves the thread exists.
+        try await monitor.addSource(source, at: start.addingTimeInterval(10))
+        #expect(try await monitor.pollOnce(at: start.addingTimeInterval(10)) == 1)
+        #expect(try await monitor.pollOnce(at: start.addingTimeInterval(11)) == 1)
+        await monitor.stop()
+    }
+
+    @Test func aFailingThreadDoesNotSlowOtherThreads() async throws {
+        let sink = CodexMonitorSink()
+        let monitor = try CodexActiveHistoryMonitor(profileID: "test", sources: []) { packet, _ in try await sink.accept(packet) }
+        let start = Date(timeIntervalSince1970: 1_791_434_400)
+        for thread in ["deleted", "healthy"] {
+            try await monitor.addSource(.init(threadID: thread, interface: .t3, authority: .publicNativeItems), at: start)
+        }
+        let polls = try await pollEachSecond(monitor, sink, from: start, seconds: 0...30) { thread, now in
+            if thread == "deleted" { await monitor.recordPollFailure(thread: thread, polledAt: now, at: now) }
+            else { await monitor.recordPollSuccess(thread: thread, at: now) }
+        }
+        #expect(polls.filter { $0.hasSuffix(":healthy") }.count == 31)
+        #expect(polls.filter { $0.hasSuffix(":deleted") } == ["0:deleted", "2:deleted", "6:deleted", "14:deleted", "30:deleted"])
+        await monitor.stop()
+    }
+
+    @Test func rereadItemsLetAnIdleThreadSlowDownAndNewItemsSpeedItUp() async throws {
+        let history = CodexTestHistory(), checkpoints = CodexCheckpoints(), crypto = try BackgroundCryptography.ephemeralForTesting()
+        let start = Date(timeIntervalSince1970: 1_791_434_400)
+        await history.configure("parent", thread: try codexThread(updatedAt: 1_791_434_000),
+            pages: [.init(data: [try codexItem("answer", timestamp: start.timeIntervalSince1970 * 1000)])])
+        let adapter = try codexTestAdapter(history: history, checkpoints: { await checkpoints.get($0) })
+        let sink = CodexMonitorSink()
+        let monitor = try CodexActiveHistoryMonitor(profileID: "test", sources: []) { packet, _ in try await sink.accept(packet) }
+        try await monitor.addSource(.init(threadID: "parent", interface: .t3, authority: .publicNativeItems), at: start)
+        // Each poll is read and observed as the pipeline would. A poll rereads the thread's tail.
+        func run(_ seconds: ClosedRange<Int>) async throws -> (polls: Int, rereads: Int) {
+            var polls = 0, rereads = 0
+            for second in seconds {
+                let now = start.addingTimeInterval(Double(second))
+                guard try await monitor.pollOnce(at: now) == 1 else { continue }
+                polls += 1
+                let batch = try await adapter.normalize(#require(await sink.packets.last), capturedAt: now, cryptography: crypto)
+                await checkpoints.save(batch.checkpoints)
+                if batch.sources.contains(where: { $0.record.metadata.identity.itemID == "answer" }) { rereads += 1 }
+                await monitor.observe(batch, authority: .publicNativeItems, at: now)
+            }
+            return (polls, rereads)
+        }
+        let idle = try await run(0...399)
+        #expect(idle.rereads == idle.polls)
+        // Every second for two minutes after the last item, then every five seconds.
+        #expect(idle.polls == 120 + 56)
+        await history.configure("parent", thread: try codexThread(updatedAt: 1_791_434_000),
+            pages: [.init(data: [try codexItem("answer", timestamp: start.timeIntervalSince1970 * 1000),
+                                 try codexItem("later", timestamp: (start.timeIntervalSince1970 + 400) * 1000)])])
+        #expect(try await run(400...409).polls == 10)
+        await monitor.stop()
+    }
+
+    @Test func itemsFromAnEarlierRunDoNotRestartPolling() async throws {
+        let history = CodexTestHistory(), crypto = try BackgroundCryptography.ephemeralForTesting()
+        let now = Date(timeIntervalSince1970: 1_791_434_400)
+        await history.configure("parent", thread: try codexThread(updatedAt: 1_791_434_000),
+            pages: [.init(data: [try codexItem("answer", timestamp: (now.timeIntervalSince1970 - 7_200) * 1000)])])
+        let adapter = try codexTestAdapter(history: history)
+        let batch = try await adapter.normalize(codexPacket(thread: "parent"), capturedAt: now, cryptography: crypto)
+        #expect(!batch.sources.isEmpty)
+        let sink = CodexMonitorSink()
+        let monitor = try CodexActiveHistoryMonitor(profileID: "test", sources: []) { packet, _ in try await sink.accept(packet) }
+        // A poll queued before a restart is processed later. Its items are two hours old.
+        await monitor.observe(batch, authority: .publicNativeItems, at: now)
+        #expect(try await monitor.pollOnce(at: now) == 0)
+        #expect(try await monitor.pollOnce(at: now.addingTimeInterval(30)) == 0)
         await monitor.stop()
     }
 

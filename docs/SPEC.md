@@ -36,8 +36,7 @@ The [glossary](../CONTEXT.md) defines the vocabulary for secrets, sessions, outp
 - macOS authentication with Touch ID or a password protects value revelation for each viewing session.
 - Retained secrets stay in the inventory until explicitly deleted. The seven-day source window does not determine their retention period.
 - Recovery after loss of the Mac or migration to another Mac is not required for the MVP. This does not introduce automatic expiration of inventory entries.
-- The user can mark a detection as a false positive.
-- The user can also confirm that an occurrence contains a secret. Review does not assert current credential validity.
+- The user decides once per value whether it needs rotating: needs rotation, test or dev only, not a secret, or a real credential kept as is. The decision covers later appearances of that exact value. It does not assert current credential validity. This replaced per-occurrence review; [decision 0009](adr/0009-decide-per-value.md) records it.
 - A new value with a strong signal triggers an alert. Its first appearance in a new conversation also triggers an alert. Repeated appearances in the same conversation are grouped.
 - Closing the window keeps monitoring running in the background. The menu bar shows its status and provides a pause command.
 - Quitting the application stops monitoring. Launching at Mac login is a preference disabled by default.
@@ -55,7 +54,7 @@ The workflow implements the confirmed behaviors. Advertised adapter coverage mus
 4. Create a detection with its reason and source, then group occurrences of the same value.
 5. Present secrets in the inventory, allow the exact value to be revealed, and provide access to each source conversation.
 6. Alert the user to strong signals, with masked content and access to context.
-7. Present uncertain cases for review and allow them to be confirmed as secrets or marked as false positives.
+7. Present undecided values for review and record the user's decision for each value.
 8. Record the user's acknowledgement of rotation or revocation and classify later appearances of the same value as obsolete.
 
 Analysis of the last seven days supplements event collection at first launch and during catch-up when the application reopens. The actual period read and analyzed must remain visible.
@@ -130,11 +129,11 @@ The first version analyzes session content. It does not require importing a secr
 
 A strong signal comes from an explicit rule that is sufficiently distinctive, such as a complete known format or a recognized private key block. Field names and entropy can strengthen a signal, but they do not guarantee that a value is a secret. The precise classification of rules will be evaluated with annotated fixtures.
 
-Ambiguous cases have the "needs review" status and do not generate an immediate notification. Each detection shows the rule and evidence that produced it. The user can confirm that an occurrence contains a secret or mark it as a false positive. Review remains reversible and applies to the occurrence. It does not turn a rule into a general exclusion or allow session text to define exclusions.
+Values without a decision have the "needs review" status. Ambiguous cases do not generate an immediate notification. Each detection shows the rule and evidence that produced it. The user decides once per exact value: it needs rotation, works only in tests or development, is not a secret, or is a real credential kept as is. The decision is reversible and covers the value's later appearances. A dismissed value's new appearances are recorded and counted without alerts and without returning to review. A value that needs rotation keeps alerting in new conversations until it is acknowledged rotated or revoked. A decision applies to one exact value. It never turns a rule into a general exclusion, and session text cannot define one. A detection whose value could not be located is decided on its own, since it cannot be recognized again.
 
-Detector confidence, occurrence review, and a value's rotation or revocation acknowledgement are separate information. A strong detector signal does not overrule a user's acknowledgement that the value is obsolete, and an obsolete value can still have a real secret occurrence.
+Detector confidence, the user's decision about a value, and its rotation or revocation acknowledgement are separate information. A strong detector signal does not overrule the user's decision or acknowledgement.
 
-Scanned content is data. An instruction in a conversation, output, or comment cannot change the detector configuration, run a command, or mark a detection as a false positive on its own.
+Scanned content is data. An instruction in a conversation, output, or comment cannot change the detector configuration, run a command, or decide about a value on its own.
 
 ## Inventory, alerts, and storage
 
@@ -142,7 +141,7 @@ The inventory groups each distinct value with its occurrences, suspected service
 
 The inventory retains an encrypted exact value, encrypted excerpts, and available references until explicitly deleted. Grouping must work without spreading plaintext values into indexes, logs, or diagnostics. The encryption and key protection mechanisms must support background capture and authenticated revelation.
 
-Explicit deletion removes the value, its excerpts, and its occurrences from the application's active storage. It applies to this inventory's data. Histories held by agents retain their own lifecycle. A later new appearance remains detectable.
+Explicit deletion removes the value, its excerpts, and its occurrences from the application's active storage. It applies to this inventory's data. Histories held by agents retain their own lifecycle. A later new appearance remains detectable. The user's decision about the value is kept, holds no value or excerpt, and still applies to later appearances until the user forgets it.
 
 When retained content for an obsolete value is deleted, keep its keyed fingerprint and the user's rotation or revocation acknowledgement until the user explicitly forgets it or resets the app. The recognition marker retains no exact value, encrypted value, excerpt, or old occurrence history. A genuinely new appearance is recorded as obsolete without a notification. Retain only its source reference, occurrence time, and obsolete label, without saving a fresh value or excerpt. [ADR 0004](adr/0004-remember-obsolete-values.md) records this choice.
 
@@ -150,13 +149,13 @@ Deletion alone never marks a value as obsolete. Explicitly forgetting an obsolet
 
 ### Viewing workflow
 
-The main window displays the list of detected secrets with a masked value, suspected type, originating agent, occurrence count, last observation date, and review status. Proposed filters: agent, conversation, and review status.
+The main window is an inbox with three lists named for what each value still needs: To review (no decision yet), To rotate (decided as needing rotation, waiting to be marked rotated or revoked), and Done (any other decision, rotated or revoked). Each row shows the suspected type, the app-assigned entry number, how often the value appeared and when it was last seen; a Done row shows the decision instead. A value to review or rotate with an appearance newer than the user has seen carries an unread mark and sorts first; opening it marks it read without moving its row until the list reloads. Filters: agent and search. Deciding a value opens the next one in its list, and the last decision can be undone. Several values selected together take one decision, applied in a single write. Focus goes through the open list or the selection one value at a time, from the top, in a set fixed when it starts; it ends with a summary of the decisions and can continue with the values a review sent to To rotate.
 
-A detail view allows the exact value to be revealed after macOS authentication and presents occurrences with their source, date, and context excerpt stored encrypted. It also retains the conversation title and identifier when available. An action provides access to the corresponding conversation. If that is impossible, the detail view remains accessible with those references.
+A detail view shows the exact value once macOS authentication has unlocked the viewing session, and presents occurrences with their source, date, and context excerpt stored encrypted. It also retains the conversation title and identifier when available. An action provides access to the corresponding conversation. If that is impossible, the detail view remains accessible with those references.
 
 An obsolete reappearance after content deletion has no retained value or excerpt to reveal. Its detail view shows the source reference, timestamp, and obsolete label and offers source opening when available. If the source disappears, no context fallback exists for that metadata-only occurrence.
 
-A viewing session starts with one authentication. While it lasts, revealing another value needs no further authentication. It expires after five minutes of inactivity and locks when the window closes, the Mac sleeps, or the macOS session locks. One action hides the shown values without locking, and another locks the session immediately. Before authentication, the value and raw excerpts stay masked. Canceled or failed authentication reveals no protected content. A dedicated copy function may be added later. It is not required for the MVP workflow.
+A viewing session starts with one authentication. While it lasts, every selected value shows with the context of its selected appearance, without a further prompt or a reveal action, so values can be compared with their context one after another. It expires after five minutes of inactivity and locks when the window closes, the Mac sleeps, or the macOS session locks. One action hides values without locking, and they stay hidden across selections until shown again or the session ends; another locks the session immediately. Showing content on its own never prompts: when the session is locked, content stays masked until the user unlocks. Before authentication, the value and raw excerpts stay masked. Canceled or failed authentication reveals no protected content. A dedicated copy function may be added later. It is not required for the MVP workflow.
 
 Detections that could not be located must be presented as such, without inventing a value. Conversation opening methods need validation for each agent and interface. A path to a transcript file is not equivalent to a direct link in the agent's application.
 
@@ -171,7 +170,8 @@ The macOS notification for a strong signal identifies the agent, conversation, a
 | Same value repeated in the same conversation | Grouped occurrences, without repeated alerts. |
 | Replay of an event already received | No duplicate occurrence or alert. |
 | Ambiguous value | A "needs review" entry, without an immediate notification. |
-| Occurrence marked as a false positive | The status is retained for that occurrence. Its replay does not create another alert. New occurrences are still evaluated. |
+| Value decided as test or dev only, not a secret, or kept as is | New appearances are recorded and counted, without a notification or a return to review. |
+| Value decided as needing rotation | Alerts as above until it is acknowledged rotated or revoked. |
 | Historical audit at first launch, restart, or resume | A masked summary instead of a notification for each old occurrence. |
 | Previously rotated or revoked value in new content | A new occurrence classified as obsolete, without a notification. |
 | A different replacement value | Normal evaluation and alerts; it is a different inventory value. |
@@ -193,7 +193,7 @@ These criteria define the required behavior. [Test guidance](../Tests/README.md)
 1. Using annotated fixtures, test successful tool outputs, errors, user messages, and intermediate or final responses separately. Document coverage by agent and interface.
 2. Find recent content in an old conversation, exclude content older than seven days during the historical audit, and avoid rereading everything each time the application reopens.
 3. Verify that a replay adds nothing, that an actual new occurrence is retained, and that the alert matrix is followed.
-4. Verify that a strong signal triggers an alert, that an ambiguous case remains marked as needing review, and that marking a false positive is reversible and limited to its scope.
+4. Verify that a strong signal triggers an alert, that an undecided ambiguous case remains marked as needing review, and that a decision about a value is reversible, covers that value's later appearances, and affects no other value.
 5. Verify that values and excerpts are encrypted at rest, remain masked before authentication, and do not appear in notifications or diagnostics.
 6. After deleting a source, reveal the retained value and view its excerpt. Display the fallback if direct opening fails.
 7. Close the window, pause, resume, and quit. Check the expected captures, alerts, and monitoring states, without noticeably slowing down the agent.

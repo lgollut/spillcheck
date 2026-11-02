@@ -206,12 +206,14 @@ public actor CodexAppServerHistoryClient: CodexHistoryReading {
     public func listThreads(cursor: String?, limit: Int = 64, archived: Bool = false) async throws -> CodexHistoryPage {
         try await listThreads(cursor: cursor, limit: limit, archived: archived, budget: configuredBudget())
     }
+    /// App-server clients such as T3 Code, the Codex terminal UI and Codex Desktop record their
+    /// threads with source "vscode"; without it, discovery misses every thread they started.
     public func listThreads(cursor: String?, limit: Int, archived: Bool, budget: CodexRPCBudget) async throws -> CodexHistoryPage {
         try validatePage(cursor: cursor, limit: limit)
         return try page("thread/list", .object([
             "cursor": cursor.map(CodexJSON.string) ?? .null, "limit": .number(Double(limit)),
             "archived": .bool(archived), "sortKey": .string("updated_at"), "sortDirection": .string("desc"),
-            "useStateDbOnly": .bool(true), "sourceKinds": .array(["cli", "exec", "appServer", "subAgent",
+            "useStateDbOnly": .bool(true), "sourceKinds": .array(["cli", "vscode", "exec", "appServer", "subAgent",
                 "subAgentReview", "subAgentCompact", "subAgentThreadSpawn", "subAgentOther"].map(CodexJSON.string))]), budget: budget)
     }
     public func listTurns(threadID: String, cursor: String?, limit: Int = 64,
@@ -275,7 +277,12 @@ public actor CodexAppServerHistoryClient: CodexHistoryReading {
                 throw CodexHistoryReadFailure(reason: error, bytesRead: accounting.bytesRead)
             }
         } catch {
-            close()
+            // An error reply is a complete answer to this request, so the reader stays usable. Any
+            // other failure can leave a partial reply, an unexpected request or a stuck reader.
+            switch error {
+            case CodexHistoryError.remoteFailure, CodexHistoryError.missingMethod, CodexHistoryError.rejectedParameters: break
+            default: close()
+            }
             // A prior successful call is no longer evidence that this method is currently usable.
             // Only a fresh validated response may restore it and settle an operation incident.
             usableMethods.remove(method)
@@ -328,6 +335,8 @@ private final class CodexPassiveProcess {
     private let process = Process()
     private let stdin = Pipe(), stdout = Pipe(), stderr = Pipe()
     private var pending = Data()
+    /// Leading bytes of `pending` already searched for a line end, so each read searches only new bytes.
+    private var pendingSearched = 0
     private var serial = 0
     private var closed = false
     private var shutdownCompletedWithinDeadline: Bool?
@@ -396,8 +405,20 @@ private final class CodexPassiveProcess {
         while process.isRunning && ProcessInfo.processInfo.systemUptime < deadline { usleep(1_000) }
         let completed = !process.isRunning
         shutdownCompletedWithinDeadline = completed
-        pending.removeAll(keepingCapacity: false)
+        pending.removeAll(keepingCapacity: false); pendingSearched = 0
         return completed
+    }
+    /// The offset of the first newline in `pending`. A reply line can be several megabytes, read
+    /// in pipe-sized pieces; searching it from the start after every piece was quadratic.
+    private func nextLineEnd() -> Int? {
+        let searched = pendingSearched
+        let found = pending.withUnsafeBytes { bytes -> Int? in
+            guard let base = bytes.baseAddress, searched < bytes.count,
+                  let match = memchr(base + searched, 10, bytes.count - searched) else { return nil }
+            return base.distance(to: UnsafeRawPointer(match))
+        }
+        if found == nil { pendingSearched = pending.count }
+        return found.map { pending.startIndex + $0 }
     }
     private func writeNotification() throws {
         let bytes = Data("{\"method\":\"initialized\",\"params\":{}}\n".utf8)
@@ -416,8 +437,8 @@ private final class CodexPassiveProcess {
         while true {
             if Task.isCancelled { throw CodexHistoryError.cancelled }
             guard ProcessInfo.processInfo.systemUptime < deadline else { throw CodexHistoryError.timedOut }
-            while let newline = pending.firstIndex(of: 10) {
-                let line = Data(pending[..<newline]); pending.removeSubrange(...newline)
+            while let newline = nextLineEnd() {
+                let line = Data(pending[..<newline]); pending.removeSubrange(...newline); pendingSearched = 0
                 guard !line.isEmpty else { continue }
                 guard let row = try? JSONDecoder().decode(CodexJSON.self, from: line) else { throw CodexHistoryError.malformedResponse }
                 // An unexpected server request is never answered with an authorization/decision.

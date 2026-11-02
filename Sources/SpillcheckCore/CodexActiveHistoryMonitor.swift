@@ -22,9 +22,10 @@ public struct CodexActiveSource: Sendable, Equatable {
 /// Only exact configured/admitted active sources. Public polling rereads the bounded tail so
 /// same-second metadata changes cannot hide hosted-tool or intermediate-message output.
 /// Versioned transcript polling performs stat only and reads zero unchanged payload bytes.
-/// Public polling follows activity: each hook or collected item marks its thread active, polls
-/// slow down as the thread goes quiet, and stop after an hour until the next hook. Every hook
-/// capture still reads its thread directly, so pausing an idle poll loses no content.
+/// Public polling follows activity: a hook marks its thread active when it arrives and a collected
+/// item as of its own time. Polls slow down as the thread goes quiet, and stop after an hour until
+/// the next hook. Every hook capture still reads its thread directly, so pausing an idle poll loses
+/// no content.
 public actor CodexActiveHistoryMonitor {
     public typealias Enqueue = @Sendable (CapturePacket, Date) async throws -> Void
     public typealias GapHandler = @Sendable (CoverageGap) async -> Void
@@ -39,9 +40,18 @@ public actor CodexActiveHistoryMonitor {
     private var signatures: [String: Signature] = [:]
     private var lastActivity: [String: Date] = [:]
     private var nextPoll: [String: Date] = [:]
+    /// Consecutive failed polls per selected thread; absent when the last poll succeeded.
+    private var pollFailures: [String: PollFailures] = [:]
     /// One gap per continuous capacity failure. Bounded by the configured source set.
     private var capacityFailureReported: Set<String> = []
+    /// Retry pacing for enqueue failures, which the pipeline's poll failures above do not cover.
+    private var deliveryBackoff = DeliveryBackoff()
     private var nextIndex = 0
+    private struct PollFailures {
+        var count: Int
+        /// The newest poll counted, so the pipeline's retries of one poll count once.
+        var latestPoll: Date
+    }
     private struct Signature: Equatable {
         let device: UInt64, inode: UInt64, size: Int64, modifiedSeconds: Int64, modifiedNanos: Int64
     }
@@ -58,37 +68,97 @@ public actor CodexActiveHistoryMonitor {
     }
 
     /// Delay before the next public poll of a thread idle for `idle` seconds; nil while dormant.
-    public static func publicPollDelay(idle: TimeInterval) -> TimeInterval? {
+    /// Each consecutive failed poll doubles it, up to an hour.
+    public static func publicPollDelay(idle: TimeInterval, failures: Int = 0) -> TimeInterval? {
+        let base: TimeInterval
         switch idle {
-        case ..<120: 1
-        case ..<600: 5
-        case ..<3600: 30
-        default: nil
+        case ..<120: base = 1
+        case ..<600: base = 5
+        case ..<3600: base = 30
+        default: return nil
         }
+        return min(base * pow(2, Double(min(failures, 16))), 3600)
     }
 
     /// Selecting a source also records activity for it. At capacity, the least recently active
     /// source is replaced; its thread is still read by any later hook capture.
     public func addSource(_ source: CodexActiveSource, at date: Date = Date()) async throws {
+        try await admit(source, activeAt: date, at: date)
+        // A hook proves the thread exists, so earlier failed polls no longer count against it.
+        pollFailures.removeValue(forKey: source.threadID)
+    }
+
+    /// A thread whose polls keep failing, such as one deleted from its app, is polled less often
+    /// rather than failing at the activity cadence. The poll's outcome is known only after the
+    /// detection worker has processed it, so this also pushes back a poll already scheduled.
+    /// The pipeline retries a failed poll and each attempt reports, so a poll counts once, by the
+    /// time it was made (`polledAt`).
+    public func recordPollFailure(thread: String, polledAt: Date, at date: Date = Date()) {
+        guard let source = sources.first(where: { $0.threadID == thread }), source.authority == .publicNativeItems,
+              polledAt > pollFailures[thread]?.latestPoll ?? .distantPast else { return }
+        pollFailures[thread] = .init(count: (pollFailures[thread]?.count ?? 0) + 1, latestPoll: polledAt)
+        reschedule(thread, from: date)
+    }
+
+    public func recordPollSuccess(thread: String, at date: Date = Date()) {
+        guard pollFailures.removeValue(forKey: thread) != nil, let next = pollDelay(thread, at: date) else { return }
+        nextPoll[thread] = date.addingTimeInterval(next)
+    }
+
+    private func pollDelay(_ thread: String, at date: Date) -> TimeInterval? {
+        Self.publicPollDelay(idle: date.timeIntervalSince(lastActivity[thread] ?? date), failures: pollFailures[thread]?.count ?? 0)
+    }
+
+    /// Never earlier than a poll already pushed back, which can happen while a poll is being queued.
+    private func reschedule(_ thread: String, from date: Date) {
+        guard let next = pollDelay(thread, at: date) else { return }
+        nextPoll[thread] = max(nextPoll[thread] ?? date, date.addingTimeInterval(next))
+    }
+
+    /// Live items count as activity as of their own time, not when they were read. A poll rereads
+    /// its thread's tail, and a poll queued before a restart can be read much later, so neither
+    /// can keep a quiet thread at the fastest cadence.
+    public func observe(_ batch: CollectionBatch, authority: CodexCollectionAuthority, at date: Date = Date()) async {
+        var observed: [String: (source: CodexActiveSource, newest: Date)] = [:]
+        for collected in batch.sources {
+            let metadata = collected.record.metadata
+            guard case .live = metadata.origin.provenance else { continue }
+            let thread = metadata.identity.session.sessionID
+            if let known = observed[thread] {
+                observed[thread] = (known.source, max(known.newest, metadata.contentTime))
+            } else if let source = try? CodexActiveSource(threadID: thread, interface: metadata.origin.interface,
+                authority: authority, transcriptURL: collected.context?.transcriptPath.map { URL(fileURLWithPath: $0) }) {
+                observed[thread] = (source, metadata.contentTime)
+            }
+        }
+        for (source, newest) in observed.values { try? await admit(source, activeAt: min(newest, date), at: date) }
+    }
+
+    /// Activity no newer than a thread's last leaves its cadence alone.
+    private func admit(_ source: CodexActiveSource, activeAt activity: Date, at date: Date) async throws {
         // An unknown owner keeps the source; each poll rechecks ownership and reports a failure.
         if (try? await isHookOwned(source)) == true { return }
         if let previous = sources.first(where: { $0.threadID == source.threadID }) {
             guard previous.authority == source.authority, previous.transcriptURL == source.transcriptURL else {
                 throw CodexCollectionError.authorityConflict
             }
+            guard activity > lastActivity[source.threadID] ?? .distantPast else { return }
         } else {
             if sources.count >= 256, let stalest = sources.indices.min(by: {
                 (lastActivity[sources[$0].threadID] ?? .distantPast) < (lastActivity[sources[$1].threadID] ?? .distantPast)
             }) {
+                guard activity > lastActivity[sources[stalest].threadID] ?? .distantPast else { return }
                 let removed = sources.remove(at: stalest)
                 lastActivity.removeValue(forKey: removed.threadID); nextPoll.removeValue(forKey: removed.threadID)
+                pollFailures.removeValue(forKey: removed.threadID)
+                deliveryBackoff.recordSuccess(removed.threadID)
                 capacityFailureReported.remove(removed.threadID)
                 if let url = removed.transcriptURL { signatures.removeValue(forKey: url.path) }
                 if nextIndex > stalest { nextIndex -= 1 }
             }
             sources.append(source)
         }
-        lastActivity[source.threadID] = date
+        lastActivity[source.threadID] = activity
         nextPoll[source.threadID] = date
     }
     @discardableResult public func pollOnce(at date: Date = Date()) async throws -> Int {
@@ -102,16 +172,28 @@ public actor CodexActiveHistoryMonitor {
             guard permit == generation, !Task.isCancelled else { return count }
             let source = sources[(nextIndex + inspected) % sources.count]
             inspected += 1
-            do { if try await isHookOwned(source) { continue } }
+            // Before the lookup too, so a source whose lookup keeps failing is not retried every pass.
+            guard !deliveryBackoff.isWaiting(source.threadID, at: date) else { continue }
+            do {
+                if try await isHookOwned(source) {
+                    // The hook path owns it now, so a failure recorded for polling no longer applies.
+                    deliveryBackoff.recordSuccess(source.threadID)
+                    continue
+                }
+            }
             catch {
-                if !Task.isCancelled { await onGap(gap(.deliveryUncertain, source: source, at: date)) }
+                if !Task.isCancelled {
+                    if deliveryBackoff.recordFailure(source.threadID, base: deliveryBase(source, at: date), at: date) {
+                        await onGap(gap(.deliveryUncertain, source: source, at: date))
+                    }
+                }
                 failure = failure ?? error
                 continue
             }
             guard permit == generation, !Task.isCancelled else { return count }
             var delay: TimeInterval?
             if source.authority == .publicNativeItems {
-                delay = Self.publicPollDelay(idle: date.timeIntervalSince(lastActivity[source.threadID] ?? date))
+                delay = pollDelay(source.threadID, at: date)
                 guard delay != nil, (nextPoll[source.threadID] ?? .distantPast) <= date else { continue }
             }
             selected += 1
@@ -137,18 +219,24 @@ public actor CodexActiveHistoryMonitor {
                 if permit == generation, !Task.isCancelled, capacityFailureReported.insert(source.threadID).inserted {
                     await onGap(gap(.budgetExhausted, source: source, at: date, diagnostic: .authorityStorageLimit))
                 }
-                if let delay { nextPoll[source.threadID] = date.addingTimeInterval(delay) }
+                if delay != nil { reschedule(source.threadID, from: date) }
                 continue
             }
             catch {
-                if !Task.isCancelled { await onGap(gap(.deliveryUncertain, source: source, at: date)) }
+                if !Task.isCancelled {
+                    if deliveryBackoff.recordFailure(source.threadID, base: deliveryBase(source, at: date), at: date) {
+                        await onGap(gap(.deliveryUncertain, source: source, at: date))
+                    }
+                }
                 failure = failure ?? error
                 continue
             }
             guard permit == generation, !Task.isCancelled else { return count }
+            deliveryBackoff.recordSuccess(source.threadID)
             capacityFailureReported.remove(source.threadID)
             if let url = source.transcriptURL, let signature { signatures[url.path] = signature }
-            if let delay { nextPoll[source.threadID] = date.addingTimeInterval(delay) }
+            // The enqueue awaited, so a failure may have been recorded since the delay was chosen.
+            if delay != nil { reschedule(source.threadID, from: date) }
             count += 1
         }
         if !sources.isEmpty { nextIndex = (nextIndex + inspected) % sources.count }
@@ -171,6 +259,10 @@ public actor CodexActiveHistoryMonitor {
         let pending = task; task = nil
         pending?.cancel(); await pending?.value
         await historyClient?.close()
+    }
+    /// A failing source backs off from its own cadence; a public thread's follows its activity.
+    private func deliveryBase(_ source: CodexActiveSource, at date: Date) -> TimeInterval {
+        Self.publicPollDelay(idle: date.timeIntervalSince(lastActivity[source.threadID] ?? date)) ?? 1
     }
     private func isHookOwned(_ source: CodexActiveSource) async throws -> Bool {
         guard let authorityLookup else { return false }

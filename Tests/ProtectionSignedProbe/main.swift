@@ -96,7 +96,7 @@ private struct ProtectionSignedProbe {
         }
         guard let group = argument("--access-group") ?? Bundle.main.object(forInfoDictionaryKey: "SpillcheckKeychainAccessGroup") as? String,
               let directoryPath = argument("--directory") ?? Bundle.main.object(forInfoDictionaryKey: "SpillcheckProbeDirectory") as? String else {
-            print("Usage: ProtectionSignedProbe --access-group TEAM.com.leakret.app --directory ISOLATED_DIRECTORY [--authorize]")
+            print("Usage: ProtectionSignedProbe --access-group TEAM.com.spillcheck.app --directory ISOLATED_DIRECTORY [--authorize]")
             exit(64)
         }
         let directory = URL(fileURLWithPath: directoryPath, isDirectory: true)

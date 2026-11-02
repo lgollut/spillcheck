@@ -23,12 +23,16 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
     var highlightStatusItem: ((Bool) -> Void)?
     /// Opens the main window after the assistant fades out.
     var onFinish: (() -> Void)?
+    /// Called when the assistant opens, so the app can refresh what the window is about to show.
+    var onShow: (() -> Void)?
 
     init(model: AppModel) {
         self.model = model
     }
 
     var isVisible: Bool { window?.isVisible == true }
+    /// On screen and not hidden, minimized or covered, which is when it can be looked at.
+    var isShowingContent: Bool { window?.isShowingContent == true }
 
     /// Opens the assistant at `step`, or brings an open one forward where the user left it.
     func show(at step: OnboardingStep) {
@@ -52,6 +56,7 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApplication.shared.activate(ignoringOtherApps: true)
+        onShow?()
     }
 
     private func makeWindow() -> NSWindow {

@@ -152,7 +152,7 @@ public enum ViewingAuthorizationError: Error, Equatable, Sendable {
     case cancelled, unavailable(code: Int), denied(code: Int), invalidated
 }
 
-private func framedFields(_ fields: [String]) -> Data {
+func framedFields(_ fields: [String]) -> Data {
     fields.reduce(into: Data()) { output, field in
         let bytes = Data(field.utf8)
         var count = UInt32(bytes.count).bigEndian
@@ -289,7 +289,8 @@ private func openAES(_ payload: ProtectedPayload, key: SymmetricKey) throws -> D
 }
 
 public struct ProtectionConfiguration: Sendable {
-    /// The original namespace is part of the installed app's provisioned Keychain identity.
+    /// The access group follows the bundle identifier. The prefix keeps the original namespace in
+    /// Keychain service and right names, so it must not follow bundle-identifier changes.
     public let accessGroup: String
     public let identifierPrefix: String
 
@@ -700,15 +701,18 @@ public final class InventoryViewingSession {
         _ = try await authorized(localizedReason: localizedReason) { _ in Data() }
     }
 
+    /// Decrypts one protected field. With `prompting` false a locked or expired session fails like an
+    /// ended one instead of asking for authentication, so content shown on its own never prompts.
     public func reveal(
-        _ payload: ProtectedPayload, binding: PayloadBinding, localizedReason: String
+        _ payload: ProtectedPayload, binding: PayloadBinding, localizedReason: String, prompting: Bool = true
     ) async throws -> Data {
         expireIfNeeded()
+        guard prompting || isAuthorized else { throw ViewingAuthorizationError.invalidated }
         try payload.validate(expectedBinding: binding)
         guard !binding.kind.isBackgroundAccessible, payload.algorithm == .inventoryECIESAESGCM,
               payload.keyID == manifest.inventoryRightID else { throw ProtectionError.incorrectKey }
         let requestConcealment = concealment
-        let output = try await authorized(localizedReason: localizedReason) { [self] requestGeneration in
+        let output = try await authorized(localizedReason: localizedReason, prompting: prompting) { [self] requestGeneration in
             guard let wrappedKey = payload.wrappedDataKey else { throw ViewingAuthorizationError.invalidated }
             let bytes: Data
             do { bytes = try await privateKey.decrypt(wrappedKey) }
@@ -733,9 +737,10 @@ public final class InventoryViewingSession {
         revealed.removeAll(keepingCapacity: false)
     }
 
-    /// Runs one private-key operation at a time, authorizing first when the session is locked.
+    /// Runs one private-key operation at a time, authorizing first when the session is locked and
+    /// `prompting` allows it.
     private func authorized(
-        localizedReason: String, _ operation: @escaping @MainActor (UInt64) async throws -> Data
+        localizedReason: String, prompting: Bool = true, _ operation: @escaping @MainActor (UInt64) async throws -> Data
     ) async throws -> Data {
         let requestGeneration = generation
         let previousOperation = retiringOperation
@@ -753,6 +758,11 @@ public final class InventoryViewingSession {
                 try checkGeneration(requestGeneration)
                 retiringOperation = nil
                 if !isAuthorized {
+                    // The session ended while this request waited: end it properly, never prompt.
+                    guard prompting else {
+                        expireIfNeeded()
+                        throw ViewingAuthorizationError.invalidated
+                    }
                     do { try await privateKey.authorize(localizedReason: localizedReason) }
                     catch {
                         try await checkPrivateCompletion(requestGeneration)

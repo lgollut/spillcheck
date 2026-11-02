@@ -1,6 +1,8 @@
+import CryptoKit
 import Darwin
 import Foundation
 import GRDB
+import SQLite3
 
 private struct StoredCapture: Sendable {
     let id: UUID
@@ -109,6 +111,32 @@ private struct OmissionIdentityKey: Codable {
     let operation: CollectionOperation?
 }
 
+/// Opened report rows, kept while their ciphertext is unchanged. Opening is a pure function of a
+/// row's ciphertext and its row binding, so a kept value is exactly what reopening would return.
+/// The app refreshes coverage every second; reopening up to a thousand unchanged rows of each kind
+/// every time kept the store busy and delayed capture processing. Closing the store clears them,
+/// and a decode that resumes after closing keeps nothing.
+private struct OpenedRows<Value> {
+    private static var capacity: Int { 2048 }
+    private var entries: [UUID: (encoded: Data, value: Value)] = [:]
+
+    func value(for id: UUID, encoded: Data) -> Value? {
+        guard let entry = entries[id], entry.encoded == encoded else { return nil }
+        return entry.value
+    }
+    mutating func keep(_ value: Value, for id: UUID, encoded: Data) {
+        if entries[id] == nil, entries.count >= Self.capacity { entries.removeAll(keepingCapacity: true) }
+        entries[id] = (encoded, value)
+    }
+    mutating func removeAll() { entries.removeAll() }
+}
+
+private enum OpenedGapEvent {
+    case event(StoredCoverageGapEvent)
+    /// Schema 1–3 stored the gap without its encrypted event envelope.
+    case legacy(CoverageGap)
+}
+
 private struct HealthIdentityKey: Codable {
     let scope: CollectionScope
     let contentType: ContentType?
@@ -130,16 +158,22 @@ public actor ProtectedStore {
     private let limits: StoreLimits
     private let failureInjector: StorageFailureInjector?
     private var ledger: InventoryLedger
+    /// What the ledger rows on disk look like, so a write seals only the segments it changed.
+    private var layout: LedgerLayoutState
+    private var expectsMirrorRepair = false
     private var revision: Int64
     private var monitoringEnabled = true
     private var generation = UUID()
     private var closed = false
     private var consecutiveLiveClaims = 0
+    private var openedOmissions = OpenedRows<CoverageOmission>()
+    private var openedGapEvents = OpenedRows<OpenedGapEvent>()
+    private var openedWorkContexts = OpenedRows<CollectionWorkContext>()
 
     private init(
         directory: URL, manifest: ProtectionManifest, database: DatabaseQueue,
         cryptography: any BackgroundStoreCryptography, limits: StoreLimits,
-        ledger: InventoryLedger, revision: Int64, failureInjector: StorageFailureInjector?
+        ledger: InventoryLedger, layout: LedgerLayoutState, revision: Int64, failureInjector: StorageFailureInjector?
     ) {
         self.directory = directory
         self.manifest = manifest
@@ -147,6 +181,7 @@ public actor ProtectedStore {
         self.cryptography = cryptography
         self.limits = limits
         self.ledger = ledger
+        self.layout = layout
         self.revision = revision
         self.failureInjector = failureInjector
     }
@@ -170,7 +205,7 @@ public actor ProtectedStore {
                               "source_checkpoints", "coverage_gaps", "notification_outbox",
                               "collection_authorities", "historical_progress", "protected_preferences", "historical_notification_outbox",
                               "coverage_omissions", "collection_health_incidents", "collection_work", "successful_collection_reads",
-                              "codex_hook_content_slots"] {
+                              "codex_hook_content_slots", "ledger_parts", "ledger_buckets"] {
                     if try connection.tableExists(table),
                        try Int.fetchOne(connection, sql: "SELECT COUNT(*) FROM \(table)") ?? 0 > 0 {
                         hasProtectedRows = true
@@ -224,48 +259,48 @@ public actor ProtectedStore {
         do {
             database = try DatabaseQueue(path: databaseURL.path, configuration: configuration)
             try migrate(database)
+            // Earlier builds kept every completed row that held gap evidence until it aged out,
+            // and filled the cap. Trim to the bounds now so the first enqueue can succeed.
+            try write(database) { db in
+                try pruneCompletedWork(in: db, retaining: limits.maxSuccessfulWorkRecords)
+                try pruneEvidenceWork(in: db, keeping: limits.maxEvidenceWorkRecords)
+            }
         } catch { throw StorageError.databaseUnavailable }
         do {
             let manifestData = try JSONEncoder().encode(manifest)
-            let state = try Self.read(database) { db -> (Data?, Int64) in
-                guard let row = try Row.fetchOne(db, sql: "SELECT encoded, revision FROM store_state WHERE id = 1") else {
-                    return (nil, 0)
-                }
-                return (row["encoded"], row["revision"])
-            }
             let ledger: InventoryLedger
-            if let encoded = state.0 {
-                let payload = try decode(encoded, maximumBytes: limits.maxProtectedStateBytes * 2)
-                let plaintext: Data
-                do {
-                    plaintext = try await cryptography.openBackground(payload, binding: ledgerBinding(manifest))
-                } catch { throw StorageError.protectionUnavailable }
-                guard plaintext.count <= limits.maxProtectedStateBytes else { throw StorageError.stateTooLarge }
-                do {
-                    ledger = try InventoryLedger(snapshot: JSONDecoder().decode(InventorySnapshot.self, from: plaintext))
-                } catch { throw StorageError.corruptProtectedState }
+            let layout: LedgerLayoutState
+            let revision: Int64
+            if let rows = try Self.readLedgerRows(database) {
+                (ledger, layout) = try await openLedger(rows, manifest: manifest, cryptography: cryptography, limits: limits)
+                revision = rows.revision
             } else {
                 // A missing state row alongside protected artifacts is corruption, never an empty inventory.
                 if probe.state == .protectedDataPresent { throw StorageError.corruptProtectedState }
                 ledger = InventoryLedger()
-                let bytes = try JSONEncoder().encode(ledger.snapshot)
-                let payload = try await cryptography.sealBackground(bytes, binding: ledgerBinding(manifest))
-                let encoded = try payload.encoded()
+                var empty = ledger
+                let plan = try LedgerLayoutState.unpartitioned(revision: 0)
+                    .plan(committed: ledger, next: &empty, revision: 0, maximumBytes: limits.maxProtectedStateBytes)
+                let sealed = try await seal(plan, manifest: manifest, cryptography: cryptography)
                 try Self.write(database) { db in
-                    guard try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM protection_manifest") == 0,
-                          try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM store_state") == 0 else {
-                        throw StorageError.corruptProtectedState
+                    for table in ["protection_manifest", "store_state", "ledger_parts", "ledger_buckets"] {
+                        guard try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \(table)") == 0 else {
+                            throw StorageError.corruptProtectedState
+                        }
                     }
                     // Bootstrap is one transaction; an existing manifest never licenses empty reset.
                     try db.execute(sql: "INSERT INTO protection_manifest (id, encoded) VALUES (1, ?)", arguments: [manifestData])
-                    try db.execute(sql: "INSERT INTO store_state (id, revision, encoded) VALUES (1, 0, ?)", arguments: [encoded])
+                    try db.execute(sql: "INSERT INTO store_state (id, revision, encoded) VALUES (1, 0, ?)", arguments: [sealed.header])
+                    try Self.insertLedgerSegments(sealed, in: db)
                 }
+                layout = plan.layout
+                revision = 0
             }
             try restrictFileModes(in: directory)
             return ProtectedStore(
                 directory: directory, manifest: manifest, database: database,
-                cryptography: cryptography, limits: limits, ledger: ledger,
-                revision: state.1, failureInjector: failureInjector
+                cryptography: cryptography, limits: limits, ledger: ledger, layout: layout,
+                revision: revision, failureInjector: failureInjector
             )
         } catch {
             try? database.close()
@@ -279,6 +314,7 @@ public actor ProtectedStore {
         monitoringEnabled = false
         generation = UUID()
         guard !closed else { return }
+        openedOmissions.removeAll(); openedGapEvents.removeAll(); openedWorkContexts.removeAll()
         do { try database.close(); closed = true }
         catch { throw StorageError.databaseUnavailable }
     }
@@ -489,7 +525,7 @@ public actor ProtectedStore {
                 if let workBytes,
                    try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM collection_work WHERE id = ?", arguments: [id.uuidString]) == 0 {
                     try Self.insertWork(id: id, context: workBytes, recoveryOf: recoveryOf, recoveryChain: recoveryChainBytes,
-                        at: now, maximumBytes: limits.maxProtectedStateBytes, in: db)
+                        at: now, limits: limits, in: db)
                     try Self.updateWork(id: id, state: .terminal, at: now, in: db)
                 }
                 try Self.writeCoverageSettlement(loss, at: now, maximumBytes: limits.maxProtectedStateBytes, in: db)
@@ -523,7 +559,7 @@ public actor ProtectedStore {
                         throw StorageError.stateChanged
                     }
                 }
-                let bytes = try Int.fetchOne(db, sql: "SELECT COALESCE(SUM(byte_count), 0) FROM captures") ?? 0
+                let bytes = try Int.fetchOne(db, sql: HotQueries.queueBytes) ?? 0
                 guard encoded.count <= maxBytes, bytes <= maxBytes - encoded.count else { throw StorageError.queueSaturated }
                 try db.execute(sql: """
                     INSERT INTO captures (id, encoded, byte_count, captured_at, expires_at, retry_count, available_at, state, work_class)
@@ -533,7 +569,7 @@ public actor ProtectedStore {
                                       historicalAudit == nil ? 0 : 1])
                 if let workBytes {
                     try Self.insertWork(id: id, context: workBytes, recoveryOf: recoveryOf, recoveryChain: recoveryChainBytes,
-                        at: now, maximumBytes: limits.maxProtectedStateBytes, in: db)
+                        at: now, limits: limits, in: db)
                 }
                 try Self.pruneCompletedWork(in: db, retaining: limits.maxSuccessfulWorkRecords)
                 try injector?(.beforeEnqueueCommit)
@@ -549,6 +585,16 @@ public actor ProtectedStore {
         catch { throw StorageError.databaseUnavailable }
     }
 
+    /// Whether a queued capture is still waiting for its first attempt.
+    public func isAwaitingFirstAttempt(_ id: UUID) throws -> Bool {
+        do {
+            return try Self.read(database) { db in
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM captures WHERE id = ? AND state = 0 AND retry_count = 0",
+                                 arguments: [id.uuidString]) == 1
+            }
+        } catch { throw StorageError.databaseUnavailable }
+    }
+
     public func queueStatistics() throws -> StoreQueueStatistics {
         do {
             return try Self.read(database) { try Self.queueStatistics(in: $0) }
@@ -557,9 +603,9 @@ public actor ProtectedStore {
 
     private static func queueStatistics(in db: Database) throws -> StoreQueueStatistics {
         let count = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM captures") ?? 0
-        let bytes = try Int.fetchOne(db, sql: "SELECT COALESCE(SUM(byte_count), 0) FROM captures") ?? 0
+        let bytes = try Int.fetchOne(db, sql: HotQueries.queueBytes) ?? 0
         let claimed = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM captures WHERE state = 1") ?? 0
-        let historical = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM captures WHERE work_class = 1") ?? 0
+        let historical = try Int.fetchOne(db, sql: HotQueries.historicalCount) ?? 0
         return StoreQueueStatistics(count: count, encryptedBytes: bytes, claimedCount: claimed, historicalCount: historical)
     }
 
@@ -598,7 +644,8 @@ public actor ProtectedStore {
                 ("collection_health_incidents", ["id", "key_id", "created_at", "resolved_at", "delivery", "requires_assessment", "encoded"]),
                 ("collection_work", ["id", "state", "admitted_at", "updated_at", "attempted_at", "completed_at", "recovery_of", "omission_id", "retain_evidence", "encoded", "recovery_certificate", "recovery_chain"]),
                 ("successful_collection_reads", ["id", "succeeded_at", "encoded"]),
-                ("codex_hook_content_slots", ["id", "encoded"])
+                ("codex_hook_content_slots", ["id", "encoded"]),
+                ("ledger_parts", ["part", "encoded"]), ("ledger_buckets", ["bucket", "encoded"])
             ]
             let migrations = try String.fetchAll(db, sql: "SELECT identifier FROM grdb_migrations ORDER BY identifier LIMIT 17")
             guard migrations.count <= 16 else { throw StorageError.stateTooLarge }
@@ -636,6 +683,83 @@ public actor ProtectedStore {
         }
     }
 
+    /// Segment identities, write revisions and ciphertext digests of the persisted ledger, so a test
+    /// can tell which rows a write changed. It exports no plaintext, identity or value.
+    @_spi(Testing) public struct PersistedLedgerLayout: Equatable, Sendable {
+        public struct Segment: Equatable, Sendable {
+            public let id: String
+            public let writtenAtRevision: Int64
+            public let ciphertextDigest: String
+        }
+        public let format: Int
+        public let revision: Int64
+        public let segments: [Segment]
+    }
+
+    /// Plaintext sizes of the ledger's segments and counts of what it holds, never the content.
+    @_spi(Testing) public struct LedgerSizeBreakdown: Equatable, Sendable {
+        public let format: Int
+        public let totalBytes: Int
+        public let headerBytes: Int
+        public let partBytes: [Int]
+        public let bucketBytes: [Int]
+        public let sourceCount: Int
+        public let receiptCount: Int
+    }
+
+    @_spi(Testing) public func persistedLayoutForTesting() throws -> PersistedLedgerLayout {
+        guard !closed else { throw StorageError.databaseUnavailable }
+        func digest(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
+        guard let rows = try Self.readLedgerRows(database) else { throw StorageError.corruptProtectedState }
+        guard layout.isPartitioned else {
+            return PersistedLedgerLayout(format: 1, revision: rows.revision, segments: [
+                .init(id: "state", writtenAtRevision: rows.revision, ciphertextDigest: digest(rows.state))])
+        }
+        var segments = [PersistedLedgerLayout.Segment(id: "header", writtenAtRevision: layout.header.revision,
+                                                      ciphertextDigest: digest(rows.state))]
+        for part in LedgerPart.allCases {
+            segments.append(.init(id: "part-\(part.rawValue)", writtenAtRevision: layout.header.partRevisions[part.rawValue - 1],
+                                  ciphertextDigest: digest(rows.parts[part.rawValue] ?? Data())))
+        }
+        for bucket in 0..<LedgerLayout.bucketCount {
+            segments.append(.init(id: "bucket-\(String(format: "%02d", bucket))", writtenAtRevision: layout.header.bucketRevisions[bucket],
+                                  ciphertextDigest: digest(rows.buckets[bucket] ?? Data())))
+        }
+        return PersistedLedgerLayout(format: 2, revision: rows.revision, segments: segments)
+    }
+
+    @_spi(Testing) public func stateSizeBreakdownForTesting() throws -> LedgerSizeBreakdown {
+        guard !closed else { throw StorageError.databaseUnavailable }
+        let snapshot = ledger.snapshot
+        guard layout.isPartitioned else {
+            return LedgerSizeBreakdown(format: 1, totalBytes: try JSONEncoder().encode(snapshot).count, headerBytes: 0,
+                partBytes: [], bucketBytes: [], sourceCount: snapshot.sourceKinds.count, receiptCount: snapshot.analysisReceipts.count)
+        }
+        return LedgerSizeBreakdown(format: 2, totalBytes: layout.sizes.total, headerBytes: layout.sizes.header,
+            partBytes: layout.sizes.parts, bucketBytes: layout.sizes.buckets,
+            sourceCount: snapshot.sourceKinds.count, receiptCount: snapshot.analysisReceipts.count)
+    }
+
+    /// Makes the in-memory copy of one bucket entry disagree with the ledger while leaving every count
+    /// intact, as a missed journal entry would. Returns false when no source exists to damage.
+    @_spi(Testing) public func damageSourceMirrorForTesting() -> Bool {
+        guard layout.isPartitioned, let source = ledger.bookkeeping.kinds.keys.first,
+              var entry = layout.mirror.entries[source] else { return false }
+        entry.kind = ContentType.allCases.first { $0 != entry.kind } ?? entry.kind
+        layout.mirror.set(entry, for: source)
+        expectsMirrorRepair = true
+        return true
+    }
+
+    /// What a build before the partitioned ledger stores for `snapshot`: the whole snapshot under the
+    /// vault-wide ledger binding. Tests install it to simulate a vault that has not converted yet.
+    @_spi(Testing) public static func legacyLedgerRowForTesting(
+        _ snapshot: InventorySnapshot, cryptography: any BackgroundStoreCryptography
+    ) async throws -> Data {
+        try await cryptography.sealBackground(JSONEncoder().encode(snapshot),
+            binding: ledgerBinding(cryptography.manifest)).encoded()
+    }
+
     /// Age-limit maintenance also runs while paused. It opens each expiring capture in memory
     /// only to read its validated transport metadata, so the loss is attributed to its route.
     /// It never scans or retains event content, changes inventory, accepts a payload or creates
@@ -647,7 +771,7 @@ public actor ProtectedStore {
         let rows: [StoredCapture]
         do {
             rows = try Self.read(database) { db in
-                try Row.fetchAll(db, sql: "SELECT id, encoded, captured_at, expires_at, retry_count FROM captures WHERE expires_at <= ? ORDER BY expires_at LIMIT ?",
+                try Row.fetchAll(db, sql: HotQueries.expiringCaptures,
                                  arguments: [now.timeIntervalSince1970, limit]).map { row in
                     guard let id = UUID(uuidString: row["id"]), let count = UInt(exactly: row["retry_count"] as Int64) else {
                         throw StorageError.corruptProtectedState
@@ -721,35 +845,45 @@ public actor ProtectedStore {
     @discardableResult
     public func compactProcessedSources(at now: Date = Date()) async throws -> Bool {
         guard !closed else { throw StorageError.databaseUnavailable }
+        // The mirror is what the buckets hold. A full comparison finds drift that the per-write count
+        // check cannot; it is linear in the sources, and this pass is idle and runs hourly. A mismatch
+        // costs performance only: the next write rewrites every bucket from the ledger.
+        if layout.isPartitioned, !layout.mirror.matches(ledger.bookkeeping) {
+            assert(expectsMirrorRepair, "the bucket mirror disagrees with the ledger bookkeeping")
+            layout.rewriteAllBuckets = true
+        }
         let cutoff = now.addingTimeInterval(-HistoricalAuditContext.receiptHorizon)
         guard ledger.needsProcessedSourceCompaction(before: cutoff) else { return false }
         _ = try await mutateLedger { ledger in ledger.pruneProcessedSources(before: cutoff, stampingUntimedAt: now) }
         return true
     }
 
-    public func nextPending(at now: Date, permit: StoreProcessingPermit) async throws -> PendingCapture? {
+    /// Live captures come first. History gets a turn after four consecutive live claims, or when
+    /// the caller asks for it with `historyTurn`; either class is claimed when the other is empty.
+    public func nextPending(at now: Date, permit: StoreProcessingPermit,
+                            historyTurn: Bool? = nil) async throws -> PendingCapture? {
         try check(permit)
         try await expirePending(at: now, permit: permit)
         try check(permit)
         let claimID = UUID()
         let leaseEnd = now.addingTimeInterval(limits.claimDuration)
-        let priority = consecutiveLiveClaims >= 4 ? "DESC" : "ASC"
+        let historyFirst = historyTurn ?? (consecutiveLiveClaims >= 4)
         var claimedHistory = false
         do {
             let stored = try Self.write(database) { db -> StoredCapture? in
-                try db.execute(sql: "UPDATE captures SET state = 0, claim_id = NULL, lease_until = NULL WHERE state = 1 AND lease_until <= ?",
-                               arguments: [now.timeIntervalSince1970])
-                try db.execute(sql: "UPDATE collection_work SET state = ? WHERE state = ? AND id IN (SELECT id FROM captures WHERE state = 0)",
+                try db.execute(sql: HotQueries.releaseExpiredClaims, arguments: [now.timeIntervalSince1970])
+                try db.execute(sql: HotQueries.requeueReleasedWork,
                     arguments: [CollectionWorkState.queued.rawValue, CollectionWorkState.processing.rawValue])
-                guard let row = try Row.fetchOne(db, sql: """
-                    SELECT id, encoded, captured_at, expires_at, retry_count, work_class FROM captures
-                    WHERE state = 0 AND available_at <= ? AND expires_at > ?
-                    ORDER BY work_class \(priority), captured_at, id LIMIT 1
-                    """, arguments: [now.timeIntervalSince1970, now.timeIntervalSince1970]) else { return nil }
+                var claimed: Row?
+                for workClass in historyFirst ? [1, 0] : [0, 1] {
+                    claimed = try Row.fetchOne(db, sql: HotQueries.nextCapture,
+                        arguments: [workClass, now.timeIntervalSince1970, now.timeIntervalSince1970])
+                    if claimed != nil { claimedHistory = workClass == 1; break }
+                }
+                guard let row = claimed else { return nil }
                 guard let id = UUID(uuidString: row["id"]), let retryCount = UInt(exactly: row["retry_count"] as Int64) else {
                     throw StorageError.corruptProtectedState
                 }
-                claimedHistory = row["work_class"] as Int == 1
                 try db.execute(sql: "UPDATE captures SET state = 1, claim_id = ?, lease_until = ? WHERE id = ?",
                                arguments: [claimID.uuidString, leaseEnd.timeIntervalSince1970, id.uuidString])
                 try Self.updateWork(id: id, state: .processing, at: now, in: db)
@@ -761,7 +895,8 @@ public actor ProtectedStore {
             let payload = try Self.decode(stored.encoded)
             guard payload.binding == Self.captureBinding(stored.id) else { throw StorageError.invalidPayload }
             return PendingCapture(id: stored.id, claimID: claimID, capturedAt: stored.capturedAt,
-                                  expiresAt: stored.expiresAt, retryCount: stored.retryCount, encryptedPayload: payload)
+                                  expiresAt: stored.expiresAt, retryCount: stored.retryCount, encryptedPayload: payload,
+                                  isHistorical: claimedHistory)
         } catch let error as StorageError { throw error }
         catch { throw StorageError.databaseUnavailable }
     }
@@ -797,20 +932,25 @@ public actor ProtectedStore {
         catch { throw StorageError.databaseUnavailable }
     }
 
+    /// A `progressed` attempt ran out of time after committing new sources. It is queued again at
+    /// once without using up a retry, so a long pass finishes; an attempt that adds nothing counts.
+    /// `diagnosticCode` explains a dropped capture's loss when its reason's default would not.
     public func retry(
-        _ capture: PendingCapture, reason: CoverageGapReason, at now: Date,
-        permit: StoreProcessingPermit
+        _ capture: PendingCapture, reason: CoverageGapReason, diagnosticCode: CoverageDiagnosticCode? = nil,
+        at now: Date, permit: StoreProcessingPermit, progressed: Bool = false
     ) async throws {
         try check(permit)
         guard now.timeIntervalSince1970.isFinite else { throw StorageError.invalidTime }
-        let count = capture.retryCount + 1
+        let count = progressed ? capture.retryCount : capture.retryCount + 1
         let shouldDrop = count > limits.maxRetryCount || capture.expiresAt <= now
         let opened = try? await openCapturedWork(capture)
         let attempted = try await prepareFailedHistoricalAttempt(opened: opened, continuing: !shouldDrop, at: now)
         let loss: PreparedCoverageSettlement?
         if shouldDrop {
+            let expired = capture.expiresAt <= now
             loss = try await prepareCaptureLoss(id: capture.id, body: opened?.body,
-                capturedAt: capture.capturedAt, reason: capture.expiresAt <= now ? .queueExpired : reason,
+                capturedAt: capture.capturedAt, reason: expired ? .queueExpired : reason,
+                diagnosticCode: expired ? nil : diagnosticCode,
                 at: now, audit: opened?.historicalAudit, context: try await collectionWork(id: capture.id)?.context)
         } else { loss = nil }
         try check(permit)
@@ -823,12 +963,13 @@ public actor ProtectedStore {
                         ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at, encoded = excluded.encoded
                         """, arguments: [attempted.id.uuidString, now.timeIntervalSince1970, attempted.bytes])
                 }
-                try Self.updateWork(id: capture.id, state: shouldDrop ? .terminal : .stalled, at: now, in: db)
+                try Self.updateWork(id: capture.id, state: shouldDrop ? .terminal : progressed ? .queued : .stalled,
+                                    at: now, in: db)
                 if shouldDrop {
                     try Self.consumeCapture(capture.id, in: db)
                     if let loss { try Self.writeCoverageSettlement(loss, at: now, maximumBytes: limits.maxProtectedStateBytes, in: db) }
                 } else {
-                    let delay = min(60.0, pow(2.0, Double(min(count, 6))))
+                    let delay = progressed ? 0 : min(60.0, pow(2.0, Double(min(count, 6))))
                     try db.execute(sql: """
                         UPDATE captures SET state = 0, claim_id = NULL, lease_until = NULL,
                         retry_count = ?, available_at = ? WHERE id = ?
@@ -848,7 +989,7 @@ public actor ProtectedStore {
         let expectedRevision = revision
         var next = ledger
         let transition = try next.ingest(analysis)
-        let encodedState = try await sealSnapshot(next.snapshot)
+        let sealedLedger = try await sealLedger(committed: ledger, next: &next, revision: expectedRevision + 1)
         let checkpointPayload: ProtectedPayload?
         if let checkpoint {
             do {
@@ -859,8 +1000,10 @@ public actor ProtectedStore {
         } else { checkpointPayload = nil }
         try check(permit)
         guard revision == expectedRevision else { throw StorageError.stateChanged }
-        let required = try Self.requiredPayloads(in: next.snapshot)
-        let inserts = try checkedPayloads(payloads, required: required)
+        // Only the core holds payload references, and payload rows are deleted only by a write that
+        // changes the core, so a commit that leaves the core alone has nothing to insert or confirm.
+        let required = sealedLedger.coreChanged ? try Self.requiredPayloads(in: next.snapshot) : [:]
+        let inserts = sealedLedger.coreChanged ? try checkedPayloads(payloads, required: required) : []
         let injector = failureInjector
         let nextSnapshot = next.snapshot
         let linkedIDs = Set(analysis.detections.compactMap { nextSnapshot.records[$0.fingerprint]?.id })
@@ -871,7 +1014,7 @@ public actor ProtectedStore {
                 if let capture { try Self.checkClaim(capture, in: db, at: now) }
                 if let linkedCapture { try Self.checkClaim(linkedCapture, in: db, at: now) }
                 try Self.insertPayloads(inserts, required: required, in: db)
-                try Self.writeState(encodedState, snapshot: nextSnapshot, revision: expectedRevision + 1, in: db)
+                try Self.writeLedger(sealedLedger, snapshot: nextSnapshot, revision: expectedRevision + 1, in: db)
                 if let linkedCapture {
                     // Newly created values and their pending raw capture become related atomically.
                     // A deletion immediately after commit can purge this multi-record retry too.
@@ -888,9 +1031,11 @@ public actor ProtectedStore {
                 try injector?(.beforeProcessingCommit)
             }
             ledger = next
+            adopt(sealedLedger)
             revision = expectedRevision + 1
             try Self.restrictFileModes(in: directory)
             try injector?(.afterProcessingCommit)
+            try await verifyPersistedLedger()
             return transition
         } catch let error as StorageError { throw error }
         catch { throw StorageError.databaseUnavailable }
@@ -905,6 +1050,23 @@ public actor ProtectedStore {
                 try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM protected_payloads") ?? 0
             }
         } catch { throw StorageError.databaseUnavailable }
+    }
+
+    /// How many times each statement the vault connection keeps prepared has run, by its SQL.
+    /// A statement parsed again for every use is finalized after it runs and is not listed.
+    @_spi(Testing) public func preparedStatementRunsForTesting() throws -> [String: Int] {
+        guard !closed else { throw StorageError.databaseUnavailable }
+        return try Self.read(database) { db in
+            var runs: [String: Int] = [:]
+            var statement = sqlite3_next_stmt(db.sqliteConnection, nil)
+            while let current = statement {
+                if let sql = sqlite3_sql(current) {
+                    runs[String(cString: sql), default: 0] += Int(sqlite3_stmt_status(current, SQLITE_STMTSTATUS_RUN, 0))
+                }
+                statement = sqlite3_next_stmt(db.sqliteConnection, current)
+            }
+            return runs
+        }
     }
 
     public func payload(_ reference: ProtectedPayloadReference) throws -> ProtectedPayload? {
@@ -1061,7 +1223,7 @@ public actor ProtectedStore {
                     """, arguments: [id.uuidString, encoded])
             }
             if let next = nextCapture {
-                let bytes = try Int.fetchOne(db, sql: "SELECT COALESCE(SUM(byte_count), 0) FROM captures WHERE id != ?",
+                let bytes = try Int.fetchOne(db, sql: HotQueries.queueBytesExcluding,
                                             arguments: [capture.id.uuidString]) ?? 0
                 guard next.bytes.count <= limits.maxQueueBytes,
                       bytes <= limits.maxQueueBytes - next.bytes.count else { throw StorageError.queueSaturated }
@@ -1073,7 +1235,7 @@ public actor ProtectedStore {
             }
             if let next = nextCapture, let nextWorkBytes {
                 try Self.insertWork(id: next.id, context: nextWorkBytes, recoveryOf: priorRecoveryID, recoveryChain: nextRecoveryChainBytes,
-                    at: now, maximumBytes: limits.maxProtectedStateBytes, in: db)
+                    at: now, limits: limits, in: db)
             }
             if let read = successfulReadPayload {
                 try db.execute(sql: """
@@ -1097,8 +1259,8 @@ public actor ProtectedStore {
                 }
                 try db.execute(sql: "UPDATE collection_work SET recovery_certificate = ? WHERE id = ?",
                     arguments: [bytes, capture.id.uuidString])
-                guard try Int.fetchOne(db, sql: "SELECT COALESCE(SUM(length(encoded) + COALESCE(length(recovery_certificate), 0) + COALESCE(length(recovery_chain), 0)), 0) FROM collection_work") ?? 0
-                    <= limits.maxProtectedStateBytes else { throw StorageError.stateTooLarge }
+                guard try Int.fetchOne(db, sql: HotQueries.workBytes) ?? 0
+                    <= limits.maxProtectedStateBytes else { throw StorageError.capacityExceeded(.collectionWork) }
             }
             if let priorRecoveryID, recoveryWindowCovered {
                 try Self.updateWork(id: priorRecoveryID, state: .recovered, at: now, in: db)
@@ -1117,6 +1279,10 @@ public actor ProtectedStore {
             try Self.writeCoverageSettlement(coverage, at: now, maximumBytes: limits.maxProtectedStateBytes, in: db)
             try Self.consumeCapture(capture.id, in: db)
             try Self.pruneCompletedWork(in: db, retaining: limits.maxSuccessfulWorkRecords)
+            // Evidence grows only here: a gap on this capture, or a recovered target leaving terminal.
+            if !coverage.workWithGapEvidence.isEmpty || (priorRecoveryID != nil && recoveryWindowCovered) {
+                try Self.trimEvidenceWork(in: db, bound: limits.maxEvidenceWorkRecords)
+            }
             try injector?(.beforeProcessingCommit)
         }
         try injector?(.afterProcessingCommit)
@@ -1149,11 +1315,15 @@ public actor ProtectedStore {
             SELECT COUNT(*) AS count, COALESCE(SUM(length(encoded)), 0) AS bytes FROM codex_hook_content_slots
             """)
         guard let authorities, let slots else { throw StorageError.databaseUnavailable }
+        let workCount = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM collection_work") ?? 0
+        let workBytes = try Int.fetchOne(db, sql: HotQueries.workBytes) ?? 0
         return .init(
             sourceAuthorities: .init(count: authorities["count"], encryptedBytes: authorities["bytes"],
                 countLimit: limits.maxSourceAuthorities, encryptedBytesLimit: limits.maxProtectedStateBytes),
             codexHookContentSlots: .init(count: slots["count"], encryptedBytes: slots["bytes"],
-                countLimit: limits.maxHookContentSlots, encryptedBytesLimit: limits.maxProtectedStateBytes))
+                countLimit: limits.maxHookContentSlots, encryptedBytesLimit: limits.maxProtectedStateBytes),
+            collectionWork: .init(count: workCount, encryptedBytes: workBytes,
+                countLimit: .max, encryptedBytesLimit: limits.maxProtectedStateBytes))
     }
 
     public func selectAuthority(_ choice: CollectionAuthorityChoice, permit: StoreProcessingPermit) async throws {
@@ -1375,27 +1545,42 @@ public actor ProtectedStore {
     }
 
     private static func insertWork(id: UUID, context: Data, recoveryOf: UUID?, recoveryChain: Data? = nil, at now: Date,
-                                   maximumBytes: Int, in db: Database) throws {
+                                   limits: StoreLimits, in db: Database) throws {
         try db.execute(sql: """
             INSERT INTO collection_work (id, state, admitted_at, updated_at, recovery_of, encoded, recovery_chain)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """, arguments: [id.uuidString, CollectionWorkState.queued.rawValue, now.timeIntervalSince1970,
                 now.timeIntervalSince1970, recoveryOf?.uuidString, context, recoveryChain])
-        guard try Int.fetchOne(db, sql: "SELECT COALESCE(SUM(length(encoded) + COALESCE(length(recovery_certificate), 0) + COALESCE(length(recovery_chain), 0)), 0) FROM collection_work") ?? 0 <= maximumBytes else {
-            throw StorageError.stateTooLarge
+        if try Int.fetchOne(db, sql: HotQueries.workBytes) ?? 0 > limits.maxProtectedStateBytes {
+            // Kept evidence is presentation only; collection stopping is worse than losing the
+            // oldest of it. Shed half, then all, before refusing the new work.
+            for keeping in [limits.maxEvidenceWorkRecords / 2, 0] {
+                try pruneEvidenceWork(in: db, keeping: keeping)
+                if try Int.fetchOne(db, sql: HotQueries.workBytes) ?? 0 <= limits.maxProtectedStateBytes { return }
+            }
+            // Only unfinished work and recent completions remain. Name the full ledger so the
+            // refusal is not reported as a generic rejection.
+            throw StorageError.capacityExceeded(.collectionWork)
         }
     }
 
     /// Completed polls have no unresolved work to retry. Keep a bounded recent receipt set,
     /// while retaining exact work referenced by gap evidence and the separate latest-read rows.
     private static func pruneCompletedWork(in db: Database, retaining count: Int) throws {
-        try db.execute(sql: """
-            DELETE FROM collection_work WHERE id IN (
-                SELECT id FROM collection_work WHERE state IN (?, ?) AND retain_evidence = 0
-                AND NOT (recovery_certificate IS NOT NULL AND recovery_of IN
-                    (SELECT id FROM collection_work WHERE state = 'terminal'))
-                ORDER BY updated_at DESC, id LIMIT -1 OFFSET ?)
-            """, arguments: [CollectionWorkState.completed.rawValue, CollectionWorkState.recovered.rawValue, count])
+        try db.execute(sql: HotQueries.pruneCompletedWork, arguments: [count])
+    }
+
+    /// Completed work kept as gap evidence has its own bound, newest first, so a catch-up that
+    /// records a gap on nearly every capture cannot fill the ledger. Trimming sorts the retained
+    /// rows, so it runs only once the bound is exceeded and then goes below it by an eighth,
+    /// which keeps a steady stream of evidence from sorting on every capture.
+    private static func trimEvidenceWork(in db: Database, bound: Int) throws {
+        guard try Int.fetchOne(db, sql: HotQueries.evidenceWorkCount) ?? 0 > bound else { return }
+        try pruneEvidenceWork(in: db, keeping: bound - bound / 8)
+    }
+
+    private static func pruneEvidenceWork(in db: Database, keeping count: Int) throws {
+        try db.execute(sql: Maintenance.pruneEvidenceWork, arguments: [count])
     }
 
     private static func updateWork(id: UUID, state: CollectionWorkState, at now: Date, in db: Database) throws {
@@ -1540,14 +1725,17 @@ public actor ProtectedStore {
         return chain
     }
 
-    private static func workRows(in db: Database, from: Double, through: Double,
-                                 limit: Int) throws -> (rows: [Row], count: Int) {
+    static func workRows(in db: Database, from: Double, through: Double,
+                         limit: Int) throws -> (rows: [Row], count: Int) {
         let count = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM collection_work WHERE updated_at >= ? AND updated_at <= ?",
             arguments: [from, through]) ?? 0
-        let rows = try Row.fetchAll(db, sql: """
-            SELECT * FROM collection_work WHERE updated_at >= ? AND updated_at <= ?
-            ORDER BY (state IN ('queued', 'processing', 'stalled')) DESC, updated_at DESC, id LIMIT ?
-            """, arguments: [from, through, limit])
+        // Unfinished work first, then the newest settled rows to fill the page; the same order
+        // as sorting the whole window, without reading it.
+        var rows = try Row.fetchAll(db, sql: HotQueries.activeWork, arguments: [from, through, limit])
+        if rows.count < limit {
+            rows += try Row.fetchAll(db, sql: HotQueries.settledWork,
+                arguments: [from, through, limit - rows.count])
+        }
         return (rows, count)
     }
 
@@ -1557,8 +1745,13 @@ public actor ProtectedStore {
             guard let id = UUID(uuidString: row["id"]), let state = CollectionWorkState(rawValue: row["state"]) else {
                 throw StorageError.corruptProtectedState
             }
-            let bytes = try await cryptography.openBackground(Self.decode(row["encoded"]), binding: Self.checkpointBinding(id))
-            let context = try JSONDecoder().decode(CollectionWorkContext.self, from: bytes)
+            let encoded: Data = row["encoded"]
+            let context: CollectionWorkContext
+            if let kept = openedWorkContexts.value(for: id, encoded: encoded) { context = kept } else {
+                let bytes = try await cryptography.openBackground(Self.decode(encoded), binding: Self.checkpointBinding(id))
+                context = try JSONDecoder().decode(CollectionWorkContext.self, from: bytes)
+                if !closed { openedWorkContexts.keep(context, for: id, encoded: encoded) }
+            }
             let attempted: Double? = row["attempted_at"], completed: Double? = row["completed_at"]
             let omission: String? = row["omission_id"]
             let recoveryString: String? = row["recovery_of"]
@@ -1752,17 +1945,25 @@ public actor ProtectedStore {
         for row in rows {
             do {
                 guard let id = UUID(uuidString: row["id"]) else { throw StorageError.corruptProtectedState }
-                let payload = try Self.decode(row["encoded"])
-                let bytes = try await cryptography.openBackground(payload, binding: Self.checkpointBinding(id))
+                let encoded: Data = row["encoded"]
+                let opened: OpenedGapEvent
+                if let kept = openedGapEvents.value(for: id, encoded: encoded) { opened = kept } else {
+                    let bytes = try await cryptography.openBackground(Self.decode(encoded), binding: Self.checkpointBinding(id))
+                    if let event = try? JSONDecoder().decode(StoredCoverageGapEvent.self, from: bytes) {
+                        opened = .event(event)
+                    } else {
+                        opened = .legacy(try JSONDecoder().decode(CoverageGap.self, from: bytes))
+                    }
+                    if !closed { openedGapEvents.keep(opened, for: id, encoded: encoded) }
+                }
                 let observed = Date(timeIntervalSince1970: row["created_at"])
-                if let event = try? JSONDecoder().decode(StoredCoverageGapEvent.self, from: bytes) {
+                switch opened {
+                case .event(let event):
                     guard event.id == id, abs(event.observedAt.timeIntervalSince(observed)) < 0.001 else {
                         throw StorageError.corruptProtectedState
                     }
                     events.append(event)
-                } else {
-                    // Schema 1–3 stored the gap without its encrypted event envelope.
-                    let gap = try JSONDecoder().decode(CoverageGap.self, from: bytes)
+                case .legacy(let gap):
                     events.append(StoredCoverageGapEvent(id: id, gap: gap, observedAt: observed))
                 }
             } catch let error as StorageError { throw error }
@@ -1815,19 +2016,41 @@ public actor ProtectedStore {
         return try await decodeCoverageOmissions(rows: rows, count: count)
     }
 
-    private static func coverageOmissionRows(in db: Database, from: Double, through: Double, limit: Int,
-                                             includeRecovered: Bool) throws -> (rows: [Row], count: Int) {
-        let count = try Int.fetchOne(db, sql: """
-            SELECT COUNT(*) FROM coverage_omissions WHERE COALESCE(content_at, created_at) >= ?
-            AND COALESCE(content_at, created_at) <= ? AND (? OR state != ?)
-            """, arguments: [from, through, includeRecovered, CoverageOmissionState.recovered.rawValue]) ?? 0
-        let rows = try Row.fetchAll(db, sql: """
-            SELECT id, encoded, state, resolved_at FROM coverage_omissions
-            WHERE COALESCE(content_at, created_at) >= ? AND COALESCE(content_at, created_at) <= ?
-                AND (? OR state != ?)
-            ORDER BY (state = ?) ASC, created_at DESC, id LIMIT ?
-            """, arguments: [from, through, includeRecovered, CoverageOmissionState.recovered.rawValue,
-                CoverageOmissionState.recovered.rawValue, limit])
+    /// The page is unresolved omissions first, then recovered, each newest first. Each state is
+    /// walked through `coverage_omissions_report`, which holds the order and the window columns, so
+    /// only the keys of the page are read before its encrypted rows are fetched by id.
+    static func coverageOmissionRows(in db: Database, from: Double, through: Double, limit: Int,
+                                     includeRecovered: Bool) throws -> (rows: [Row], count: Int) {
+        typealias Key = (id: String, createdAt: Double)
+        func keys(_ state: CoverageOmissionState, limit: Int) throws -> [Key] {
+            try Row.fetchAll(db, sql: HotQueries.omissionKeys, arguments: [state.rawValue, from, through, limit])
+                .map { ($0["id"], $0["created_at"]) }
+        }
+        // Every state but recovered, so a state added later is listed first as well. A row whose state
+        // is no case at all is not listed; before, it failed the whole report as corrupt.
+        let unresolved = CoverageOmissionState.allCases.filter { $0 != .recovered }
+        let states = includeRecovered ? unresolved + [.recovered] : unresolved
+        var count = 0
+        for state in states {
+            count += try Int.fetchOne(db, sql: HotQueries.omissionCount, arguments: [state.rawValue, from, through]) ?? 0
+        }
+        // Merging the states' first `limit` keys sorts at most three pages, never the window. The
+        // id tie-break is a byte comparison, as it is in SQLite.
+        var chosen = try unresolved.flatMap { try keys($0, limit: limit) }.sorted {
+            $0.createdAt != $1.createdAt ? $0.createdAt > $1.createdAt : $0.id.utf8.lexicographicallyPrecedes($1.id.utf8)
+        }
+        chosen = Array(chosen.prefix(limit))
+        if includeRecovered, chosen.count < limit {
+            chosen += try keys(.recovered, limit: limit - chosen.count)
+        }
+        var rows: [Row] = []
+        rows.reserveCapacity(chosen.count)
+        for key in chosen {
+            guard let row = try Row.fetchOne(db.cachedStatement(sql: HotQueries.omissionRow), arguments: [key.id]) else {
+                throw StorageError.corruptProtectedState
+            }
+            rows.append(row)
+        }
         return (rows, count)
     }
 
@@ -1836,9 +2059,14 @@ public actor ProtectedStore {
         for row in rows {
             guard let id = UUID(uuidString: row["id"]),
                   let state = CoverageOmissionState(rawValue: row["state"]) else { throw StorageError.corruptProtectedState }
-            let plaintext = try await cryptography.openBackground(Self.decode(row["encoded"]), binding: Self.checkpointBinding(id))
-            let stored = try JSONDecoder().decode(CoverageOmission.self, from: plaintext)
-            guard stored.id == id else { throw StorageError.corruptProtectedState }
+            let encoded: Data = row["encoded"]
+            let stored: CoverageOmission
+            if let kept = openedOmissions.value(for: id, encoded: encoded) { stored = kept } else {
+                let plaintext = try await cryptography.openBackground(Self.decode(encoded), binding: Self.checkpointBinding(id))
+                stored = try JSONDecoder().decode(CoverageOmission.self, from: plaintext)
+                guard stored.id == id else { throw StorageError.corruptProtectedState }
+                if !closed { openedOmissions.keep(stored, for: id, encoded: encoded) }
+            }
             let resolved: Double? = row["resolved_at"]
             result.append(CoverageOmission(id: id, gap: stored.gap, firstObservedAt: stored.firstObservedAt,
                 state: state, resolvedAt: resolved.map(Date.init(timeIntervalSince1970:))))
@@ -1847,9 +2075,35 @@ public actor ProtectedStore {
     }
 
     /// The UI and every bounded diagnostic query share the same seven calendar days.
+    @_spi(Testing) public private(set) var coverageReportBuilds = 0
+    /// The last report built for the app's refresh, with the connection's write count and time then.
+    private var recentReport: (report: CoverageReport, writes: Int, builtAt: Date)?
+
+    /// A report for the app's frequent refresh. Building one decrypts up to a few thousand rows,
+    /// so while nothing has been written it reuses the last one for up to `maximumAge`; that
+    /// report's window ends when it was built. Every write goes through this store's one
+    /// connection, whose count of written rows tells whether anything changed. While captures
+    /// are processed something is written almost every second, so a caller that can tolerate
+    /// a lagging report also passes a `minimumInterval`: a report built more recently than that
+    /// is reused despite writes. Exports and other callers use `coverageReport`, which is always fresh.
+    public func recentCoverageReport(at now: Date = Date(), maximumAge: TimeInterval = 60,
+                                     minimumInterval: TimeInterval = 0) async throws -> CoverageReport {
+        guard !closed else { throw StorageError.databaseUnavailable }
+        let writes: Int
+        do { writes = try Self.read(database) { $0.totalChangesCount } }
+        catch { throw StorageError.databaseUnavailable }
+        if let recent = recentReport, now >= recent.builtAt, now.timeIntervalSince(recent.builtAt) < maximumAge,
+           recent.writes == writes || now.timeIntervalSince(recent.builtAt) < minimumInterval { return recent.report }
+        // A write while this report decrypts raises the count again, so the next refresh rebuilds.
+        let report = try await coverageReport(endingAt: now)
+        recentReport = (report, writes, now)
+        return report
+    }
+
     public func coverageReport(endingAt requestedEnd: Date? = nil, limit: Int = 1000,
                                calendar: Calendar = .current) async throws -> CoverageReport {
         guard !closed else { throw StorageError.databaseUnavailable }
+        coverageReportBuilds += 1
         guard limit > 0, limit <= 10_000 else { throw StorageError.invalidPayload }
         let now = requestedEnd ?? Date()
         guard now.timeIntervalSince1970.isFinite else { throw StorageError.invalidTime }
@@ -1913,12 +2167,10 @@ public actor ProtectedStore {
     public func expireCoverageRecovery(at now: Date = Date()) throws -> Int {
         guard !closed, now.timeIntervalSince1970.isFinite else { throw StorageError.invalidTime }
         return try Self.write(database) { db in
-            try db.execute(sql: """
-                UPDATE coverage_omissions SET state = ?
-                WHERE COALESCE(content_at, created_at) < ? AND state IN (?, ?)
-                """, arguments: [CoverageOmissionState.unrecoverable.rawValue,
-                    now.addingTimeInterval(-HistoricalAuditContext.lookback).timeIntervalSince1970,
-                    CoverageOmissionState.retryable.rawValue, CoverageOmissionState.blocked.rawValue])
+            try db.execute(sql: HotQueries.expireRecoverableOmissions, arguments: [
+                CoverageOmissionState.unrecoverable.rawValue,
+                now.addingTimeInterval(-HistoricalAuditContext.lookback).timeIntervalSince1970,
+                CoverageOmissionState.retryable.rawValue, CoverageOmissionState.blocked.rawValue])
             let expired = db.changesCount
             _ = try Self.resolveHealthIncidents(where: """
                 requires_assessment = 0
@@ -1986,14 +2238,31 @@ public actor ProtectedStore {
             resolvedAt: resolved.map(Date.init(timeIntervalSince1970:)), delivery: delivery)
     }
 
+    /// Per-appearance review predates value decisions. The app no longer offers it; acceptance
+    /// fixtures still use it to build vaults as an older build would have left them.
     public func review(_ occurrenceID: UUID, as state: OccurrenceReview) async throws {
         _ = try await mutateLedger { try $0.review(occurrenceID, as: state) }
+    }
+
+    public func decide(_ fingerprint: ValueFingerprint, as decision: ValueDecision?, at time: Date) async throws {
+        _ = try await mutateLedger { try $0.decide(fingerprint, as: decision, at: time) }
+    }
+
+    public func decide(unlocated resultID: UUID, as decision: ValueDecision?, at time: Date) async throws {
+        _ = try await mutateLedger { try $0.decide(unlocated: resultID, as: decision, at: time) }
     }
 
     public func acknowledgeObsolete(
         _ fingerprint: ValueFingerprint, as acknowledgement: ObsoleteAcknowledgement, at time: Date
     ) async throws {
         _ = try await mutateLedger { try $0.acknowledgeObsolete(fingerprint, as: acknowledgement, at: time) }
+    }
+
+    /// Applies the changes in order as one write: all of them, or none if one fails.
+    public func apply(_ changes: [InventoryDecisionChange], at time: Date) async throws {
+        _ = try await mutateLedger { ledger in
+            for change in changes { try ledger.apply(change, at: time) }
+        }
     }
 
     public func forgetObsoleteMarker(_ fingerprint: ValueFingerprint) async throws {
@@ -2016,7 +2285,7 @@ public actor ProtectedStore {
         let expectedRevision = revision
         var next = ledger
         let result = try mutation(&next)
-        let encodedState = try await sealSnapshot(next.snapshot)
+        let sealedLedger = try await sealLedger(committed: ledger, next: &next, revision: expectedRevision + 1)
         let snapshot = next.snapshot
         let plan = result as? ContentRemovalPlan
         let removalTime = Date()
@@ -2034,7 +2303,7 @@ public actor ProtectedStore {
                         throw StorageError.stateChanged
                     }
                 }
-                try Self.writeState(encodedState, snapshot: snapshot, revision: expectedRevision + 1, in: db)
+                try Self.writeLedger(sealedLedger, snapshot: snapshot, revision: expectedRevision + 1, in: db)
                 if let plan {
                     for reference in plan.payloadReferences {
                         try db.execute(sql: "DELETE FROM protected_payloads WHERE reference_id = ?", arguments: [reference.id.uuidString])
@@ -2061,8 +2330,10 @@ public actor ProtectedStore {
                 }
             }
             ledger = next
+            adopt(sealedLedger)
             revision = expectedRevision + 1
             if removal { generation = UUID() }
+            try await verifyPersistedLedger()
             return result
         } catch let error as StorageError { throw error }
         catch { throw StorageError.databaseUnavailable }
@@ -2074,13 +2345,45 @@ public actor ProtectedStore {
         guard generation == permit.generation else { throw StorageError.staleProcessingPermit }
     }
 
-    private func sealSnapshot(_ snapshot: InventorySnapshot) async throws -> Data {
-        let bytes = try JSONEncoder().encode(snapshot)
-        guard bytes.count <= limits.maxProtectedStateBytes else { throw StorageError.stateTooLarge }
-        do {
-            return try await cryptography.sealBackground(bytes, binding: Self.ledgerBinding(manifest)).encoded()
-        } catch { throw StorageError.protectionUnavailable }
+    /// Takes the layout a successful write leaves behind. A repair that compaction asked for while that
+    /// write was sealing still applies, unless the write already rewrote every bucket.
+    private func adopt(_ sealed: SealedLedgerWrite) {
+        let repairPending = layout.rewriteAllBuckets && sealed.buckets.count < LedgerLayout.bucketCount
+        layout = sealed.layout
+        if repairPending { layout.rewriteAllBuckets = true }
     }
+
+    /// Plans which ledger segments `next` changes and seals only those. A conversion from version 1
+    /// proves, before anything is written, that the sealed rows read back as exactly `next`.
+    private func sealLedger(committed: InventoryLedger, next: inout InventoryLedger, revision: Int64) async throws -> SealedLedgerWrite {
+        let plan = try layout.plan(committed: committed, next: &next, revision: revision, maximumBytes: limits.maxProtectedStateBytes)
+        assert(!plan.repairedMirror || expectsMirrorRepair, "a ledger bookkeeping change was not journaled")
+        let sealed = try await Self.seal(plan, manifest: manifest, cryptography: cryptography)
+        if plan.isConversion {
+            let read = try await Self.readSegments(sealed.rows(revision: revision), manifest: manifest, cryptography: cryptography, limits: limits)
+            guard read.snapshot.matches(next.snapshot), read.layout.header == plan.layout.header else {
+                throw StorageError.corruptProtectedState
+            }
+        }
+        return sealed
+    }
+
+    /// Debug builds with SPILLCHECK_VERIFY_LEDGER_LAYOUT=1 read the rows back after every write and
+    /// require them to reproduce the in-memory ledger and layout. The environment variable is set for
+    /// tests and CI, never for the application.
+    private func verifyPersistedLedger() async throws {
+        #if DEBUG
+        guard Self.verifiesLedgerLayout, !closed, let rows = try Self.readLedgerRows(database) else { return }
+        let read = try await Self.readSegments(rows, manifest: manifest, cryptography: cryptography, limits: limits)
+        guard rows.revision == revision, read.snapshot.matches(ledger.snapshot), read.layout.header == layout.header,
+              read.layout.sizes == layout.sizes, read.layout.mirror.matches(ledger.bookkeeping),
+              layout.mirror.matches(ledger.bookkeeping) else { throw StorageError.corruptProtectedState }
+        #endif
+    }
+
+    #if DEBUG
+    private static let verifiesLedgerLayout = ProcessInfo.processInfo.environment["SPILLCHECK_VERIFY_LEDGER_LAYOUT"] == "1"
+    #endif
 
     private func checkedPayloads(
         _ payloads: [ProtectedPayload], required: [ProtectedPayloadReference: ProtectedPayloadKind]
@@ -2103,13 +2406,13 @@ public actor ProtectedStore {
     }
 
     private func prepareCaptureLoss(id captureID: UUID, body: Data?, capturedAt: Date,
-                                    reason: CoverageGapReason, at now: Date,
+                                    reason: CoverageGapReason, diagnosticCode: CoverageDiagnosticCode? = nil, at now: Date,
                                     audit: HistoricalAuditContext? = nil, context: CollectionWorkContext? = nil) async throws -> PreparedCoverageSettlement {
         let metadata = body.flatMap { try? CapturePacket(body: $0).metadata }
         // Without persisted route authority we cannot infer the path from the provider.
         let scope = context?.scope
         let gap = CoverageGap(reason: reason, interval: context?.auditWindow ?? audit.map { DateInterval(start: $0.start, end: $0.end) }, scope: scope, operation: context?.operation,
-            diagnosticCode: reason.defaultDiagnosticCode, observedAt: now)
+            diagnosticCode: diagnosticCode ?? reason.defaultDiagnosticCode, observedAt: now)
         let id = try await captureLossID(captureID)
         // The queue copy ending says nothing about retention of the original source.
         let state: CoverageOmissionState = context?.retry == nil ? .blocked : .retryable
@@ -2424,12 +2727,7 @@ public actor ProtectedStore {
     private static func metadataRecoveryRows(locationID: UUID, at now: Date, limit: Int = 256,
                                              in db: Database) throws -> [MetadataRecoveryRow] {
         guard (1...256).contains(limit) else { throw StorageError.invalidPayload }
-        let rows = try Row.fetchAll(db, sql: """
-            SELECT id, location_id, encoded, state, created_at, content_at, incident_key, resolved_at
-            FROM coverage_omissions WHERE location_id = ? AND state IN (?, ?)
-                AND COALESCE(content_at, created_at) >= ? AND COALESCE(content_at, created_at) <= ?
-            ORDER BY id LIMIT ?
-            """, arguments: [locationID.uuidString, CoverageOmissionState.blocked.rawValue,
+        let rows = try Row.fetchAll(db.cachedStatement(sql: HotQueries.recoverableOmissionsAtLocation), arguments: [locationID.uuidString, CoverageOmissionState.blocked.rawValue,
                 CoverageOmissionState.retryable.rawValue,
                 now.addingTimeInterval(-HistoricalAuditContext.lookback).timeIntervalSince1970,
                 now.timeIntervalSince1970, limit + 1])
@@ -2510,11 +2808,11 @@ public actor ProtectedStore {
         // invalidates the old age/meaning we encrypted. Roll back all source progress so
         // the caller can prepare again, including when an absent row appeared meanwhile.
         for omission in prepared.omissions where omission.checksPrevious {
-            let current = try Data.fetchOne(db, sql: "SELECT encoded FROM coverage_omissions WHERE id = ?",
+            let current = try Data.fetchOne(db.cachedStatement(sql: "SELECT encoded FROM coverage_omissions WHERE id = ?"),
                 arguments: [omission.id.uuidString])
             guard current == omission.previousEncoded else { throw StorageError.stateChanged }
             if let previous = omission.reclassifiedLocalMedia {
-                let row = try Row.fetchOne(db, sql: "SELECT id, location_id, encoded, state, created_at, content_at, incident_key, resolved_at FROM coverage_omissions WHERE id = ?",
+                let row = try Row.fetchOne(db.cachedStatement(sql: "SELECT id, location_id, encoded, state, created_at, content_at, incident_key, resolved_at FROM coverage_omissions WHERE id = ?"),
                     arguments: [omission.id.uuidString])
                 guard let row, try metadataRecoveryRow(row) == previous else { throw StorageError.stateChanged }
             }
@@ -2526,21 +2824,21 @@ public actor ProtectedStore {
         }
         for gap in prepared.gaps { try insertGap(gap, at: now, in: db) }
         for id in prepared.workWithGapEvidence {
-            try db.execute(sql: "UPDATE collection_work SET retain_evidence = 1 WHERE id = ?", arguments: [id.uuidString])
+            try db.executeCached(sql: "UPDATE collection_work SET retain_evidence = 1 WHERE id = ?", arguments: [id.uuidString])
         }
         for link in prepared.captureLossLinks {
-            try db.execute(sql: "UPDATE collection_work SET omission_id = ? WHERE id = ?",
+            try db.executeCached(sql: "UPDATE collection_work SET omission_id = ? WHERE id = ?",
                 arguments: [link.omission.uuidString, link.capture.uuidString])
         }
         for omission in prepared.omissions {
             if omission.reclassifiedLocalMedia != nil {
                 // Reclassification preserves the original lifecycle and age. It removes
                 // only this obsolete format warning's incident membership, not the row.
-                try db.execute(sql: "UPDATE coverage_omissions SET encoded = ?, incident_key = NULL WHERE id = ?",
+                try db.executeCached(sql: "UPDATE coverage_omissions SET encoded = ?, incident_key = NULL WHERE id = ?",
                     arguments: [omission.encoded, omission.id.uuidString])
                 continue
             }
-            try db.execute(sql: """
+            try db.executeCached(sql: """
                 INSERT INTO coverage_omissions
                     (id, location_id, incident_key, created_at, content_at, state, encoded)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -2560,7 +2858,7 @@ public actor ProtectedStore {
                 // its age or resetting its lifecycle. An authenticated optional unknown
                 // warning likewise cannot hide a later known or required failure. Recovered
                 // rows follow the existing recurrence policy in the INSERT above.
-                try db.execute(sql: """
+                try db.executeCached(sql: """
                     UPDATE coverage_omissions SET encoded = ?,
                         content_at = COALESCE(content_at, ?)
                     WHERE id = ? AND state != ?
@@ -2570,7 +2868,7 @@ public actor ProtectedStore {
             // A position first recorded without a required failure must still join the
             // later incident. Include expired losses so expiry can settle their incident.
             if let key = omission.incidentKey {
-                try db.execute(sql: """
+                try db.executeCached(sql: """
                     UPDATE coverage_omissions SET incident_key = ?
                     WHERE id = ? AND incident_key IS NULL AND state != ?
                     """, arguments: [key.uuidString, omission.id.uuidString,
@@ -2578,18 +2876,18 @@ public actor ProtectedStore {
             }
         }
         if !prepared.omissions.isEmpty {
-            let bytes = try Int.fetchOne(db, sql: "SELECT COALESCE(SUM(length(encoded)), 0) FROM coverage_omissions") ?? 0
+            let bytes = try Int.fetchOne(db, sql: HotQueries.omissionBytes) ?? 0
             guard bytes <= maximumBytes else { throw StorageError.stateTooLarge }
         }
         for incident in prepared.incidents {
-            try db.execute(sql: """
+            try db.executeCached(sql: """
                 INSERT OR IGNORE INTO collection_health_incidents
                     (id, key_id, created_at, delivery, requires_assessment, encoded)
                 VALUES (?, ?, ?, ?, ?, ?)
                 """, arguments: [incident.id.uuidString, incident.key.uuidString, now.timeIntervalSince1970,
                     AlertDeliveryState.pending.rawValue, incident.requiresAssessment, incident.encoded])
             if incident.requiresAssessment {
-                try db.execute(sql: "UPDATE collection_health_incidents SET requires_assessment = 1 WHERE key_id = ? AND resolved_at IS NULL",
+                try db.executeCached(sql: "UPDATE collection_health_incidents SET requires_assessment = 1 WHERE key_id = ? AND resolved_at IS NULL",
                                arguments: [incident.key.uuidString])
             }
         }
@@ -2600,7 +2898,7 @@ public actor ProtectedStore {
         let cutoff = now.addingTimeInterval(-HistoricalAuditContext.lookback).timeIntervalSince1970
         for recovery in prepared.metadataRecoveries {
             for id in recovery.recoveredIDs {
-                try db.execute(sql: """
+                try db.executeCached(sql: """
                     UPDATE coverage_omissions SET state = ?, resolved_at = ?
                     WHERE id = ? AND state IN (?, ?) AND COALESCE(content_at, created_at) >= ?
                         AND COALESCE(content_at, created_at) <= ?
@@ -2614,11 +2912,7 @@ public actor ProtectedStore {
             }
         }
         for locationID in prepared.recoveredLocations {
-            try db.execute(sql: """
-                UPDATE coverage_omissions SET state = ?, resolved_at = ?
-                WHERE location_id = ? AND state IN (?, ?) AND COALESCE(content_at, created_at) >= ?
-                    AND COALESCE(content_at, created_at) <= ?
-                """, arguments: [CoverageOmissionState.recovered.rawValue, now.timeIntervalSince1970,
+            try db.executeCached(sql: HotQueries.recoverOmissionsAtLocation, arguments: [CoverageOmissionState.recovered.rawValue, now.timeIntervalSince1970,
                     locationID.uuidString, CoverageOmissionState.blocked.rawValue, CoverageOmissionState.retryable.rawValue,
                     cutoff, now.timeIntervalSince1970])
             // Clearing one item cannot resolve the incident while another item remains omitted.
@@ -2634,7 +2928,7 @@ public actor ProtectedStore {
     /// forever and silently absorb a later failure with the same identity.
     private static func resolveHealthIncidents(where condition: String, arguments: StatementArguments,
                                                at now: Date, in db: Database) throws -> Int {
-        try db.execute(sql: """
+        try db.executeCached(sql: """
             UPDATE collection_health_incidents SET resolved_at = ?,
                 delivery = CASE WHEN delivery = ? THEN ? ELSE delivery END
             WHERE resolved_at IS NULL AND \(condition)
@@ -2698,13 +2992,14 @@ public actor ProtectedStore {
     private static func captureBinding(_ id: UUID) -> PayloadBinding {
         PayloadBinding(reference: ProtectedPayloadReference(id: id), ownerID: id, kind: .queueEvent)
     }
-    private static func ledgerBinding(_ manifest: ProtectionManifest) -> PayloadBinding {
+    /// The binding of the version 1 ledger, which older builds read and write.
+    static func ledgerBinding(_ manifest: ProtectionManifest) -> PayloadBinding {
         PayloadBinding(reference: ProtectedPayloadReference(id: manifest.vaultID), ownerID: manifest.vaultID, kind: .ledgerSnapshot)
     }
     private static func checkpointBinding(_ id: UUID) -> PayloadBinding {
         PayloadBinding(reference: ProtectedPayloadReference(id: id), ownerID: id, kind: .sourceCheckpoint)
     }
-    private static func decode(_ bytes: Data, maximumBytes: Int = 16 * 1024 * 1024) throws -> ProtectedPayload {
+    static func decode(_ bytes: Data, maximumBytes: Int = 16 * 1024 * 1024) throws -> ProtectedPayload {
         do { return try ProtectedPayload.decode(bytes, maximumBytes: maximumBytes) }
         catch { throw StorageError.corruptProtectedState }
     }
@@ -2729,7 +3024,7 @@ public actor ProtectedStore {
         try db.execute(sql: "DELETE FROM captures WHERE id = ?", arguments: [id.uuidString])
     }
     private static func insertGap(_ payload: ProtectedPayload, at time: Date, in db: Database) throws {
-        try db.execute(sql: "INSERT INTO coverage_gaps (id, created_at, encoded) VALUES (?, ?, ?)",
+        try db.executeCached(sql: "INSERT INTO coverage_gaps (id, created_at, encoded) VALUES (?, ?, ?)",
                        arguments: [payload.binding.reference.id.uuidString, time.timeIntervalSince1970, try payload.encoded()])
     }
     private static func requiredPayloads(in snapshot: InventorySnapshot) throws -> [ProtectedPayloadReference: ProtectedPayloadKind] {
@@ -2766,8 +3061,28 @@ public actor ProtectedStore {
                   try decode(existing).binding.kind == kind else { throw StorageError.payloadMissing }
         }
     }
-    private static func writeState(_ encoded: Data, snapshot: InventorySnapshot, revision: Int64, in db: Database) throws {
-        try db.execute(sql: "UPDATE store_state SET revision = ?, encoded = ? WHERE id = 1", arguments: [revision, encoded])
+    private static func writeLedger(_ sealed: SealedLedgerWrite, snapshot: InventorySnapshot, revision: Int64, in db: Database) throws {
+        try db.execute(sql: "UPDATE store_state SET revision = ?, encoded = ? WHERE id = 1", arguments: [revision, sealed.header])
+        if sealed.isConversion {
+            // The first partitioned write replaces the version 1 row and fills empty tables, in this transaction.
+            for table in ["ledger_parts", "ledger_buckets"] {
+                guard try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \(table)") == 0 else { throw StorageError.corruptProtectedState }
+            }
+            try insertLedgerSegments(sealed, in: db)
+        } else {
+            // Every slot exists after open, so a row that is not there to update was removed behind our back.
+            for (part, encoded) in sealed.parts {
+                try db.execute(sql: "UPDATE ledger_parts SET encoded = ? WHERE part = ?", arguments: [encoded, part])
+                guard db.changesCount == 1 else { throw StorageError.corruptProtectedState }
+            }
+            for (bucket, encoded) in sealed.buckets {
+                try db.execute(sql: "UPDATE ledger_buckets SET encoded = ? WHERE bucket = ?", arguments: [encoded, bucket])
+                guard db.changesCount == 1 else { throw StorageError.corruptProtectedState }
+            }
+        }
+        // Both outbox tables are a function of the notifications part. The first write after open
+        // includes that part, so any drift is repaired once.
+        guard sealed.notificationsChanged else { return }
         try db.execute(sql: "DELETE FROM notification_outbox")
         for alert in snapshot.alertDecisions.values {
             try db.execute(sql: "INSERT INTO notification_outbox (id, value_id, delivery) VALUES (?, ?, ?)",
@@ -2777,6 +3092,14 @@ public actor ProtectedStore {
         for decision in snapshot.historicalNotificationDecisions.values {
             try db.execute(sql: "INSERT INTO historical_notification_outbox (audit_id, delivery) VALUES (?, ?)",
                 arguments: [decision.audit.id.uuidString, decision.delivery.rawValue])
+        }
+    }
+    private static func insertLedgerSegments(_ sealed: SealedLedgerWrite, in db: Database) throws {
+        for (part, encoded) in sealed.parts {
+            try db.execute(sql: "INSERT INTO ledger_parts (part, encoded) VALUES (?, ?)", arguments: [part, encoded])
+        }
+        for (bucket, encoded) in sealed.buckets {
+            try db.execute(sql: "INSERT INTO ledger_buckets (bucket, encoded) VALUES (?, ?)", arguments: [bucket, encoded])
         }
     }
 
@@ -2864,6 +3187,38 @@ public actor ProtectedStore {
             try db.execute(sql: "ALTER TABLE collection_work ADD COLUMN recovery_chain BLOB")
             try db.execute(sql: "CREATE INDEX collection_work_recovery ON collection_work (recovery_of)")
         }
+        migrator.registerMigration("v9-indexed-queue-maintenance") { db in
+            // Each statement in HotQueries reaches its rows through one of these indexes instead
+            // of reading the encrypted columns of every queued capture or ledger row.
+            try db.execute(sql: """
+                CREATE INDEX captures_expiry ON captures (expires_at);
+                CREATE INDEX captures_claim ON captures (state, work_class, captured_at, id, available_at, expires_at);
+                CREATE INDEX captures_bytes ON captures (id, byte_count);
+                CREATE INDEX collection_work_state ON collection_work (state, id);
+                CREATE INDEX collection_work_bytes ON collection_work
+                    (length(encoded) + COALESCE(length(recovery_certificate), 0) + COALESCE(length(recovery_chain), 0));
+                CREATE INDEX collection_work_prunable ON collection_work
+                    (updated_at DESC, id, state, retain_evidence, recovery_of, recovery_certificate)
+                    WHERE state IN ('completed', 'recovered') AND retain_evidence = 0;
+                CREATE INDEX coverage_omissions_bytes ON coverage_omissions (length(encoded));
+                CREATE INDEX coverage_omissions_expiry ON coverage_omissions (state, COALESCE(content_at, created_at));
+                """)
+        }
+        migrator.registerMigration("v10-partitioned-ledger") { db in
+            // Only new tables: no existing row is touched, so opening a version 1 vault writes nothing.
+            // The ledger converts on its first ordinary write, in that write's transaction.
+            try db.execute(sql: """
+                CREATE TABLE ledger_parts (part INTEGER PRIMARY KEY CHECK (part IN (1, 2, 3)), encoded BLOB NOT NULL);
+                CREATE TABLE ledger_buckets (bucket INTEGER PRIMARY KEY CHECK (bucket BETWEEN 0 AND 63), encoded BLOB NOT NULL);
+                """)
+        }
+        migrator.registerMigration("v11-omission-report-index") { db in
+            // The coverage report pages omissions by state and creation time; this lets it find the
+            // newest ones and test their window without reading the encrypted rows.
+            try db.execute(sql: """
+                CREATE INDEX coverage_omissions_report ON coverage_omissions (state, created_at DESC, id, content_at)
+                """)
+        }
         try migrator.migrate(database)
     }
 
@@ -2903,5 +3258,132 @@ public actor ProtectedStore {
                 guard chmod(url.path, 0o600) == 0 else { throw StorageError.unsafeStorageLocation }
             }
         }
+    }
+}
+
+extension ProtectedStore {
+    /// Statements that run for every capture or every refresh. The queue and the work and omission
+    /// ledgers hold thousands of rows with large encrypted columns, so each statement reaches its
+    /// rows through an index from `v9-indexed-queue-maintenance`. Reading every row instead made
+    /// each capture slower the longer the queue grew.
+    enum HotQueries {
+        /// The coverage report lists unfinished work first. Those rows are found by state, so the
+        /// sort covers only the queue, not the week's window.
+        static let activeWork = """
+            SELECT * FROM collection_work INDEXED BY collection_work_state
+            WHERE state IN ('queued', 'processing', 'stalled') AND updated_at >= ? AND updated_at <= ?
+            ORDER BY updated_at DESC, id LIMIT ?
+            """
+        /// The rest of the page: walks the window newest first and stops at the limit. SQLite orders
+        /// the `id` tie-break with a partial sort of equal `updated_at` rows, never the whole window.
+        static let settledWork = """
+            SELECT * FROM collection_work INDEXED BY collection_work_updated
+            WHERE state NOT IN ('queued', 'processing', 'stalled') AND updated_at >= ? AND updated_at <= ?
+            ORDER BY updated_at DESC, id LIMIT ?
+            """
+        /// One state's omissions in the window, counted from `coverage_omissions_expiry` alone.
+        static let omissionCount = """
+            SELECT COUNT(*) FROM coverage_omissions INDEXED BY coverage_omissions_expiry
+            WHERE state = ? AND COALESCE(content_at, created_at) >= ? AND COALESCE(content_at, created_at) <= ?
+            """
+        /// The newest keys of one state in the window. `coverage_omissions_report` is ordered by
+        /// state, creation time and id and carries `content_at`, so the window test, the order and
+        /// the limit all run on the index without a sort or a read of the table.
+        static let omissionKeys = """
+            SELECT id, created_at FROM coverage_omissions INDEXED BY coverage_omissions_report
+            WHERE state = ? AND COALESCE(content_at, created_at) >= ? AND COALESCE(content_at, created_at) <= ?
+            ORDER BY created_at DESC, id LIMIT ?
+            """
+        static let omissionRow = "SELECT id, encoded, state, resolved_at FROM coverage_omissions WHERE id = ?"
+        static let expiringCaptures = """
+            SELECT id, encoded, captured_at, expires_at, retry_count FROM captures
+            WHERE expires_at <= ? ORDER BY expires_at LIMIT ?
+            """
+        static let queueBytes = "SELECT COALESCE(SUM(byte_count), 0) FROM captures"
+        static let queueBytesExcluding = "SELECT COALESCE(SUM(byte_count), 0) FROM captures WHERE id != ?"
+        static let historicalCount = "SELECT COUNT(*) FROM captures WHERE work_class = 1"
+        /// Matches the `collection_work_bytes` index expression exactly, so the sum reads only the index.
+        static let workBytes = """
+            SELECT COALESCE(SUM(length(encoded) + COALESCE(length(recovery_certificate), 0) + COALESCE(length(recovery_chain), 0)), 0)
+            FROM collection_work
+            """
+        static let omissionBytes = "SELECT COALESCE(SUM(length(encoded)), 0) FROM coverage_omissions"
+        static let releaseExpiredClaims = """
+            UPDATE captures SET state = 0, claim_id = NULL, lease_until = NULL WHERE state = 1 AND lease_until <= ?
+            """
+        static let requeueReleasedWork = """
+            UPDATE collection_work SET state = ? WHERE state = ?
+            AND EXISTS (SELECT 1 FROM captures WHERE captures.id = collection_work.id AND captures.state = 0)
+            """
+        /// The oldest available capture of one work class. Without the pinned index SQLite would
+        /// range over availability and sort every queued capture to find it.
+        static let nextCapture = """
+            SELECT id, encoded, captured_at, expires_at, retry_count FROM captures INDEXED BY captures_claim
+            WHERE state = 0 AND work_class = ? AND available_at <= ? AND expires_at > ?
+            ORDER BY captured_at, id LIMIT 1
+            """
+        /// Keeps the newest `?` completed or recovered rows that hold no gap evidence or recovery
+        /// certificate. The states are literals so the partial `collection_work_prunable` index
+        /// applies; it walks the retained rows in order without reading the table.
+        static let pruneCompletedWork = """
+            DELETE FROM collection_work WHERE id IN (
+                SELECT id FROM collection_work INDEXED BY collection_work_prunable
+                WHERE state IN ('completed', 'recovered') AND retain_evidence = 0
+                AND NOT (recovery_certificate IS NOT NULL AND recovery_of IN
+                    (SELECT id FROM collection_work WHERE state = 'terminal'))
+                ORDER BY updated_at DESC, id LIMIT -1 OFFSET ?)
+            """
+        /// Rows kept as gap evidence: completed rows less those without evidence. Both counts read
+        /// only an index; filtering on retain_evidence directly would read each completed row.
+        static let evidenceWorkCount = """
+            SELECT (SELECT COUNT(*) FROM collection_work INDEXED BY collection_work_state
+                    WHERE state IN ('completed', 'recovered'))
+                 - (SELECT COUNT(*) FROM collection_work INDEXED BY collection_work_prunable
+                    WHERE state IN ('completed', 'recovered') AND retain_evidence = 0)
+            """
+        static let expireRecoverableOmissions = """
+            UPDATE coverage_omissions SET state = ?
+            WHERE COALESCE(content_at, created_at) < ? AND state IN (?, ?)
+            """
+        /// A location has at most a few omissions. Without statistics SQLite preferred the
+        /// state-and-age index, which reads every recoverable omission of the week per location.
+        static let recoverableOmissionsAtLocation = """
+            SELECT id, location_id, encoded, state, created_at, content_at, incident_key, resolved_at
+            FROM coverage_omissions INDEXED BY coverage_omissions_location WHERE location_id = ? AND state IN (?, ?)
+                AND COALESCE(content_at, created_at) >= ? AND COALESCE(content_at, created_at) <= ?
+            ORDER BY id LIMIT ?
+            """
+        static let recoverOmissionsAtLocation = """
+            UPDATE coverage_omissions INDEXED BY coverage_omissions_location SET state = ?, resolved_at = ?
+            WHERE location_id = ? AND state IN (?, ?) AND COALESCE(content_at, created_at) >= ?
+                AND COALESCE(content_at, created_at) <= ?
+            """
+    }
+}
+
+private extension Database {
+    /// Runs a statement this connection keeps prepared. Settlement repeats the same statements for
+    /// each omission and location in a capture, and a history pass settles thousands of them;
+    /// parsing and planning each again took longer than running it.
+    func executeCached(sql: String, arguments: StatementArguments) throws {
+        try cachedStatement(sql: sql).execute(arguments: arguments)
+    }
+}
+
+extension ProtectedStore {
+    /// Statements that sort a bounded set of rows. None runs for every capture: each runs when a
+    /// bound is exceeded, when the vault opens, or when an insert would exceed the cap.
+    enum Maintenance {
+        /// Keeps the newest `?` completed or recovered evidence rows, except a certificate whose
+        /// target is still terminal. Evidence rows are not in the partial `collection_work_prunable`
+        /// index, so the sort is over every completed row: bounded, but not a per-capture cost.
+        static let pruneEvidenceWork = """
+            DELETE FROM collection_work WHERE id IN (
+                SELECT id FROM collection_work INDEXED BY collection_work_state
+                WHERE state IN ('completed', 'recovered') AND retain_evidence = 1
+                AND NOT (recovery_certificate IS NOT NULL AND recovery_of IN
+                    (SELECT id FROM collection_work WHERE state = 'terminal'))
+                ORDER BY updated_at DESC, id LIMIT -1 OFFSET ?)
+            """
     }
 }

@@ -39,8 +39,8 @@ struct CoverageReportLookupTests {
     private func referenceRecoveredBacklog(_ event: StoredCoverageGapEvent, in report: CoverageReport) -> Bool {
         guard event.isIntermediateBacklog, event.gap.reason == .budgetExhausted,
               event.gap.recovery == nil, let audit = event.audit else { return false }
-        if let workID = event.workID {
-            guard !report.work.isTruncated, report.work.items.contains(where: { $0.id == workID }),
+        if event.workID != nil {
+            guard !report.work.isTruncated,
                   !report.work.items.contains(where: { $0.context.audit == audit && $0.state != .recovered && $0.state != .completed }) else { return false }
         }
         return report.history.items.contains {
@@ -226,6 +226,36 @@ struct CoverageReportLookupTests {
             #expect(report(try settled + [work(codex, state)]).providersReadingHistory == [.codex])
         }
         #expect(report(try settled + [work(codex, .stalled), work(claude, .processing)]).providersReadingHistory == [.codex, .claudeCode])
+    }
+
+    /// The periodic refresh may reuse a report for a few seconds. One built before history work
+    /// was queued must not replace the agents the app has just marked as catching up.
+    @Test func aReportBuiltBeforeHistoryWorkWasQueuedIsRecognised() throws {
+        let codex = CollectionScope(provider: .codex, profileID: profile, interface: .t3, path: .publicHistory)
+        let audit = CoverageAuditIdentity(auditID: try HistoricalAuditContext(reason: .resume, endingAt: now).id,
+            provider: .codex, profileID: profile)
+        let reading = StoredCollectionWork(id: UUID(), context: CollectionWorkContext(scope: codex, operation: .historicalRead,
+            audit: audit), state: .queued, admittedAt: now)
+        func report(queued: Int, work: [StoredCollectionWork]) -> CoverageReport {
+            CoverageReport(window: .init(start: now.addingTimeInterval(-60), end: now),
+                gapEvents: .init(items: [], totalCount: 0), omissions: .init(items: [], totalCount: 0),
+                history: .init(items: [], totalCount: 0),
+                queue: .init(count: queued, encryptedBytes: 0, claimedCount: 0, historicalCount: queued), oldestPendingCaptureAt: nil,
+                work: .init(items: work, totalCount: work.count))
+        }
+        let before = report(queued: 0, work: [])
+        let during = report(queued: 1, work: [reading])
+        // Work appeared after the report was built, with or without an agent named yet.
+        #expect(before.predatesHistoryWork(queued: 1, knownProviders: [.codex]))
+        #expect(before.predatesHistoryWork(queued: 1, knownProviders: []))
+        // An agent was marked as catching up after this report, while other work was already queued.
+        #expect(during.predatesHistoryWork(queued: 2, knownProviders: [.codex, .claudeCode]))
+        // Nothing the live queue shows is missing.
+        #expect(!during.predatesHistoryWork(queued: 1, knownProviders: [.codex]))
+        #expect(!during.predatesHistoryWork(queued: 1, knownProviders: []))
+        #expect(!before.predatesHistoryWork(queued: 0, knownProviders: []))
+        // A finished catch-up needs no rebuild; the live count clears the agents.
+        #expect(!during.predatesHistoryWork(queued: 0, knownProviders: [.codex]))
     }
 
     /// The report limit allows 1,000 rows per collection, and refresh joins them every second.

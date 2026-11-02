@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @_spi(Testing) @testable import SpillcheckCore
 
-private actor CodexCheckpoints {
+actor CodexCheckpoints {
     var values: [UUID: SourceCheckpoint] = [:]
     func save(_ checkpoints: [SourceCheckpoint]) { for checkpoint in checkpoints { values[checkpoint.sourceDocumentID] = checkpoint } }
     func get(_ id: UUID) -> SourceCheckpoint? { values[id] }

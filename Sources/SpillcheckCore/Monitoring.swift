@@ -31,6 +31,8 @@ public enum CoverageDiagnosticCode: String, Codable, Sendable {
     case changedSource, missingTimestamp, unresolvedIdentity, oversizedRecord
     case hookIdentityConflict, hookInterrupted, hookContentUnavailable, hookStorageLimit, authorityStorageLimit
     case nativeChildInputUnavailable
+    /// The work ledger had no room for this capture's work, and nothing in it could be pruned.
+    case workStorageLimit
 }
 
 public struct CoverageGap: Hashable, Codable, Sendable {
@@ -176,7 +178,7 @@ public struct CoverageRecoveryReference: Hashable, Codable, Sendable {
     }
 }
 
-public enum CoverageOmissionState: String, Codable, Sendable {
+public enum CoverageOmissionState: String, Codable, Sendable, CaseIterable {
     case retryable, blocked, recovered, unrecoverable
 }
 

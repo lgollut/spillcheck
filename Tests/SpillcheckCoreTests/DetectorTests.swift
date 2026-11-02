@@ -3,28 +3,28 @@ import Foundation
 import Testing
 @_spi(Testing) @testable import SpillcheckCore
 
-private struct ScannerCorpus: Decodable {
+struct ScannerCorpus: Decodable {
     let cases: [ScannerCase]
 }
-private struct ScannerCase: Decodable {
+struct ScannerCase: Decodable {
     let id: String
     let chunks: [ScannerChunk]
     let expected: [ScannerExpected]
     var text: String { chunks.map { String(repeating: $0.text, count: $0.repeatCount) }.joined() }
 }
-private struct ScannerChunk: Decodable {
+struct ScannerChunk: Decodable {
     let text: String
     let repeatCount: Int
     enum CodingKeys: String, CodingKey { case text, repeatCount = "repeat" }
 }
-private struct ScannerExpected: Decodable {
+struct ScannerExpected: Decodable {
     let start: Int
     let end: Int
     let signal: String
     let decodedValue: String?
 }
 
-private struct DetectorFixture {
+struct DetectorFixture {
     let root: URL
     let work: URL
     let configuration: BetterleaksConfiguration
@@ -328,16 +328,19 @@ struct DetectorTests {
     @Test func canceledScannerProcessIsTerminatedPromptly() async throws {
         let fixture = try DetectorFixture()
         defer { fixture.remove() }
-        let started = ProcessInfo.processInfo.systemUptime
         let worker = Task.detached {
             try ScannerProcess.runBounded(Data(repeating: 88, count: 8 * 1024 * 1024),
                 executable: URL(fileURLWithPath: "/bin/sleep"), arguments: ["10"], directory: fixture.root,
                 timeout: 30, maximumOutputBytes: 1)
         }
         try await Task.sleep(for: .milliseconds(50))
+        // Time the stop, not the launch: starting the task and the process can take seconds on a
+        // loaded machine, while the ten-second sleep must still end well before it finishes.
+        let canceled = ProcessInfo.processInfo.systemUptime
         worker.cancel()
         await #expect(throws: DetectorFailure.cancelled) { try await worker.value }
-        #expect(ProcessInfo.processInfo.systemUptime - started < 2)
+        let stopped = ProcessInfo.processInfo.systemUptime - canceled
+        #expect(stopped < 2, "stopping took \(stopped) s")
     }
 
     @Test func excessiveReportRemainsPartialWithNativeEvidence() async throws {

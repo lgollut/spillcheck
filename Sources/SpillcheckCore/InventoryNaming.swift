@@ -42,6 +42,10 @@ public struct ValueKind: Equatable, Sendable {
         return ValueKind(shortName: name, title: name, service: nil, monogram: "↻", category: nil)
     }
 
+    /// A decided value whose retained content was removed: only the decision remains.
+    public static let removed = ValueKind(shortName: "Removed value", title: "Removed value", service: nil,
+                                          monogram: "∅", category: nil)
+
     private init(shortName: String, title: String, service: String?, monogram: String, category: SecretCategory?) {
         self.shortName = shortName
         self.title = title

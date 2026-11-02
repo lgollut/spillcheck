@@ -15,6 +15,11 @@ public struct ClaudeIncrementalRead: Sendable {
     let hasFinalResponse: Bool
 }
 
+/// Saved cursors compare this signature across launches and restarts. macOS numbers a volume
+/// when it mounts it, so the same file can report a different `st_dev` after a restart. The
+/// device number is still encoded, because earlier builds require it when they decode a cursor,
+/// but no comparison uses it. The inode and birth time identify the file; size and modification
+/// time show whether it changed.
 struct ClaudeFileSignature: Codable, Equatable, Sendable {
     let device: UInt64, inode: UInt64, birthSeconds: Int64, birthNanos: Int64
     let size: UInt64, modifiedSeconds: Int64, modifiedNanos: Int64
@@ -25,7 +30,11 @@ struct ClaudeFileSignature: Codable, Equatable, Sendable {
         modifiedSeconds = Int64(value.st_mtimespec.tv_sec); modifiedNanos = Int64(value.st_mtimespec.tv_nsec)
     }
     func sameFile(_ other: Self) -> Bool {
-        device == other.device && inode == other.inode && birthSeconds == other.birthSeconds && birthNanos == other.birthNanos
+        inode == other.inode && birthSeconds == other.birthSeconds && birthNanos == other.birthNanos
+    }
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.sameFile(rhs) && lhs.size == rhs.size
+            && lhs.modifiedSeconds == rhs.modifiedSeconds && lhs.modifiedNanos == rhs.modifiedNanos
     }
 }
 
@@ -266,9 +275,12 @@ extension ClaudeAdapter {
         }
         // Only consumed rows may satisfy a later hook or advance the date watermark.
         let session = expectedSessionID ?? imported.sources.first?.record.metadata.identity.session.sessionID
+        var readToolIDs: Set<String> = [], readPromptIDs: Set<String> = []
         if let session {
-            state.toolIDs = Array(Set(state.toolIDs).union(toolResultIDs(page, through: Int(consumed), sessionID: session))).sorted().suffix(2048).map { $0 }
-            state.promptIDs = Array(Set(state.promptIDs).union(promptIDs(page, through: Int(consumed), sessionID: session))).sorted().suffix(2048).map { $0 }
+            readToolIDs = toolResultIDs(page, through: Int(consumed), sessionID: session)
+            readPromptIDs = promptIDs(page, through: Int(consumed), sessionID: session)
+            state.toolIDs = Self.recentCorrelationIDs(state.toolIDs, adding: readToolIDs)
+            state.promptIDs = Self.recentCorrelationIDs(state.promptIDs, adding: readPromptIDs)
         }
         state.hasFinalResponse = state.hasFinalResponse || imported.sources.contains { $0.record.metadata.contentType == .finalResponse }
         state.lastContentTime = ([state.lastContentTime].compactMap { $0 } + imported.sources.map(\.record.metadata.contentTime)).max()
@@ -326,8 +338,17 @@ extension ClaudeAdapter {
         return ClaudeIncrementalRead(batch: imported, bytesRead: bytesRead, hasForwardContent: forward,
             hasUnreadContent: unread, canContinueHistory: forward || (state.reverseEnd > 0 && !state.stoppedAtCutoff),
             oldestContentTime: imported.sources.map(\.record.metadata.contentTime).min(),
-            newestContentTime: currentAuditBound(state.lastContentTime), toolIDs: Set(state.toolIDs), promptIDs: Set(state.promptIDs),
+            newestContentTime: currentAuditBound(state.lastContentTime),
+            toolIDs: Set(state.toolIDs).union(readToolIDs), promptIDs: Set(state.promptIDs).union(readPromptIDs),
             hasFinalResponse: state.hasFinalResponse)
+    }
+
+    /// Hooks are matched against the calls reads have seen, and a hook processed late against calls
+    /// an earlier read consumed. Keep the most recently read IDs. Keeping the IDs that sort last
+    /// dropped most new calls once a session passed the bound, so their hooks were retried as
+    /// unflushed and finally reported as lost although their content had been analyzed.
+    static func recentCorrelationIDs(_ kept: [String], adding read: Set<String>) -> [String] {
+        Array((kept + read.subtracting(kept).sorted()).suffix(2048))
     }
 
     public func checkpointIdentity(path: String, provenance: SourceProvenance,

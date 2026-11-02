@@ -13,6 +13,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var lifecycleLogURL: URL?
     /// The status item image is redrawn only when its attention color changes.
     private var statusAttention: Bool?
+    /// Whether something showing the coverage report was on screen when last checked, so that a
+    /// window appearing is told apart from one that was already there.
+    private var reportUIShowing = false
     private var lifecycleEvents: [[String: String]] = []
 
     static func main() {
@@ -81,6 +84,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self.statusItem?.button?.highlight(highlighted)
         }
         runtime.onShowInventory = { [weak self] in self?.showInventory() }
+        runtime.reportUIVisible = { [weak self] in self?.showingReportContent ?? true }
+        onboarding.onShow = { [weak self] in self?.reportUIVisibilityChanged(opened: true) }
+        // Occlusion covers a window that is minimized, closed, on another Space or fully covered,
+        // none of which a close delegate reports, so none can keep the short interval.
+        NotificationCenter.default.addObserver(forName: NSWindow.didChangeOcclusionStateNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.reportUIVisibilityChanged() }
+        }
         if !previewOnly { runtime.start() }
         observeStatusItem()
         record("started")
@@ -202,6 +212,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window?.makeKeyAndOrderFront(nil)
         NSApplication.shared.activate(ignoringOtherApps: true)
         model.windowVisible = true
+        reportUIVisibilityChanged(opened: true)
         record("window-opened")
     }
 
@@ -217,9 +228,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     #endif
 
+    /// Every place that shows content derived from the coverage report, on any page: the inventory
+    /// window's header status and Coverage page, the setup assistant, and the menu bar panel. The
+    /// status item's tooltip also reads it but needs no more than the longer interval.
+    private var showingReportContent: Bool {
+        window?.isShowingContent == true || onboarding.isShowingContent || statusPanel?.isVisible == true
+    }
+
+    /// Refreshes the report when something showing it appears, so it is never as old as the long
+    /// interval allows. `opened` is set where a window was just ordered front, whose occlusion
+    /// state may not have been updated yet; its own notification follows.
+    private func reportUIVisibilityChanged(opened: Bool = false) {
+        let showing = showingReportContent
+        if (showing && !reportUIShowing) || opened { runtime.reportUIAppeared() }
+        reportUIShowing = showing
+    }
+
     func windowWillClose(_ notification: Notification) {
         runtime.lock(.windowClose)
         model.windowVisible = false
+        reportUIShowing = false
         record("window-closed-process-retained")
     }
 
@@ -245,6 +273,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             close: { [weak panel] in panel?.dismiss() }))
         panel.show(content, below: anchor, on: screen, statusWindow: statusItem?.button?.window)
         statusItem?.button?.highlight(true)
+        reportUIVisibilityChanged(opened: true)
     }
 
     /// Where the menu bar panel opens: under the status item while it's on screen. A menu bar manager
@@ -384,4 +413,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         } catch { /* Optional synthetic test diagnostics never prevent lifecycle actions. */ }
     }
+}
+
+extension NSWindow {
+    /// On screen and not hidden, minimized, on another Space or fully covered.
+    var isShowingContent: Bool { isVisible && occlusionState.contains(.visible) }
 }

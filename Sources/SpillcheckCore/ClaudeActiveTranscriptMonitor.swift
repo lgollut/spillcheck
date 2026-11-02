@@ -132,6 +132,10 @@ public actor ClaudeActiveTranscriptMonitor {
 
     private func selectedSources(at date: Date) -> (sources: [SelectedSource], exhaustedSources: [ClaudeActiveSource]) {
         var result = sources.map { SelectedSource(source: $0, parent: nil) }, exhaustedSources: [ClaudeActiveSource] = []
+        if childHistory.count > sources.count {
+            let followed = Set(sources.map(\.transcriptURL.path))
+            childHistory = childHistory.filter { followed.contains($0.key) }
+        }
         // Claude 2.1.293 native Agent sidechains are in the selected conversation's own
         // <session>/subagents directory, and workflow agents in its subagents/workflows/<run>
         // directories. This is bounded conversation-local discovery, not enumeration of the
@@ -144,12 +148,14 @@ public actor ClaudeActiveTranscriptMonitor {
             // The rest are not polled; their modification time only orders polling and shows change.
             var candidates: [(url: URL, modified: timespec)] = [], runs: [String] = []
             var inspected = 0, cutOff = false
+            // A folder that exists but could not be read; its children are kept from the last scan.
+            var incomplete = false
             // Collects agent transcripts, or with `listingRuns` only the workflow run folders. The
             // descriptor stays the caller's; the stream reads a duplicate of it.
             func scan(_ directoryFD: Int32, _ directory: URL, listingRuns: Bool = false) {
                 guard !cutOff else { return }
-                let fd = dup(directoryFD)
-                guard fd >= 0, let stream = fdopendir(fd) else { if fd >= 0 { close(fd) }; return }
+                let fd = fcntl(directoryFD, F_DUPFD_CLOEXEC, 0)
+                guard fd >= 0, let stream = fdopendir(fd) else { if fd >= 0 { close(fd) }; incomplete = true; return }
                 defer { closedir(stream) }
                 var listed = 0
                 while let entry = readdir(stream) {
@@ -175,9 +181,16 @@ public actor ClaudeActiveTranscriptMonitor {
             // each run are then opened relative to it, without following links, so no step re-walks the path.
             func openChild(_ parentFD: Int32, _ name: String) -> Int32? {
                 let fd = name.withCString { openat(parentFD, $0, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC) }
+                if fd < 0 {
+                    var info = stat()
+                    if fstatat(parentFD, name, &info, AT_SYMLINK_NOFOLLOW) == 0 { incomplete = true }
+                }
                 return fd >= 0 ? fd : nil
             }
-            if let subagentsFD = try? claudeOpenDirectory(subagents.path) {
+            var subagentsInfo = stat()
+            let subagentsFD = try? claudeOpenDirectory(subagents.path)
+            if subagentsFD == nil, lstat(subagents.path, &subagentsInfo) == 0 { incomplete = true }
+            if let subagentsFD {
                 defer { close(subagentsFD) }
                 scan(subagentsFD, subagents)
                 if let workflowsFD = openChild(subagentsFD, "workflows") {
@@ -206,6 +219,9 @@ public actor ClaudeActiveTranscriptMonitor {
                 modified[candidate.url.path] = Int64(candidate.modified.tv_sec) &* 1_000_000_000 &+ Int64(candidate.modified.tv_nsec)
             }
             let previous = childHistory[key]
+            if incomplete, let previous {
+                for (path, time) in previous.modified where modified[path] == nil { modified[path] = time }
+            }
             var unpolledChanged = false
             if let previous {
                 unpolledChanged = candidates.dropFirst(32).contains { previous.modified[$0.url.path] != modified[$0.url.path] }

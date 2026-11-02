@@ -255,6 +255,25 @@ struct ClaudeMonitorTests {
         #expect(await sink.observedGaps().filter { $0.reason == .budgetExhausted }.isEmpty)
     }
 
+    @Test func aRunFolderThatIsBrieflyUnreadableDoesNotMakeItsAgentsLookNew() async throws {
+        let directory = try claudeSetupDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let parent = directory.appendingPathComponent("parent.jsonl")
+        let run = directory.appendingPathComponent("parent/subagents/workflows/run-a")
+        for index in 0..<40 { try monitorAgent(run, "agent-\(index)", modified: Date(timeIntervalSinceNow: -7200 + Double(index) * 10)) }
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: run.path) }
+        let sink = ClaudeMonitorSink()
+        let monitor = try ClaudeActiveTranscriptMonitor(profileID: "test", sources: [.init(sessionID: "parent", transcriptURL: parent)],
+            enqueue: { packet, _ in try await sink.accept(packet) }, onGap: { await sink.recordGap($0) })
+        let start = Date()
+        _ = try await monitor.pollOnce(at: start)
+        // One pass cannot open the run folder; its agents are unchanged, so nothing was missed.
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: run.path)
+        _ = try await monitor.pollOnce(at: start.addingTimeInterval(1))
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: run.path)
+        _ = try await monitor.pollOnce(at: start.addingTimeInterval(2))
+        #expect(await sink.observedGaps().filter { $0.reason == .budgetExhausted }.isEmpty)
+    }
+
     @Test func aNewChildOutsideTheNewest32IsReported() async throws {
         let directory = try claudeSetupDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
         let parent = directory.appendingPathComponent("parent.jsonl")

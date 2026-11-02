@@ -172,14 +172,25 @@ public actor CodexActiveHistoryMonitor {
             guard permit == generation, !Task.isCancelled else { return count }
             let source = sources[(nextIndex + inspected) % sources.count]
             inspected += 1
-            do { if try await isHookOwned(source) { continue } }
+            // Before the lookup too, so a source whose lookup keeps failing is not retried every pass.
+            guard !deliveryBackoff.isWaiting(source.threadID, at: date) else { continue }
+            do {
+                if try await isHookOwned(source) {
+                    // The hook path owns it now, so a failure recorded for polling no longer applies.
+                    deliveryBackoff.recordSuccess(source.threadID)
+                    continue
+                }
+            }
             catch {
-                if !Task.isCancelled { await onGap(gap(.deliveryUncertain, source: source, at: date)) }
+                if !Task.isCancelled {
+                    if deliveryBackoff.recordFailure(source.threadID, base: deliveryBase(source, at: date), at: date) {
+                        await onGap(gap(.deliveryUncertain, source: source, at: date))
+                    }
+                }
                 failure = failure ?? error
                 continue
             }
             guard permit == generation, !Task.isCancelled else { return count }
-            guard !deliveryBackoff.isWaiting(source.threadID, at: date) else { continue }
             var delay: TimeInterval?
             if source.authority == .publicNativeItems {
                 delay = pollDelay(source.threadID, at: date)
@@ -213,9 +224,7 @@ public actor CodexActiveHistoryMonitor {
             }
             catch {
                 if !Task.isCancelled {
-                    // Back off from the source's own cadence; a public thread's follows its activity.
-                    let base = Self.publicPollDelay(idle: date.timeIntervalSince(lastActivity[source.threadID] ?? date)) ?? 1
-                    if deliveryBackoff.recordFailure(source.threadID, base: base, at: date) {
+                    if deliveryBackoff.recordFailure(source.threadID, base: deliveryBase(source, at: date), at: date) {
                         await onGap(gap(.deliveryUncertain, source: source, at: date))
                     }
                 }
@@ -250,6 +259,10 @@ public actor CodexActiveHistoryMonitor {
         let pending = task; task = nil
         pending?.cancel(); await pending?.value
         await historyClient?.close()
+    }
+    /// A failing source backs off from its own cadence; a public thread's follows its activity.
+    private func deliveryBase(_ source: CodexActiveSource, at date: Date) -> TimeInterval {
+        Self.publicPollDelay(idle: date.timeIntervalSince(lastActivity[source.threadID] ?? date)) ?? 1
     }
     private func isHookOwned(_ source: CodexActiveSource) async throws -> Bool {
         guard let authorityLookup else { return false }

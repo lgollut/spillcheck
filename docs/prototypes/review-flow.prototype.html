@@ -1,0 +1,1197 @@
+<!doctype html>
+<!--
+  PROTOTYPE, throwaway. Not part of the app build.
+
+  Question: the Inbox stays the default window. How does Focus (one value at a time) fit into it?
+
+  Answer explored here: Focus is a session over a set of values, started from the Inbox and
+  returning to it.
+    - Start it from the list header (everything in Review or Rotate, from the top) or from a
+      multi-selection ("one by one").
+    - New detections are marked unread and sort to the top of their list; there is no
+      catch-up banner. Opening a value marks it read, and it keeps its place until the list
+      is next refreshed, so rows don't jump while you work.
+    - It shows one value at a time with large decision buttons and progress, moves on by itself,
+      and ends with a summary. A review session can hand off to a rotation session.
+    - Esc, F or "Inbox" returns to the Inbox on the value you were looking at.
+
+  Settled on Nov 2: one decision per value, covering future appearances; unlocking shows
+  everything until you lock; a decided value doesn't come back, it only counts new appearances.
+
+  Sample values and paths are synthetic. Secret-shaped samples are assembled at runtime with J(...)
+  so this file doesn't trip Spillcheck's own scanner, or anyone else's.
+  The earlier three-layout version is review-flow-variants.prototype.html.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spillcheck review flow (prototype)</title>
+<style>
+*{box-sizing:border-box}
+html,body{margin:0}
+.stage{max-width:1200px;margin:0 auto}
+
+.win{
+  --sc-ink:#1c1c1e;--sc-ink2:#3d3d42;--sc-sec:#5f5f65;--sc-ter:#6e6e73;--sc-qua:#8e8e93;--sc-faint:#c7c7cc;
+  --sc-bg:#fff;--sc-sidebar:#f4f6f5;--sc-sep:#e1e6e3;--sc-hair:#eceeed;--sc-well:#f1f4f2;--sc-quiet:#f2f5f3;--sc-chip:#e9edeb;
+  --sc-accent:#222624;--sc-accent-hover:#363b38;
+  --sc-link:oklch(0.47 0.06 152);--sc-selection:oklch(0.95 0.018 150);--sc-focus:oklch(0.62 0.07 150);
+  --sc-amber:oklch(0.74 0.14 70);--sc-amber-text:oklch(0.48 0.1 62);--sc-amber-soft:oklch(0.95 0.04 80);--sc-amber-soft-text:oklch(0.42 0.09 62);
+  --sc-green:oklch(0.66 0.07 150);--sc-green-soft:oklch(0.94 0.022 150);--sc-green-text:oklch(0.42 0.06 152);
+  --sc-red-soft:oklch(0.94 0.035 25);--sc-red-text:oklch(0.45 0.13 25);
+  --sc-blue-soft:oklch(0.94 0.02 255);--sc-blue-text:oklch(0.4 0.07 255);
+  --sc-violet-soft:oklch(0.94 0.03 300);--sc-violet-text:oklch(0.42 0.09 300);
+  --sc-hl:oklch(0.92 0.07 85);--sc-unread:oklch(0.62 0.13 150);--sc-unread-text:oklch(0.45 0.1 150);
+  --sc-sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",system-ui,sans-serif;
+  --sc-mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
+  position:relative;height:620px;display:flex;overflow:hidden;text-align:left;
+  background:var(--sc-bg);color:var(--sc-ink);font:13px/1.35 var(--sc-sans);-webkit-font-smoothing:antialiased;
+  border-radius:12px;border:1px solid rgba(0,0,0,.2);
+  box-shadow:0 20px 50px rgba(0,0,0,.28),0 2px 6px rgba(0,0,0,.14);
+}
+.win button{font:inherit;color:inherit}
+.win :focus-visible{outline:2px solid var(--sc-focus);outline-offset:1px}
+.ic{width:13px;height:13px;flex:none;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+.ic.fill{fill:currentColor;stroke:none}
+.grow{flex:1}
+.muted{color:var(--sc-qua)}
+.lights{display:flex;gap:7px;flex:none}
+.lights i{width:12px;height:12px;border-radius:50%;display:block}
+.app{font-size:13px;font-weight:600;white-space:nowrap}
+
+/* controls */
+.btn{height:28px;padding:0 10px;border-radius:7px;border:1px solid #d6dcd9;background:#fff;font-weight:500;display:inline-flex;align-items:center;gap:6px;cursor:pointer;white-space:nowrap}
+.win .btn{font-size:12.5px}
+.btn:hover{background:#f5f7f6}
+.btn:disabled{opacity:.6;cursor:default}
+.btn.primary{background:var(--sc-accent);border-color:var(--sc-accent);color:#fff}
+.btn.primary:hover{background:var(--sc-accent-hover)}
+.btn.ghost{background:transparent;border-color:transparent;color:var(--sc-sec)}
+.btn.ghost:hover{background:rgba(0,0,0,.05)}
+.mini{height:24px;padding:0 8px;border-radius:6px;border:1px solid #d6dcd9;background:#fff;font-weight:500;color:var(--sc-ink2);display:inline-flex;align-items:center;gap:5px;cursor:pointer;white-space:nowrap;flex:none}
+.win .mini{font-size:11.5px}
+.mini:hover{background:#f5f7f6}
+.mini:disabled{opacity:.35;cursor:default;background:transparent}
+.mini.ghost{border-color:transparent;background:transparent;color:var(--sc-sec)}
+.mini.ghost:hover:not(:disabled){background:rgba(0,0,0,.05)}
+.icon-btn{width:26px;height:26px;flex:none;border-radius:7px;border:0;background:transparent;display:inline-grid;place-items:center;color:var(--sc-sec);cursor:pointer;padding:0}
+.icon-btn:hover:not(:disabled){background:rgba(0,0,0,.06)}
+.icon-btn:disabled{opacity:.3;cursor:default}
+.link{border:0;background:none;padding:0;color:var(--sc-link);font-weight:600;cursor:pointer;white-space:nowrap}
+.win .link{font-size:12px}
+kbd{font:600 10px var(--sc-mono);min-width:17px;height:17px;padding:0 4px;border-radius:4px;background:rgba(0,0,0,.06);color:var(--sc-sec);display:inline-grid;place-items:center}
+.btn.primary kbd{background:rgba(255,255,255,.2);color:#fff}
+.mini kbd{height:15px;min-width:15px;font-size:9.5px;padding:0 3px;margin-left:1px}
+
+/* tiles and marks */
+.tile{width:28px;height:28px;border-radius:7px;flex:none;display:grid;place-items:center;background:#fff;border:1px solid rgba(0,0,0,.07);color:var(--sc-ink2);font-size:9.5px;font-weight:700;letter-spacing:.2px}
+.tile.lg{width:40px;height:40px;border-radius:10px;font-size:12.5px}
+.tile.sm{width:20px;height:20px;border-radius:5px;font-size:7px}
+.ag{width:var(--s,16px);height:var(--s,16px);flex:none;border-radius:4px;display:inline-grid;place-items:center;font-size:calc(var(--s,16px)*.6);line-height:1;color:#fff}
+.ag-claude{background:#d97757}
+.ag-codex{background:#111;border-radius:50%}
+.src{width:24px;height:24px;flex:none;border-radius:7px;display:grid;place-items:center;font:600 10.5px var(--sc-mono)}
+.t-tool{background:var(--sc-blue-soft);color:var(--sc-blue-text)}
+.t-err{background:var(--sc-red-soft);color:var(--sc-red-text)}
+.t-prompt{background:var(--sc-green-soft);color:var(--sc-green-text)}
+.t-resp{background:var(--sc-violet-soft);color:var(--sc-violet-text)}
+.kf{color:var(--sc-amber-text);font-weight:600}
+.sig{flex:none;font-size:11px;font-weight:600;padding:1px 6px;border-radius:5px;background:var(--sc-chip);color:var(--sc-ink2);white-space:nowrap;cursor:help}
+.sig.strong{background:var(--sc-amber-soft);color:var(--sc-amber-soft-text)}
+.dot{width:7px;height:7px;border-radius:50%;display:inline-block;flex:none}
+.mon{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;color:var(--sc-sec);white-space:nowrap}
+
+/* buckets */
+.seg{display:flex;gap:2px;padding:2px;border-radius:8px;background:rgba(0,0,0,.055)}
+.seg-i{flex:1 1 auto;height:24px;border:0;border-radius:6px;background:transparent;display:flex;align-items:center;justify-content:center;gap:5px;padding:0 6px;cursor:pointer;color:var(--sc-sec);font-weight:500;white-space:nowrap}
+.win .seg-i{font-size:12px}
+.seg-i.on{background:#fff;color:var(--sc-ink);box-shadow:0 1px 2px rgba(0,0,0,.1)}
+.cnt{font-size:11px;color:var(--sc-qua);font-variant-numeric:tabular-nums}
+.search{display:flex;align-items:center;gap:7px;height:28px;padding:0 9px;border-radius:8px;background:rgba(0,0,0,.05);color:var(--sc-qua);min-width:0}
+.search input{flex:1;min-width:0;border:0;outline:0;background:transparent;font:13px var(--sc-sans);color:var(--sc-ink)}
+
+/* inbox: sidebar */
+.win.a{display:grid;grid-template-columns:236px minmax(0,1fr);grid-template-rows:minmax(0,1fr) auto}
+@media (min-width:980px){.win.a{grid-template-columns:280px minmax(0,1fr)}}
+.win.a>.sb{grid-column:1;grid-row:1}
+.win.a>.main{grid-column:2;grid-row:1}
+.win.a>.main.full{grid-row:1/3}
+/* The sidebar footer and the decision bar share one bottom row, so their height and top edge always match. */
+.win.a>.sb-foot{grid-column:1;grid-row:2}
+.win.a>.bar-cell{grid-column:2;grid-row:2;min-width:0;display:flex;flex-direction:column;container-type:inline-size}
+.win.a>.bar-cell>.dbar{flex:1}
+.sb{background:var(--sc-sidebar);border-right:1px solid var(--sc-sep);display:flex;flex-direction:column;min-width:0;min-height:0}
+.sb-head{height:46px;flex:none;display:flex;align-items:center;gap:10px;padding:0 12px}
+.sb-head .mon{margin-left:auto}
+.sb-pad{padding:0 10px 8px;flex:none}
+.ud{width:7px;height:7px;border-radius:50%;background:var(--sc-unread);flex:none;display:inline-block}
+.ud.sm{width:6px;height:6px}
+.seg-i{position:relative}
+/* A corner badge, so the unread mark takes no width from the labels. */
+.seg-i .ud{position:absolute;top:3px;right:3px}
+.lh .ud-n{color:var(--sc-unread-text)}
+.lh{display:flex;align-items:center;gap:8px;padding:0 8px 4px 12px;flex:none;font-size:11.5px;font-weight:600;color:var(--sc-ter);white-space:nowrap}
+.lh .mini{margin-left:auto}
+.sb-list{flex:1;min-height:0;overflow:auto;padding:2px 8px 10px}
+.row{position:relative;width:100%;display:flex;align-items:center;gap:9px;padding:8px 8px 8px 16px;border:0;border-radius:9px;background:transparent;text-align:left;cursor:pointer}
+.row:hover{background:rgba(0,0,0,.035)}
+.row.sel{background:var(--sc-selection)}
+.row.done .tile{background:var(--sc-chip);color:var(--sc-ter)}
+.row .ud{position:absolute;left:5px;top:50%;margin-top:-3.5px}
+.row.unread .r-k{font-weight:650;color:var(--sc-ink)}
+.r-m{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.r-1{display:flex;align-items:baseline;gap:6px;min-width:0}
+.r-k{font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.r-t{margin-left:auto;font-size:11px;color:var(--sc-qua);white-space:nowrap;flex:none}
+.r-2{display:flex;align-items:baseline;gap:5px;font-size:11.5px;color:var(--sc-qua);white-space:nowrap;min-width:0}
+.r-2 .p{overflow:hidden;text-overflow:ellipsis;min-width:0}
+.r-2 .x{flex:none}
+.sb-empty{padding:28px 10px;text-align:center;font-size:12px;color:var(--sc-ter)}
+.sb-foot{min-height:44px;border-top:1px solid var(--sc-sep);border-right:1px solid var(--sc-sep);background:var(--sc-sidebar);display:flex;align-items:center;gap:4px;padding:0 8px}
+.cov{display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:0 6px;white-space:nowrap}
+.cov em{font-style:normal;color:var(--sc-amber-text)}
+.half{width:10px;height:10px;border-radius:50%;border:1.5px solid oklch(0.68 0.14 70);background:linear-gradient(90deg,var(--sc-amber) 50%,transparent 50%)}
+
+/* detail, shared by both modes */
+.main{display:flex;flex-direction:column;min-width:0;min-height:0;background:var(--sc-bg);container-type:inline-size}
+.d-scroll{flex:1;min-height:0;overflow:auto;padding:20px 22px 22px;display:flex;flex-direction:column;gap:16px}
+.d-head{display:flex;gap:12px;align-items:flex-start;flex:none}
+.d-hd{flex:1;min-width:0}
+.d-t{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.d-kind{font-size:18px;font-weight:600;letter-spacing:-.2px}
+.num{font:11.5px var(--sc-mono);color:var(--sc-qua);cursor:help}
+.d-why{display:flex;gap:8px;align-items:baseline;margin-top:5px;font-size:12.5px;line-height:1.45;color:var(--sc-sec)}
+.sec-l{font-size:11.5px;font-weight:600;color:var(--sc-ter);margin:0 2px -9px;flex:none}
+
+.ev{border:1px solid rgba(0,0,0,.09);border-radius:12px;overflow:hidden;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.04);flex:none}
+.ev-h{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;background:#f8faf9;border-bottom:1px solid var(--sc-hair)}
+.ev-m{flex:1;min-width:0}
+.ev-1{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:12.5px;line-height:1.4}
+.ev-t{font-size:12.5px;color:var(--sc-ink2);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ev-2{display:flex;gap:2px 12px;flex-wrap:wrap;margin-top:3px;font:11px var(--sc-mono);color:var(--sc-ter)}
+.sep{color:var(--sc-faint)}
+.time{font-size:11.5px;color:var(--sc-qua);white-space:nowrap;padding-top:1px}
+.ev-file{font:11px var(--sc-mono);color:var(--sc-sec);padding:8px 12px 0}
+.code{padding:8px 0 10px;font:11.5px/1.6 var(--sc-mono)}
+.ln{display:flex}
+.ln .g{width:38px;flex:none;text-align:right;padding-right:10px;color:var(--sc-faint);user-select:none}
+.ln .c{flex:1;min-width:0;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--sc-ink2);padding-right:12px}
+.nog .ln .g{width:12px;padding-right:0}
+mark{background:var(--sc-hl);color:var(--sc-ink);border-radius:3px;padding:0 1px}
+.mask{color:var(--sc-qua);letter-spacing:1.5px}
+.ev-f{display:flex;align-items:center;gap:8px;padding:7px 10px 7px 12px;border-top:1px solid var(--sc-hair);background:#fbfcfb}
+.lbl{font-size:11.5px;color:var(--sc-qua)}
+.val{font:11.5px var(--sc-mono);background:var(--sc-well);border-radius:5px;padding:2px 6px;color:var(--sc-ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;max-width:260px}
+.ev-locked{display:flex;align-items:center;gap:14px;padding:16px;background:var(--sc-quiet);border:1.5px dashed #ccd4d0;box-shadow:none}
+.lk{width:36px;height:36px;flex:none;border-radius:10px;background:#fff;border:1px solid rgba(0,0,0,.07);display:grid;place-items:center;color:var(--sc-ink2)}
+.lk-t{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
+.lk-t b{font-size:13px}
+.lk-t span{font-size:12px;color:var(--sc-sec);line-height:1.4}
+
+.apps-h{font-size:12.5px;margin:0 2px 7px}
+.cv-list{border:1px solid rgba(0,0,0,.08);border-radius:10px}
+.cv{position:relative;border-top:1px solid var(--sc-hair)}
+.cv:first-child{border-top:0}
+.cv-row{width:100%;display:flex;align-items:center;gap:8px;padding:8px 40px 8px 10px;border:0;background:transparent;text-align:left;cursor:pointer;border-radius:10px}
+.cv-row:hover{background:rgba(0,0,0,.025)}
+.cv-t{flex:1;min-width:0;font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cv-p{font:11px var(--sc-mono);color:var(--sc-qua);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:28%}
+.cv-n,.cv-d{font-size:11.5px;color:var(--sc-qua);white-space:nowrap;font-variant-numeric:tabular-nums}
+.cv-row .chev{color:var(--sc-faint);transition:transform .15s}
+.cv.open .chev{transform:rotate(180deg)}
+.cv>.icon-btn{position:absolute;right:6px;top:5px}
+.cv-x{padding:0 12px 10px 34px}
+.cv-x .code{padding:6px 0;background:#fbfcfb;border:1px solid var(--sc-hair);border-radius:8px}
+.src-l{font-size:11.5px;color:var(--sc-ter);margin:0 0 5px}
+.cv-more{padding:8px 12px;font-size:12px;color:var(--sc-qua);border-top:1px solid var(--sc-hair)}
+
+/* menus */
+.rel{position:relative;display:inline-flex}
+.menu{position:absolute;z-index:20;right:6px;top:32px;width:276px;background:#fff;border-radius:10px;padding:5px;display:flex;flex-direction:column;box-shadow:0 12px 30px rgba(0,0,0,.18),0 0 0 1px rgba(0,0,0,.07)}
+.menu.up{top:auto;bottom:32px;right:0}
+.mi{border:0;background:transparent;border-radius:7px;padding:7px 9px;text-align:left;display:flex;flex-direction:column;gap:1px;cursor:pointer}
+.mi:hover:not(:disabled){background:#f2f5f3}
+.mi:disabled{cursor:default;opacity:.55}
+.mi span{font-size:12.5px;font-weight:500}
+.mi small{font-size:11.5px;color:var(--sc-sec);line-height:1.35}
+
+/* decision bar */
+.dbar{flex:none;display:flex;flex-direction:column;justify-content:center;gap:9px;padding:12px 18px 14px 22px;border-top:1px solid var(--sc-sep);background:#fff;box-shadow:0 -6px 10px rgba(0,0,0,.03)}
+.dq{display:flex;flex-direction:column;gap:1px;min-width:0}
+.dq b{font-size:13.5px;display:inline-flex;align-items:center;gap:6px}
+.dq>span{font-size:12px;color:var(--sc-sec)}
+.dq .since{color:var(--sc-ink2);font-weight:600}
+.da{display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap;align-items:center}
+.dbar.done{background:#f6f8f7}
+@container (min-width:700px){.dbar{flex-direction:row;align-items:center;gap:16px}.da{margin-left:auto;flex-wrap:nowrap}}
+.hints{font-size:11px;color:var(--sc-qua);text-align:center}
+
+.bulk-h{display:flex;flex-direction:column;gap:3px}
+.bulk-h b{font-size:18px;font-weight:600;letter-spacing:-.2px}
+.bulk-h span{font-size:12.5px;color:var(--sc-sec)}
+.bulk-l{border:1px solid rgba(0,0,0,.08);border-radius:10px}
+.bulk-r{display:flex;align-items:center;gap:8px;padding:8px 10px;border-top:1px solid var(--sc-hair);font-size:12.5px;min-width:0}
+.bulk-r:first-child{border-top:0}
+
+.empty{margin:auto;max-width:300px;display:flex;flex-direction:column;align-items:center;gap:6px;text-align:center;padding:30px}
+.empty b{font-size:15px}
+.empty span{font-size:12.5px;color:var(--sc-sec);line-height:1.45}
+.empty .btn{margin-top:8px}
+.em-i{width:46px;height:46px;border-radius:50%;background:var(--sc-chip);display:grid;place-items:center;color:var(--sc-ink2);margin-bottom:4px}
+.em-i .ic{width:18px;height:18px}
+
+/* overlays */
+.toast{position:absolute;z-index:30;left:50%;bottom:118px;transform:translateX(-50%);width:max-content;max-width:min(470px,84%);display:flex;align-items:center;gap:12px;padding:8px 12px;border-radius:9px;background:#222624;color:#fff;font-size:12px;line-height:1.4;box-shadow:0 10px 26px rgba(0,0,0,.28)}
+.toast code{font:11px var(--sc-mono)}
+.toast .link{color:oklch(0.86 0.08 150)}
+.win.a .toast{left:calc(50% + 118px);max-width:min(440px,calc(100% - 280px))}
+.win.f .toast{bottom:150px}
+.notif{position:absolute;z-index:40;top:10px;right:10px;width:300px;padding:10px 12px;border-radius:14px;background:rgba(246,246,248,.97);box-shadow:0 12px 30px rgba(0,0,0,.22),0 0 0 1px rgba(0,0,0,.07);display:flex;flex-direction:column;gap:2px;font-size:12px}
+.notif span{white-space:pre-line;color:var(--sc-ink2)}
+.n-app{display:flex;align-items:center;gap:6px;font-size:10.5px;letter-spacing:.3px;color:var(--sc-ter);margin-bottom:2px}
+.n-app i{width:14px;height:14px;border-radius:4px;background:#222624}
+.n-app em{margin-left:auto;font-style:normal;letter-spacing:0}
+
+/* focus */
+.win.f{flex-direction:column}
+.tb{height:46px;flex:none;display:flex;align-items:center;gap:10px;padding:0 12px;border-bottom:1px solid var(--sc-sep);background:var(--sc-sidebar)}
+.f-title{font-size:13px;font-weight:600;white-space:nowrap}
+.f-prog{flex:1;display:flex;align-items:center;gap:8px;min-width:70px;font-size:11.5px;color:var(--sc-ter);white-space:nowrap;padding:0 6px}
+.bar{flex:1;height:4px;border-radius:2px;background:var(--sc-chip);overflow:hidden}
+.bar i{display:block;height:100%;background:var(--sc-green);border-radius:2px;transition:width .25s}
+.f-stage{flex:1;min-height:0;overflow:auto;padding:10px 22px 18px;display:flex;flex-direction:column}
+.f-nav{display:flex;justify-content:center;gap:4px;margin-bottom:4px;flex:none}
+.f-card{max-width:760px;width:100%;margin:0 auto;display:flex;flex-direction:column;gap:14px}
+.f-sum{display:flex;flex-wrap:wrap;gap:4px 12px;align-items:baseline;font-size:12.5px;padding:0 2px}
+.f-sum .p{font:11.5px var(--sc-mono);color:var(--sc-qua)}
+.win.f .dbar{align-items:center;padding:12px 22px}
+.win.f .dq{align-items:center;text-align:center}
+.win.f .da{justify-content:center}
+.win.f .dbar .btn{height:34px;padding:0 13px;font-size:13px}
+.fin{margin:auto;max-width:430px;display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center;padding:30px}
+.fin b{font-size:16px}
+.fin-sum{display:flex;flex-wrap:wrap;justify-content:center;gap:6px}
+.pill{font-size:11.5px;padding:2px 9px;border-radius:999px;background:var(--sc-chip);color:var(--sc-ink2);white-space:nowrap}
+.fin-note{font-size:12.5px;color:var(--sc-sec);line-height:1.45}
+.fin-acts{display:flex;gap:8px;margin-top:8px}
+
+/* prototype controls: deliberately not Spillcheck's style */
+.pbar{margin:14px auto 0;width:fit-content;max-width:100%;display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:2px;padding:4px;border-radius:999px;background:var(--popover,#1d1d1f);color:var(--popover-foreground,#f5f5f7);border:1px solid var(--border,rgba(255,255,255,.14));box-shadow:0 6px 18px rgba(0,0,0,.22);font:12px/1.2 -apple-system,BlinkMacSystemFont,system-ui,sans-serif}
+.pbar button{border:0;background:transparent;color:inherit;font:inherit;padding:6px 10px;border-radius:999px;cursor:pointer}
+.pbar button:hover{background:color-mix(in srgb,currentColor 14%,transparent)}
+.pv{padding:0 6px 0 8px;white-space:nowrap}
+.pv i{font-style:normal;opacity:.6}
+.psep{width:1px;height:16px;background:currentColor;opacity:.2;margin:0 4px}
+.pstate{margin:8px auto 2px;max-width:660px;text-align:center;font:11.5px/1.5 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;color:var(--muted-foreground,#8e8e93)}
+.pstate b{color:var(--foreground,inherit);font-weight:600}
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<script>
+/* Review: the decision model. Kept free of the page so it can move into SpillcheckCore.
+   A decision belongs to the exact value (its fingerprint in the app) and covers future
+   appearances too, the way the obsolete marker already does for rotated values. */
+const Review = (() => {
+  const DECISIONS = {
+    rotate:  { label: 'Needs rotation', key: 'R', bucket: 'rotate' },
+    test:    { label: 'Test or dev only', key: 'T', bucket: 'done', quiet: true },
+    fp:      { label: 'Not a secret', key: 'N', bucket: 'done', quiet: true },
+    keep:    { label: 'Real, keeping it', bucket: 'done', quiet: true },
+    rotated: { label: 'Rotated', key: 'D', bucket: 'done', obsolete: true },
+    revoked: { label: 'Revoked', bucket: 'done', obsolete: true },
+  };
+  const bucketOf = value => (value.decision ? DECISIONS[value.decision].bucket : 'review');
+  const inBucket = (values, bucket) => values.filter(v => bucketOf(v) === bucket);
+  const counts = values => ({
+    review: inBucket(values, 'review').length,
+    rotate: inBucket(values, 'rotate').length,
+    done: inBucket(values, 'done').length,
+  });
+
+  /** One decision for one or more values. No decision sends them back to review. */
+  function decide(values, ids, decision, at) {
+    return values.map(v => (ids.includes(v.id)
+      ? { ...v, decision: decision || null, decidedAt: decision ? at : null, sinceDecision: 0 }
+      : v));
+  }
+
+  /** A new appearance of an exact value. The value's decision says what happens to it.
+      Values still open (Review or Rotate) become unread; decided ones only count. */
+  function appear(values, id, inNewConversation, at) {
+    const value = values.find(v => v.id === id);
+    if (!value) return { values, outcome: null };
+    const d = value.decision ? DECISIONS[value.decision] : null;
+    let alert = false;
+    let text;
+    if (d && d.quiet) text = `kept quiet, because you decided “${d.label}”`;
+    else if (d && d.obsolete) text = 'recorded as obsolete, without an alert';
+    else if (value.strong && inNewConversation) { alert = true; text = 'alert sent: first strong appearance in this conversation'; }
+    else if (value.strong) text = 'added without a repeat alert';
+    else text = 'added; generic matches wait for review without an alert';
+    const next = values.map(v => (v.id !== id ? v : {
+      ...v,
+      seen: v.seen + 1,
+      convs: v.convs + (inNewConversation ? 1 : 0),
+      last: 'Just now',
+      t: at ?? v.t,
+      unread: bucketOf(v) !== 'done',
+      sinceDecision: v.decision ? v.sinceDecision + 1 : 0,
+    }));
+    return { values: next, outcome: { alert, text } };
+  }
+
+  return { DECISIONS, bucketOf, inBucket, counts, decide, appear };
+})();
+</script>
+
+<script>
+/* ---------- sample data (synthetic) ---------- */
+const J = (...parts) => parts.join('');
+
+const AGENTS = {
+  claude: { name: 'Claude Code', vendor: 'Anthropic', resume: 'claude --resume' },
+  codex: { name: 'Codex', vendor: 'OpenAI', resume: 'codex resume' },
+};
+const TYPES = {
+  tool: { glyph: '>_', label: 'Tool output', cls: 't-tool' },
+  error: { glyph: '!', label: 'Tool error', cls: 't-err' },
+  prompt: { glyph: '“', label: 'Your message', cls: 't-prompt' },
+  response: { glyph: '✦', label: 'Model response', cls: 't-resp' },
+};
+
+// Newest first. {V} marks where the value sits in an excerpt line.
+const SEED = [
+  {
+    id: 'v61', n: 61, mono: 'PW', kind: 'Password', strong: false, rule: 'leakret-prose-password', unread: true,
+    why: 'A password written in a message.',
+    hint: 'You typed it into a prompt, so it was sent to Anthropic.',
+    service: 'the system that accepts it',
+    value: J('Wint3r-', 'Harbor-88'),
+    project: '~/dev/portal', seen: 2, convs: 1, agents: ['claude'], last: 'Today',
+    ev: { type: 'prompt', agent: 'claude', conv: 81, title: 'Seed staging users', time: 'Today, 09:02',
+      lines: [[null, "the staging admin password is '{V}', can you seed the three demo users with it?"]] },
+    convList: [{ agent: 'claude', conv: 81, title: 'Seed staging users', count: 2, time: 'Today' }],
+  },
+  {
+    id: 'v63', n: 63, mono: 'BT', kind: 'Bearer token', strong: false, rule: 'leakret-opaque-bearer', unread: true,
+    why: 'A token in an Authorization header.',
+    hint: 'Check which host received it.',
+    service: 'the service that issued it',
+    value: J('k7Hq2Lw9Rz4', 'Tn8Vb3Xm6Pc1Yd5Fs0Gj'),
+    project: '~/dev/infra', seen: 3, convs: 1, agents: ['codex'], last: 'Today',
+    ev: { type: 'tool', agent: 'codex', conv: 79, title: 'Check Grafana API access', time: 'Today, 08:47',
+      cmd: 'curl -v https://grafana.internal.example/api/health',
+      lines: [[null, '> GET /api/health HTTP/2'], [null, '> Host: grafana.internal.example'], [null, '> Authorization: Bearer {V}']] },
+    convList: [{ agent: 'codex', conv: 79, title: 'Check Grafana API access', count: 3, time: 'Today' }],
+  },
+  {
+    id: 'v8', n: 8, mono: 'PW', kind: 'Password', strong: false, rule: 'generic-password',
+    why: 'A value assigned to a “password” field.',
+    hint: 'Generic matches like this are often test fixtures, so check where it was used.',
+    service: 'the system that accepts it',
+    value: J('TestPass', 'w0rd!'),
+    project: '~/dev/portal', seen: 218, convs: 9, agents: ['claude', 'codex'], last: 'Yesterday',
+    ev: { type: 'tool', agent: 'claude', conv: 22, title: 'Fix flaky e2e contact route', time: 'Yesterday, 14:07',
+      cmd: 'rg -n password tests/e2e', file: 'tests/e2e/contact-route.test.ts',
+      lines: [[59, "  { password: '{V}', username: 'admin_user' },"], [60, "  { password: '{V}', username: 'responder' },"]] },
+    convList: [
+      { agent: 'claude', conv: 22, title: 'Fix flaky e2e contact route', count: 3, time: 'Yesterday' },
+      { agent: 'codex', conv: 70, title: 'Seed e2e users', count: 3, time: 'Oct 29',
+        snip: [[12, "const admin = await createUser({ password: '{V}' })"]] },
+      { agent: 'codex', conv: 72, title: 'Retry Playwright on CI', count: 1, time: 'Oct 29' },
+      { agent: 'claude', conv: 18, title: 'Write contact form tests', count: 46, time: 'Oct 27', type: 'response',
+        snip: [[null, "I've added a fixture user with the password '{V}' to the e2e setup."]] },
+    ],
+  },
+  {
+    id: 'v19', n: 19, mono: 'DB', kind: 'Database password', strong: false, rule: 'generic-credential-uri',
+    why: 'A password inside a connection string.',
+    hint: 'It points at localhost, which suggests a local database.',
+    service: 'the database server',
+    value: J('devpa', 'ss42'),
+    project: '~/dev/portal', seen: 29, convs: 4, agents: ['claude'], last: 'Yesterday',
+    ev: { type: 'tool', agent: 'claude', conv: 31, title: 'Set up local Postgres', time: 'Yesterday, 10:42',
+      cmd: 'cat .env.local', file: '.env.local',
+      lines: [[1, 'NODE_ENV=development'], [2, J('DATABASE_URL=postgres:', '//app:{V}@localhost:5432/portal')]] },
+    convList: [
+      { agent: 'claude', conv: 31, title: 'Set up local Postgres', count: 12, time: 'Yesterday' },
+      { agent: 'claude', conv: 29, title: 'Migrate users table', count: 9, time: 'Oct 30' },
+    ],
+  },
+  {
+    id: 'v41', n: 41, mono: 'ST', kind: 'Stripe key', strong: true, rule: 'stripe-access-token',
+    why: 'Matches the format of a Stripe live secret key.',
+    hint: 'A live key can create charges, so treat it as real.',
+    service: 'Stripe',
+    value: J('sk', '_live_', '51NcQ7eKpT2vXr9LmWd4Hy8ZaB3sFg6Ju1Ko0Pq'),
+    project: '~/dev/billing-api', seen: 6, convs: 2, agents: ['claude'], last: 'Oct 31',
+    ev: { type: 'tool', agent: 'claude', conv: 58, title: 'Debug webhook signature', time: 'Oct 31, 16:40',
+      cmd: 'cat .env', file: '.env',
+      lines: [[1, 'STRIPE_SECRET_KEY={V}'], [2, 'STRIPE_WEBHOOK_TOLERANCE=300']] },
+    convList: [
+      { agent: 'claude', conv: 58, title: 'Debug webhook signature', count: 4, time: 'Oct 31' },
+      { agent: 'claude', conv: 60, title: 'Add refund endpoint', count: 2, time: 'Oct 31' },
+    ],
+  },
+  {
+    id: 'v26', n: 26, mono: 'GH', kind: 'GitHub token', strong: true, rule: 'github-pat',
+    why: 'Matches the format of a GitHub personal access token.',
+    hint: 'Known formats are almost always real credentials.',
+    service: 'GitHub',
+    value: J('gh', 'p_', 'R8vK2mQ7xTq4LbN9wZc3HfJ6yPd1sGa5Ue0V'),
+    project: '~/dev/billing-api', seen: 26, convs: 3, agents: ['claude', 'codex'], last: 'Oct 31',
+    ev: { type: 'tool', agent: 'codex', conv: 64, title: 'Fix push to private fork', time: 'Oct 31, 09:12',
+      cmd: 'git remote -v',
+      lines: [[null, 'origin  https://{V}@github.com/acme/billing-api.git (fetch)'], [null, 'origin  https://{V}@github.com/acme/billing-api.git (push)']] },
+    convList: [
+      { agent: 'codex', conv: 64, title: 'Fix push to private fork', count: 18, time: 'Oct 31' },
+      { agent: 'claude', conv: 52, title: 'Release script', count: 8, time: 'Oct 30', type: 'error',
+        snip: [[null, 'remote: Invalid username or token. https://{V}@github.com/acme/billing-api.git']] },
+    ],
+  },
+  {
+    id: 'v55', n: 55, mono: 'API', kind: 'API key', strong: false, rule: 'generic-api-key',
+    why: 'A random-looking value assigned to an API key field.',
+    hint: 'Could well be real. The file and project tell you more.',
+    service: 'the issuing service',
+    value: J('4f9c2e7b', 'a1d84c3e', '90b6f5d2', '7a1e8c4b'),
+    project: '~/dev/infra', seen: 4, convs: 1, agents: ['codex'], last: 'Oct 31',
+    ev: { type: 'tool', agent: 'codex', conv: 66, title: 'Plan monitoring changes', time: 'Oct 31, 11:05',
+      cmd: 'cat terraform.tfvars', file: 'terraform.tfvars',
+      lines: [[7, 'region             = "eu-central-2"'], [8, 'monitoring_api_key = "{V}"']] },
+    convList: [{ agent: 'codex', conv: 66, title: 'Plan monitoring changes', count: 4, time: 'Oct 31' }],
+  },
+  {
+    id: 'v57', n: 57, mono: 'JWT', kind: 'JSON Web Token', strong: true, rule: 'jwt', unread: true,
+    why: 'Matches the JSON Web Token format.',
+    hint: 'Its payload names an e2e user, and it expired in 2023.',
+    service: 'the service that issued it',
+    value: J('eyJhbGciOiJIUzI1NiJ9', '.', 'eyJzdWIiOiJlMmUtdXNlciIsImV4cCI6MTcwMDAwMDAwMH0', '.', 'm3Q0b7Zq9fVx2LcN8wRkT5yHs1JdPa6GuE4iOoBzXl'),
+    project: '~/dev/portal', seen: 12, convs: 2, agents: ['claude'], last: 'Oct 30',
+    ev: { type: 'tool', agent: 'claude', conv: 44, title: 'Reproduce 401 on /me', time: 'Oct 30, 15:18',
+      cmd: 'curl -i localhost:3000/me',
+      lines: [[null, 'GET /me HTTP/1.1'], [null, 'Host: localhost:3000'], [null, 'Cookie: session={V}']] },
+    convList: [
+      { agent: 'claude', conv: 44, title: 'Reproduce 401 on /me', count: 9, time: 'Oct 30' },
+      { agent: 'claude', conv: 45, title: 'Session refresh bug', count: 3, time: 'Oct 30' },
+    ],
+  },
+  {
+    id: 'v54', n: 54, mono: 'AZ', kind: 'Azure credential', strong: true, rule: 'azure-ad-client-secret',
+    why: 'Matches the format of an Azure AD client secret.',
+    hint: 'Known formats are almost always real credentials.',
+    service: 'Azure',
+    value: J('Xk8', 'Q~', 'fV2pL9sT4wN7bR1yH6cM3dJ0aE5gU8iO_qZ'),
+    project: '~/dev/infra', seen: 1, convs: 1, agents: ['codex'], last: 'Oct 31',
+    decision: 'rotate', decidedAt: 'today at 09:20',
+    ev: { type: 'tool', agent: 'codex', conv: 67, title: 'Wire up SSO for staging', time: 'Oct 31, 13:22',
+      cmd: 'az ad app credential reset --id 6f1c…',
+      lines: [[null, '{'], [null, '  "appId": "6f1c…",'], [null, '  "password": "{V}",'], [null, '  "tenant": "acme.onmicrosoft.com"'], [null, '}']] },
+    convList: [{ agent: 'codex', conv: 67, title: 'Wire up SSO for staging', count: 1, time: 'Oct 31' }],
+  },
+  {
+    id: 'v33', n: 33, mono: 'API', kind: 'API key', strong: false, rule: 'generic-api-key',
+    why: 'A random-looking value assigned to a key field.',
+    hint: '',
+    service: 'the issuing service',
+    value: J('node-modules-', '9f2c4e1a7b3d8e60'),
+    project: '~/dev/portal', seen: 14, convs: 5, agents: ['claude', 'codex'], last: 'Oct 30',
+    decision: 'fp', decidedAt: 'on Oct 30', sinceDecision: 3,
+    ev: { type: 'tool', agent: 'claude', conv: 40, title: 'Speed up CI', time: 'Oct 28, 11:20',
+      cmd: 'cat .github/workflows/ci.yml', file: '.github/workflows/ci.yml',
+      lines: [[14, '      - uses: actions/cache@v4'], [15, '        with:'], [16, '          key: {V}']] },
+    convList: [
+      { agent: 'claude', conv: 40, title: 'Speed up CI', count: 6, time: 'Oct 28' },
+      { agent: 'codex', conv: 77, title: 'Cache Playwright browsers', count: 3, time: 'Oct 30' },
+    ],
+  },
+  {
+    id: 'v12', n: 12, mono: 'KEY', kind: 'Private key', strong: true, rule: 'private-key',
+    why: 'A complete private key block.',
+    hint: '',
+    service: 'the servers that trust it',
+    value: J('-----BEGIN OPENSSH ', 'PRIVATE KEY----- b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAE…'),
+    project: '~/dev/infra', seen: 2, convs: 1, agents: ['codex'], last: 'Oct 27',
+    decision: 'rotated', decidedAt: 'on Oct 28',
+    ev: { type: 'tool', agent: 'codex', conv: 12, title: 'Deploy key for runner', time: 'Oct 27, 18:03',
+      cmd: 'cat ~/.ssh/deploy_runner', lines: [[1, '{V}']] },
+    convList: [{ agent: 'codex', conv: 12, title: 'Deploy key for runner', count: 2, time: 'Oct 27' }],
+  },
+];
+
+/* ---------- page state ---------- */
+function initialState() {
+  return {
+    mode: 'inbox', bucket: 'review',
+    unlocked: false, hidden: false, authenticating: false,
+    // t orders by latest appearance; SEED is newest first.
+    values: SEED.map((v, i) => ({ decision: null, decidedAt: null, sinceDecision: 0, unread: false, t: SEED.length - i, ...v })),
+    selected: ['v8'], anchor: 'v8',
+    // Focus: { bucket, ids, title, cur }. The set is fixed when it starts, so new detections
+    // never reshuffle it; cur is null once every value in it has a decision.
+    session: null,
+    openConv: null, menu: null, showApps: false, search: '',
+    toast: null, undo: null, notification: null,
+    sims: 0, clock: SEED.length,
+    // Unread values sort first. This is the set used for ordering, refreshed only when the list
+    // is reloaded, so opening a value clears its dot without moving its row.
+    order: SEED.filter(v => v.unread).map(v => v.id),
+    lastChange: 'Locked. Values, excerpts, titles and project paths stay hidden until one Touch ID.',
+  };
+}
+
+let S = initialState();
+const app = document.getElementById('app');
+let toastTimer, notifTimer, refocusSearch = false, revealSelection = false;
+
+/* ---------- helpers ---------- */
+const h = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+const byId = id => S.values.find(v => v.id === id);
+const shown = () => S.unlocked && !S.hidden;
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+const times = n => (n === 1 ? 'once' : n === 2 ? 'twice' : `${n} times`);
+const nameOf = v => `${v.kind} #${v.n}`;
+const shortProject = p => p.split('/').pop();
+const trunc = (s, n) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
+const MASK = '••••••••••••';
+// Lists say what still has to happen, never a bare verb that reads as if it already did.
+const BUCKETS = { review: 'To review', rotate: 'To rotate', done: 'Done' };
+const pending = ses => ses.ids.filter(id => Review.bucketOf(byId(id)) === ses.bucket);
+const refreshOrder = () => { S.order = S.values.filter(v => v.unread).map(v => v.id); };
+const focusValue = () => (S.mode === 'focus' && S.session && S.session.cur ? byId(S.session.cur) : null);
+
+function visible() {
+  const q = S.search.trim().toLowerCase();
+  const pinned = new Set(S.order);
+  return Review.inBucket(S.values, S.bucket).filter(v => {
+    if (!q) return true;
+    // Protected text is only searchable while it can be shown.
+    const words = [v.kind, `#${v.n}`, ...v.agents.map(a => AGENTS[a].name)]
+      .concat(shown() ? [v.project, v.ev.title, ...v.convList.map(c => c.title)] : []);
+    return words.join(' ').toLowerCase().includes(q);
+  }).sort((a, b) => (pinned.has(b.id) - pinned.has(a.id)) || (b.t - a.t));
+}
+
+const ICONS = {
+  lock: '<rect x="3" y="7.5" width="10" height="6.5" rx="1.5"/><path d="M5.5 7.5V5.2a2.5 2.5 0 0 1 5 0v2.3"/>',
+  unlock: '<rect x="3" y="7.5" width="10" height="6.5" rx="1.5"/><path d="M5.5 7.5V5.2a2.5 2.5 0 0 1 4.8-1"/>',
+  eye: '<path d="M1.5 8S4 3.5 8 3.5 14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8Z"/><circle cx="8" cy="8" r="2"/>',
+  eyeOff: '<path d="M1.5 8S4 3.5 8 3.5 14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8Z"/><circle cx="8" cy="8" r="2"/><path d="m2.5 2.5 11 11"/>',
+  copy: '<rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M3.5 10.5h-.2a.8.8 0 0 1-.8-.8V3.3a.8.8 0 0 1 .8-.8h6.4a.8.8 0 0 1 .8.8v.2"/>',
+  chev: '<path d="m4.5 6.5 3.5 3.5 3.5-3.5"/>',
+  up: '<path d="m4.5 9.5 3.5-3.5 3.5 3.5"/>',
+  down: '<path d="m4.5 6.5 3.5 3.5 3.5-3.5"/>',
+  left: '<path d="M9.5 4 5.5 8l4 4"/>',
+  focus: '<path d="M2.5 6V2.5H6M10 2.5h3.5V6M13.5 10v3.5H10M6 13.5H2.5V10"/>',
+  check: '<path d="m3.5 8.5 3 3 6-7"/>',
+  search: '<circle cx="7" cy="7" r="4.25"/><path d="m10.2 10.2 3.3 3.3"/>',
+  close: '<path d="m4 4 8 8M12 4l-8 8"/>',
+};
+const icon = (name, cls = '') => `<svg class="ic ${cls}" viewBox="0 0 16 16" aria-hidden="true">${ICONS[name]}</svg>`;
+const dots = () => '<svg class="ic fill" viewBox="0 0 16 16" aria-hidden="true"><circle cx="3.5" cy="8" r="1.3"/><circle cx="8" cy="8" r="1.3"/><circle cx="12.5" cy="8" r="1.3"/></svg>';
+const lights = () => '<span class="lights" aria-hidden="true"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i></span>';
+const agentTile = (a, size = 16) => `<span class="ag ag-${a}" style="--s:${size}px" title="${AGENTS[a].name}">${a === 'claude' ? '✻' : '◎'}</span>`;
+
+/* ---------- pieces shared by the Inbox and Focus ---------- */
+function seg() {
+  const c = Review.counts(S.values);
+  return `<div class="seg" role="tablist">${Object.entries(BUCKETS).map(([b, label]) =>
+    `<button class="seg-i ${S.bucket === b ? 'on' : ''}" role="tab" aria-selected="${S.bucket === b}" data-act="bucket" data-b="${b}">${label}<span class="cnt">${c[b]}</span>${S.values.some(v => v.unread && Review.bucketOf(v) === b) ? '<span class="ud sm" title="Unread"></span>' : ''}</button>`).join('')}</div>`;
+}
+
+const searchBox = () => `<label class="search">${icon('search')}<input id="q" placeholder="Search" value="${h(S.search)}" autocomplete="off" spellcheck="false"></label>`;
+
+function lockControls() {
+  if (!S.unlocked) {
+    return `<button class="mini" data-act="unlock" ${S.authenticating ? 'disabled' : ''}>${icon('lock')}${S.authenticating ? 'Touch ID…' : 'Unlock…'}</button>`;
+  }
+  return `<button class="icon-btn" data-act="toggleHidden" title="${S.hidden ? 'Show values' : 'Hide values. Stays unlocked.'}" aria-label="${S.hidden ? 'Show values' : 'Hide values'}">${icon(S.hidden ? 'eye' : 'eyeOff')}</button>`
+    + `<button class="mini" data-act="lock" title="Locks by itself after 5 idle minutes, when the window closes, or when the Mac sleeps.">${icon('unlock')}Lock</button>`;
+}
+
+function head(v) {
+  const sig = v.strong
+    ? `<span class="sig strong" title="Rule ${v.rule}. A distinctive format, so it is very likely a real credential.">Known format</span>`
+    : `<span class="sig" title="Rule ${v.rule}. A generic pattern, so the context decides.">Generic pattern</span>`;
+  return `<div class="d-head">
+    <span class="tile lg">${v.mono}</span>
+    <div class="d-hd">
+      <div class="d-t"><span class="d-kind">${h(v.kind)}</span><span class="num" title="Entry number. Tells values apart while they are hidden.">#${v.n}</span></div>
+      <div class="d-why">${sig}<span>${h(v.why)}${v.hint ? ' ' + h(v.hint) : ''}</span></div>
+    </div>
+  </div>`;
+}
+
+function codeLines(lines, v) {
+  const value = shown() ? `<mark>${h(v.value)}</mark>` : `<span class="mask">${MASK}</span>`;
+  const numbered = lines.some(([n]) => n != null);
+  return `<div class="code${numbered ? '' : ' nog'}">${lines.map(([n, text]) =>
+    `<div class="ln"><span class="g">${n ?? ''}</span><span class="c">${text.split('{V}').map(h).join(value)}</span></div>`).join('')}</div>`;
+}
+
+function evidence(v) {
+  if (!S.unlocked) {
+    return `<section class="ev ev-locked">
+      <span class="lk">${icon('lock')}</span>
+      <div class="lk-t"><b>Unlock to see the value and where it appeared</b>
+        <span>One Touch ID for the session. Every value then shows with its context until you lock, leave it idle for 5 minutes, or the Mac sleeps.</span></div>
+      <button class="btn primary" data-act="unlock" ${S.authenticating ? 'disabled' : ''}>${S.authenticating ? 'Waiting for Touch ID…' : 'Unlock…'}</button>
+    </section>`;
+  }
+  if (S.hidden) {
+    return `<section class="ev ev-locked">
+      <span class="lk">${icon('eyeOff')}</span>
+      <div class="lk-t"><b>Values are hidden</b><span>Still unlocked, so showing them again needs no Touch ID.</span></div>
+      <button class="btn" data-act="toggleHidden">Show values</button>
+    </section>`;
+  }
+  const e = v.ev;
+  const t = TYPES[e.type];
+  return `<div class="sec-l">First seen</div>
+  <section class="ev">
+    <div class="ev-h">
+      <span class="src ${t.cls}" title="${t.label}">${h(t.glyph)}</span>
+      <div class="ev-m">
+        <div class="ev-1"><b>${t.label}</b><span class="sep">·</span>${agentTile(e.agent, 14)}<span>${AGENTS[e.agent].name}</span></div>
+        <div class="ev-t">${h(e.title)}</div>
+        <div class="ev-2"><span>${h(v.project)}</span>${e.cmd ? `<span>$ ${h(e.cmd)}</span>` : ''}</div>
+      </div>
+      <span class="time">${h(e.time)}</span>
+    </div>
+    ${e.file ? `<div class="ev-file">${h(e.file)}</div>` : ''}
+    ${codeLines(e.lines, v)}
+    <div class="ev-f">
+      <span class="lbl">Value</span>
+      <code class="val" title="${h(v.value)}">${h(v.value)}</code>
+      <button class="mini ghost" data-act="copyValue">${icon('copy')}Copy</button>
+      <span class="grow"></span>
+      <button class="mini ghost" data-act="toggleHidden">${icon('eyeOff')}Hide values</button>
+    </div>
+  </section>`;
+}
+
+function convMenu(c) {
+  const a = AGENTS[c.agent];
+  return `<div class="menu" role="menu">
+    <button class="mi" disabled><span>Open in ${a.name}</span><small>No verified link for CLI conversations.</small></button>
+    <button class="mi" data-act="copyResume" data-agent="${c.agent}"><span>Copy resume command</span><small>Continues this conversation in Terminal, for example to ask the agent to clean up. Sends new requests to ${a.vendor}.</small></button>
+  </div>`;
+}
+
+function appearances(v) {
+  const rows = v.convList.map((c, i) => {
+    const key = `${v.id}:${i}`;
+    const open = S.openConv === key;
+    const t = TYPES[c.type || v.ev.type];
+    const body = shown()
+      ? `<div class="src-l">${t.label} · ${h(c.time)}</div>${codeLines(c.snip || v.ev.lines, v)}`
+      : `<div class="src-l">${S.unlocked ? 'Values are hidden.' : 'Unlock to read this appearance.'}</div>`;
+    return `<div class="cv ${open ? 'open' : ''}">
+      <button class="cv-row" data-act="expandConv" data-key="${key}" aria-expanded="${open}">
+        ${agentTile(c.agent, 16)}<span class="cv-t">${shown() ? h(c.title) : `Conversation ${c.conv}`}</span>
+        ${shown() ? `<span class="cv-p">${h(shortProject(c.project || v.project))}</span>` : ''}
+        <span class="cv-n">${c.count}×</span><span class="cv-d">${h(c.time)}</span>${icon('chev', 'chev')}
+      </button>
+      <button class="icon-btn" data-act="menu" data-m="conv:${key}" title="Open or resume this conversation" aria-label="Conversation actions">${dots()}</button>
+      ${S.menu === `conv:${key}` ? convMenu(c) : ''}
+      ${open ? `<div class="cv-x">${body}</div>` : ''}
+    </div>`;
+  }).join('');
+  const more = v.convs - v.convList.length;
+  return `<section>
+    <div class="apps-h"><b>Seen ${times(v.seen)}</b> in ${plural(v.convs, 'conversation')} <span class="muted">· ${v.agents.map(a => AGENTS[a].name).join(', ')}</span></div>
+    <div class="cv-list">${rows}${more > 0 ? `<div class="cv-more">${plural(more, 'more conversation')}</div>` : ''}</div>
+  </section>`;
+}
+
+const moreMenu = () => `<div class="menu up" role="menu">
+  <button class="mi" data-act="decide" data-d="rotated"><span>Already rotated</span><small>Replaced and invalidated. Later appearances show as obsolete.</small></button>
+  <button class="mi" data-act="decide" data-d="revoked"><span>Already revoked</span><small>Invalidated without a replacement.</small></button>
+  <button class="mi" data-act="decide" data-d="keep"><span>Real, but keep it</span><small>You accept the risk. No rotation planned; future appearances stay quiet.</small></button>
+</div>`;
+
+function decisionBar(vs, extra = '') {
+  const bucket = Review.bucketOf(vs[0]);
+  const many = vs.length > 1;
+  if (bucket === 'review') {
+    const strong = vs.some(v => v.strong);
+    const btn = (d, primary) => `<button class="btn ${primary ? 'primary' : ''}" data-act="decide" data-d="${d}"><kbd>${Review.DECISIONS[d].key}</kbd>${Review.DECISIONS[d].label}</button>`;
+    return `<footer class="dbar">
+      <div class="dq"><b>${many ? `Do these ${vs.length} values need rotating?` : 'Does this need rotating?'}</b>
+        <span>Applies to all ${many ? 'their' : 'its'} appearances, including future ones.</span></div>
+      <div class="da">${btn('test')}${btn('fp')}${btn('rotate', strong)}
+        <span class="rel"><button class="icon-btn" data-act="menu" data-m="more" title="Other decisions" aria-label="Other decisions">${dots()}</button>${S.menu === 'more' ? moreMenu() : ''}</span></div>
+      ${extra}
+    </footer>`;
+  }
+  if (bucket === 'rotate') {
+    const where = many ? 'each service' : vs[0].service;
+    const since = !many && vs[0].sinceDecision ? ` <span class="since">Seen ${plural(vs[0].sinceDecision, 'more time')} since you marked it.</span>` : '';
+    return `<footer class="dbar">
+      <div class="dq"><b>Change ${many ? 'them' : 'it'} at ${h(where)}, then confirm</b>
+        <span>Later appearances of ${many ? 'these values' : 'this value'} then show as obsolete, without alerts.${since}</span></div>
+      <div class="da"><button class="btn ghost" data-act="decide" data-d="">Back to review</button>
+        <button class="btn" data-act="decide" data-d="revoked">Mark revoked</button>
+        <button class="btn primary" data-act="decide" data-d="rotated"><kbd>D</kbd>Mark rotated</button></div>
+      ${extra}
+    </footer>`;
+  }
+  const v = vs[0];
+  const d = Review.DECISIONS[v.decision];
+  const future = d.quiet ? 'Future appearances stay quiet.' : 'Later appearances show as obsolete, without alerts.';
+  const since = !many && v.sinceDecision ? ` <span class="since">${plural(v.sinceDecision, 'new appearance')} since.</span>` : '';
+  return `<footer class="dbar done">
+    <div class="dq"><b>${icon('check')}${many ? `${vs.length} values decided` : h(d.label)}</b>
+      <span>${many ? 'Changing the decision sends them back to Review.' : `Decided ${h(v.decidedAt)}. ${future}`}${since}</span></div>
+    <div class="da"><button class="btn" data-act="decide" data-d="">Change decision</button></div>
+    ${extra}
+  </footer>`;
+}
+
+function emptyState() {
+  const c = Review.counts(S.values);
+  const box = (ic, title, body, extra = '') => `<div class="empty"><div class="em-i">${icon(ic)}</div><b>${title}</b><span>${body}</span>${extra}</div>`;
+  if (S.search.trim()) {
+    return box('search', 'No values match', `Nothing in “${BUCKETS[S.bucket]}” matches.${S.unlocked ? '' : ' Projects and titles are searchable once unlocked.'}`);
+  }
+  if (S.bucket === 'review') {
+    return box('check', 'Nothing left to review',
+      c.rotate ? `${plural(c.rotate, 'value')} still ${c.rotate === 1 ? 'needs' : 'need'} rotating.` : 'Every value has a decision.',
+      c.rotate ? '<button class="btn" data-act="bucket" data-b="rotate">Show values to rotate</button>' : '');
+  }
+  if (S.bucket === 'rotate') return box('check', 'Nothing to rotate', 'Values you mark “Needs rotation” wait here until you confirm the change.');
+  return box('check', 'No decisions yet', 'Values you have dealt with land here, with the reason.');
+}
+
+function overlays() {
+  return (S.toast ? `<div class="toast" role="status"><span>${S.toast.html}</span>${S.toast.undoable && S.undo ? '<button class="link" data-act="undo">Undo</button>' : ''}</div>` : '')
+    + (S.notification ? `<div class="notif" role="alert"><div class="n-app"><i></i>SPILLCHECK<em>now</em></div><b>${h(S.notification.title)}</b><span>${h(S.notification.body)}</span></div>` : '');
+}
+
+/* ---------- Inbox (default) ---------- */
+function rowA(v) {
+  const sel = S.selected.includes(v.id);
+  const d = v.decision ? Review.DECISIONS[v.decision] : null;
+  const done = Review.bucketOf(v) === 'done';
+  const where = shown() ? h(shortProject(v.project)) : `#${v.n}`;
+  // Done rows lead with the decision; the others with where the value lives.
+  const second = done
+    ? `<span class="p">${h(d.label)}</span>${v.sinceDecision ? `<span class="x">·</span><span class="x">+${v.sinceDecision} since</span>` : ''}`
+    : `${v.strong && !d ? '<span class="kf x">Known format</span><span class="x">·</span>' : ''}<span class="p">${where}</span><span class="x">·</span><span class="x">${v.seen}×</span>`;
+  return `<button class="row ${sel ? 'sel' : ''} ${done ? 'done' : ''} ${v.unread ? 'unread' : ''}" data-act="select" data-id="${v.id}" aria-pressed="${sel}">
+    ${v.unread ? '<span class="ud" title="Unread"></span>' : ''}<span class="tile">${v.mono}</span>
+    <span class="r-m">
+      <span class="r-1"><span class="r-k">${h(v.kind)}</span><span class="r-t">${h(v.last)}</span></span>
+      <span class="r-2">${second}</span>
+    </span>
+  </button>`;
+}
+
+function viewInbox() {
+  const list = visible();
+  const sel = S.selected.map(byId).filter(Boolean);
+  const unread = list.filter(v => v.unread).length;
+  const listHead = S.bucket !== 'done' && list.length
+    ? `<div class="lh"><span>${list.length} to ${S.bucket === 'rotate' ? 'rotate' : 'review'}${unread ? ` · <span class="ud-n">${unread} unread</span>` : ''}</span><button class="mini ghost" data-act="focus" data-kind="bucket" title="Go through them one at a time, from the top">${icon('focus')}Focus<kbd>F</kbd></button></div>`
+    : '';
+  let main;
+  let bar = '';
+  if (sel.length > 1) {
+    main = `<div class="d-scroll" data-scroll="bulk">
+      <div class="bulk-h"><b>${sel.length} values selected</b><span>Decide them together below, or go through them one at a time.</span></div>
+      ${S.bucket !== 'done' ? `<div><button class="btn" data-act="focus" data-kind="selection">${icon('focus')}Go through one by one</button></div>` : ''}
+      <div class="bulk-l">${sel.map(v => `<div class="bulk-r"><span class="tile sm">${v.mono}</span><span>${h(v.kind)}</span><span class="muted">${shown() ? h(shortProject(v.project)) : `#${v.n}`}</span><span class="grow"></span>${shown() ? `<code class="val">${h(trunc(v.value, 20))}</code>` : ''}<span class="muted">${v.seen}×</span></div>`).join('')}</div>
+    </div>`;
+    bar = decisionBar(sel);
+  } else if (sel.length === 1) {
+    main = `<div class="d-scroll" data-scroll="detail:${sel[0].id}">${head(sel[0])}${evidence(sel[0])}${appearances(sel[0])}</div>`;
+    bar = decisionBar(sel);
+  } else {
+    main = emptyState();
+  }
+  return `<div class="win a">
+    <aside class="sb">
+      <div class="sb-head">${lights()}<span class="app">Spillcheck</span><span class="mon"><i class="dot" style="background:var(--sc-amber)"></i>Monitoring</span></div>
+      <div class="sb-pad">${searchBox()}</div>
+      <div class="sb-pad">${seg()}</div>
+      ${listHead}
+      <div class="sb-list" data-scroll="list:${S.bucket}">${list.length ? list.map(rowA).join('') : `<div class="sb-empty">${S.search.trim() ? 'No values match.' : 'Nothing here.'}</div>`}</div>
+    </aside>
+    <main class="main${bar ? '' : ' full'}">${main}</main>
+    <div class="sb-foot"><span class="cov"><i class="half"></i>Coverage <em>Partial</em></span><span class="grow"></span>${lockControls()}</div>
+    ${bar ? `<div class="bar-cell">${bar}</div>` : ''}
+    ${overlays()}
+  </div>`;
+}
+
+/* ---------- Focus: a session started from the Inbox ---------- */
+const OUTCOME = {
+  rotate: ['needs rotation', 'need rotation'],
+  test: ['test or dev only', 'test or dev only'],
+  fp: ['not a secret', 'not secrets'],
+  keep: ['kept as is', 'kept as is'],
+  rotated: ['rotated', 'rotated'],
+  revoked: ['revoked', 'revoked'],
+  none: ['back in review', 'back in review'],
+};
+
+function completion(ses) {
+  const vs = ses.ids.map(byId);
+  const tally = {};
+  vs.forEach(v => { const k = v.decision || 'none'; tally[k] = (tally[k] || 0) + 1; });
+  const toRotate = vs.filter(v => v.decision === 'rotate').length;
+  const reviewing = ses.bucket === 'review';
+  return `<div class="fin">
+    <div class="em-i">${icon('check')}</div>
+    <b>${plural(vs.length, 'value')} ${reviewing ? 'reviewed' : 'handled'}</b>
+    <div class="fin-sum">${Object.entries(tally).map(([k, n]) => `<span class="pill">${n} ${OUTCOME[k][n === 1 ? 0 : 1]}</span>`).join('')}</div>
+    <span class="fin-note">${reviewing
+      ? 'These decisions cover future appearances too.' + (toRotate ? ' What needs rotation waits in Rotate.' : '')
+      : 'Later appearances of rotated or revoked values show as obsolete, without alerts.'}</span>
+    <div class="fin-acts"><button class="btn" data-act="exitFocus">Back to Inbox</button>${reviewing && toRotate
+      ? `<button class="btn primary" data-act="focus" data-kind="rotateSession">${toRotate === 1 ? 'Continue with the one to rotate' : `Continue with the ${toRotate} to rotate`}</button>` : ''}</div>
+  </div>`;
+}
+
+function viewFocus() {
+  const ses = S.session;
+  const total = ses.ids.length;
+  const finished = total - pending(ses).length;
+  const pct = total ? Math.round((finished / total) * 100) : 0;
+  const cur = focusValue();
+  const idx = cur ? ses.ids.indexOf(cur.id) : -1;
+  const curBucket = cur ? Review.bucketOf(cur) : null;
+  const keys = curBucket === 'review' ? 'T, N or R to decide · ' : curBucket === 'rotate' ? 'D once rotated · ' : '';
+  const hints = `<div class="hints">${keys}↑ ↓ previous and next · Esc back to the Inbox · ⌘Z undo</div>`;
+  const body = cur ? `
+    <div class="f-nav">
+      <button class="mini ghost" data-act="fmove" data-dir="-1" ${idx <= 0 ? 'disabled' : ''}>${icon('up')}Previous</button>
+      <button class="mini ghost" data-act="fmove" data-dir="1" ${idx >= total - 1 ? 'disabled' : ''}>Next${icon('down')}</button>
+    </div>
+    <article class="f-card">
+      ${head(cur)}
+      ${evidence(cur)}
+      <div class="f-sum">
+        <span><b>Seen ${times(cur.seen)}</b> in ${plural(cur.convs, 'conversation')}</span>
+        <span class="muted">${cur.agents.map(a => AGENTS[a].name).join(', ')}</span>
+        ${shown() ? `<span class="p">${h(cur.project)}</span>` : ''}
+        <span class="grow"></span>
+        <button class="link" data-act="toggleApps">${S.showApps ? 'Hide conversations' : 'Show conversations'}</button>
+      </div>
+      ${S.showApps ? appearances(cur) : ''}
+    </article>` : completion(ses);
+  return `<div class="win f">
+    <header class="tb">${lights()}
+      <button class="mini ghost" data-act="exitFocus" title="Back to the Inbox (Esc)">${icon('left')}Inbox</button>
+      <span class="f-title">${h(ses.title)}</span>
+      <div class="f-prog"><div class="bar"><i style="width:${pct}%"></i></div><span>${finished} of ${total} done</span></div>
+      ${lockControls()}
+    </header>
+    <main class="f-stage" data-scroll="focus:${cur ? cur.id : 'end'}">${body}</main>
+    ${cur ? decisionBar([cur], hints) : ''}
+    ${overlays()}
+  </div>`;
+}
+
+/* ---------- prototype controls ---------- */
+function protoBar() {
+  const c = Review.counts(S.values);
+  const lock = S.unlocked ? (S.hidden ? 'unlocked, values hidden' : 'unlocked') : 'locked';
+  const where = S.mode === 'focus' && S.session ? `Focus: ${S.session.title.toLowerCase()}` : 'Inbox';
+  return `<div class="pbar" role="toolbar" aria-label="Prototype controls">
+      <span class="pv"><b>Prototype</b> <i>Inbox by default, Focus for one at a time</i></span>
+      <span class="psep"></span>
+      <button data-act="simulate" title="Pretend an agent printed the current value again, in a new conversation">Simulate a new appearance</button>
+      <button data-act="reset">Reset</button>
+    </div>
+    <div class="pstate"><b>${h(where)}</b> · ${lock} · To review ${c.review} · To rotate ${c.rotate} · Done ${c.done}<br>${h(S.lastChange)}</div>`;
+}
+
+
+/* ---------- actions ---------- */
+function showToast(html, undoable) {
+  S.toast = { html, undoable };
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { S.toast = null; render(); }, 5200);
+}
+
+function normalize() {
+  if (S.mode !== 'inbox') return;
+  const ids = visible().map(v => v.id);
+  S.selected = S.selected.filter(id => ids.includes(id));
+  if (!S.selected.length && ids.length) { S.selected = [ids[0]]; S.anchor = ids[0]; }
+}
+
+const targets = () => (S.mode === 'focus' ? (focusValue() ? [focusValue().id] : []) : S.selected);
+
+function decide(ids, decision) {
+  ids = ids.filter(id => byId(id));
+  if (!ids.length) return;
+  S.undo = { values: S.values, selected: S.selected, anchor: S.anchor, session: S.session, mode: S.mode, bucket: S.bucket };
+  const before = visible().map(v => v.id);
+  const subjects = ids.map(byId);
+  S.values = Review.decide(S.values, ids, decision, 'just now');
+  if (S.mode === 'focus' && S.session) {
+    // Move on once the value has left the session's queue; a changed mind keeps it on screen.
+    const ses = S.session;
+    if (ses.cur && ids.includes(ses.cur) && Review.bucketOf(byId(ses.cur)) !== ses.bucket) {
+      const open = pending(ses);
+      const at = ses.ids.indexOf(ses.cur);
+      S.session = { ...ses, cur: open.find(id => ses.ids.indexOf(id) > at) || open[0] || null };
+    }
+  } else {
+    const after = new Set(visible().map(v => v.id));
+    const at = ids.map(id => before.indexOf(id)).filter(i => i >= 0);
+    const first = at.length ? Math.min(...at) : -1;
+    const rest = before.filter(id => after.has(id));
+    const next = rest.find(id => before.indexOf(id) > first) ?? rest[rest.length - 1] ?? null;
+    S.selected = next ? [next] : [];
+    S.anchor = next;
+  }
+  S.openConv = null;
+  const them = ids.length > 1;
+  const who = them ? `${ids.length} values` : nameOf(subjects[0]);
+  const d = decision ? Review.DECISIONS[decision] : null;
+  const what = !d ? `${them ? 'are' : 'is'} back in Review.`
+    : d.bucket === 'rotate' ? `→ To rotate. Change ${them ? 'them' : 'it'} at ${them ? 'each service' : subjects[0].service}, then mark ${them ? 'them' : 'it'} rotated.`
+    : d.quiet ? `→ Done: ${d.label}. Future appearances stay quiet.`
+    : `→ Done: ${d.label}. Later appearances show as obsolete.`;
+  S.lastChange = `${who} ${what}`;
+  showToast(`<b>${h(who)}</b> ${h(what)}`, true);
+}
+
+function undo() {
+  if (!S.undo) return;
+  Object.assign(S, S.undo);
+  S.undo = null;
+  S.lastChange = 'Undid the last decision.';
+  showToast('Undone.', false);
+}
+
+function unlock() {
+  if (S.unlocked || S.authenticating) return;
+  S.authenticating = true;
+  render();
+  setTimeout(() => {
+    S.authenticating = false;
+    S.unlocked = true;
+    S.hidden = false;
+    S.lastChange = 'Unlocked with Touch ID (simulated). Every value shows with its context, with no more prompts, until you lock.';
+    normalize();
+    render();
+  }, 700);
+}
+
+function select(id, e) {
+  const ids = visible().map(v => v.id);
+  if (e && (e.metaKey || e.ctrlKey)) {
+    S.selected = S.selected.includes(id) ? S.selected.filter(x => x !== id) : [...S.selected, id];
+    if (!S.selected.length) S.selected = [id];
+    S.anchor = id;
+  } else if (e && e.shiftKey && S.anchor && ids.includes(S.anchor)) {
+    const a = ids.indexOf(S.anchor);
+    const b = ids.indexOf(id);
+    S.selected = ids.slice(Math.min(a, b), Math.max(a, b) + 1);
+  } else {
+    S.selected = [id];
+    S.anchor = id;
+  }
+  S.openConv = null;
+}
+
+function move(dir) {
+  const ids = visible().map(v => v.id);
+  if (!ids.length) return;
+  const i = ids.indexOf(S.selected[0]);
+  const next = ids[i < 0 ? 0 : Math.max(0, Math.min(ids.length - 1, i + dir))];
+  S.selected = [next];
+  S.anchor = next;
+  S.openConv = null;
+  revealSelection = true;
+}
+
+function setBucket(b) {
+  S.bucket = b;
+  S.selected = [];
+  S.openConv = null;
+  refreshOrder();
+}
+
+/** kind: 'bucket' (the open list, from the top, so unread values come first), 'selection', 'rotateSession'. */
+function startFocus(kind) {
+  const bucket = kind === 'rotateSession' ? 'rotate' : S.bucket;
+  if (bucket === 'done') return;
+  let ids;
+  if (kind === 'rotateSession') ids = (S.session ? S.session.ids : []).filter(id => byId(id).decision === 'rotate');
+  else if (kind === 'selection') ids = visible().map(v => v.id).filter(id => S.selected.includes(id));
+  else ids = visible().map(v => v.id);
+  if (!ids.length) return;
+  const noun = kind === 'selection' ? 'selected value' : 'value';
+  const title = `${plural(ids.length, noun)} to ${bucket === 'rotate' ? 'rotate' : 'review'}`;
+  S.bucket = bucket;
+  S.session = { bucket, ids, title, cur: ids[0] };
+  S.mode = 'focus';
+  S.showApps = false;
+  S.openConv = null;
+  S.lastChange = `Focus: ${title}. Esc returns to the Inbox.`;
+}
+
+function exitFocus() {
+  const ses = S.session;
+  S.mode = 'inbox';
+  if (ses) {
+    S.bucket = ses.bucket;
+    const list = visible().map(v => v.id);
+    const keep = ses.cur && list.includes(ses.cur) ? ses.cur : pending(ses)[0] || list[0] || null;
+    S.selected = keep ? [keep] : [];
+    S.anchor = keep;
+  }
+  S.session = null;
+  S.openConv = null;
+  refreshOrder();
+  S.lastChange = 'Back in the Inbox, on the value you were looking at.';
+}
+
+function focusMove(dir) {
+  const ses = S.session;
+  if (!ses) return;
+  const i = ses.cur ? ses.ids.indexOf(ses.cur) : ses.ids.length;
+  S.session = { ...ses, cur: ses.ids[Math.max(0, Math.min(ses.ids.length - 1, i + dir))] };
+  S.openConv = null;
+}
+
+function simulate() {
+  const id = (focusValue() && focusValue().id) || S.selected[0] || (visible()[0] && visible()[0].id);
+  const v = id && byId(id);
+  if (!v) { S.lastChange = 'Select a value first.'; return; }
+  const conv = 90 + S.sims++;
+  const result = Review.appear(S.values, id, true, ++S.clock);
+  S.values = result.values;
+  refreshOrder();
+  S.lastChange = `${nameOf(v)} appeared in a new conversation (Conversation ${conv}): ${result.outcome.text}.`;
+  showToast(h(S.lastChange), false);
+  if (result.outcome.alert) {
+    S.notification = { title: `New ${v.kind} detected`, body: `Conversation ${conv} · ${AGENTS[v.agents[0]].name}\nValue hidden. Open Spillcheck to review.` };
+    clearTimeout(notifTimer);
+    notifTimer = setTimeout(() => { S.notification = null; render(); }, 4800);
+  }
+}
+
+/* ---------- wiring ---------- */
+/** Whatever is on screen counts as read: the single selected value, or the value in Focus. */
+function markSeen() {
+  const ids = S.mode === 'focus' ? (S.session && S.session.cur ? [S.session.cur] : []) : (S.selected.length === 1 ? S.selected : []);
+  if (ids.some(id => byId(id) && byId(id).unread)) S.values = S.values.map(v => (ids.includes(v.id) ? { ...v, unread: false } : v));
+}
+
+function render() {
+  markSeen();
+  const scroll = {};
+  app.querySelectorAll('[data-scroll]').forEach(el => { scroll[el.dataset.scroll] = el.scrollTop; });
+  const win = S.mode === 'focus' && S.session ? viewFocus() : viewInbox();
+  app.innerHTML = `<div class="stage">${win}${protoBar()}</div>`;
+  app.querySelectorAll('[data-scroll]').forEach(el => {
+    if (scroll[el.dataset.scroll] != null) el.scrollTop = scroll[el.dataset.scroll];
+  });
+  if (refocusSearch) {
+    const q = document.getElementById('q');
+    if (q) { q.focus(); q.setSelectionRange(q.value.length, q.value.length); }
+    refocusSearch = false;
+  }
+  if (revealSelection) {
+    const el = app.querySelector('.row.sel');
+    if (el) el.scrollIntoView({ block: 'nearest' });
+    revealSelection = false;
+  }
+}
+
+app.addEventListener('click', e => {
+  const el = e.target.closest('[data-act]');
+  if (!el) {
+    if (S.menu) { S.menu = null; render(); }
+    return;
+  }
+  if (el.disabled) return;
+  const d = el.dataset;
+  if (d.act !== 'menu') S.menu = null;
+  switch (d.act) {
+    case 'bucket': setBucket(d.b); break;
+    case 'select': select(d.id, e); break;
+    case 'unlock': unlock(); return;
+    case 'lock':
+      S.unlocked = false; S.hidden = false; S.openConv = null;
+      S.lastChange = 'Locked. Values, excerpts, titles and paths are hidden again.';
+      break;
+    case 'toggleHidden':
+      S.hidden = !S.hidden;
+      S.lastChange = S.hidden ? 'Values hidden. Still unlocked, so they come back without Touch ID.' : 'Values shown again, without Touch ID.';
+      break;
+    case 'decide': decide(targets(), d.d); break;
+    case 'undo': undo(); break;
+    case 'menu': S.menu = S.menu === d.m ? null : d.m; break;
+    case 'expandConv': S.openConv = S.openConv === d.key ? null : d.key; break;
+    case 'copyResume':
+      showToast(`<code>${AGENTS[d.agent].resume} ••••••</code> copied. Run it in Terminal to continue that conversation. It sends new requests to ${AGENTS[d.agent].vendor}.`, false);
+      break;
+    case 'copyValue': showToast('Value copied. (Prototype: nothing was actually copied.)', false); break;
+    case 'focus': startFocus(d.kind); break;
+    case 'exitFocus': exitFocus(); break;
+    case 'fmove': focusMove(Number(d.dir)); break;
+    case 'toggleApps': S.showApps = !S.showApps; break;
+    case 'simulate': simulate(); break;
+    case 'reset':
+      clearTimeout(toastTimer); clearTimeout(notifTimer);
+      S = initialState();
+      break;
+    default: break;
+  }
+  normalize();
+  render();
+});
+
+app.addEventListener('input', e => {
+  if (e.target.id !== 'q') return;
+  S.search = e.target.value;
+  refocusSearch = true;
+  normalize();
+  render();
+});
+
+document.addEventListener('keydown', e => {
+  const t = e.target;
+  if (t && ((t.tagName === 'INPUT' && t.type !== 'checkbox') || t.tagName === 'TEXTAREA')) {
+    if (e.key === 'Escape') t.blur();
+    return;
+  }
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
+    e.preventDefault(); undo(); normalize(); render(); return;
+  }
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+  const inFocus = S.mode === 'focus';
+  let handled = true;
+  if (k === 'Escape') { if (S.menu) S.menu = null; else if (inFocus) exitFocus(); }
+  else if (k === 'f') { if (inFocus) exitFocus(); else startFocus('bucket'); }
+  else if (k === 'ArrowDown' || k === 'j') { if (inFocus) focusMove(1); else move(1); }
+  else if (k === 'ArrowUp' || k === 'k') { if (inFocus) focusMove(-1); else move(-1); }
+  else {
+    const cur = inFocus ? focusValue() : null;
+    const bucket = inFocus ? (cur ? Review.bucketOf(cur) : null) : S.bucket;
+    const decision = ({ review: { t: 'test', n: 'fp', r: 'rotate' }, rotate: { d: 'rotated' } }[bucket] || {})[k];
+    if (decision) decide(targets(), decision);
+    else handled = false;
+  }
+  if (!handled) return;
+  e.preventDefault();
+  normalize();
+  render();
+});
+
+normalize();
+render();
+</script>
+</body>
+</html>

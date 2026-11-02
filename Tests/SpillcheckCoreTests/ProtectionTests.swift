@@ -359,6 +359,36 @@ struct ProtectionTests {
         #expect(!key.isAuthorized)
     }
 
+    @Test @MainActor func revealWithoutPromptingNeverAuthorizes() async throws {
+        let (crypto, viewing, key, clock) = try fixture()
+        let context = binding(.value)
+        let payload = try await crypto.sealInventory(Data("synthetic".utf8), binding: context)
+        let generation = viewing.snapshot.generation
+        // Locked: fails without a prompt, and without ending a session that never started.
+        await #expect(throws: ViewingAuthorizationError.invalidated) {
+            try await viewing.reveal(payload, binding: context, localizedReason: "Synthetic test", prompting: false)
+        }
+        #expect(key.authorizations == 0)
+        #expect(viewing.snapshot.generation == generation)
+        // Unlocked: decrypts without a prompt.
+        try await viewing.unlock(localizedReason: "Synthetic test")
+        #expect(try await viewing.reveal(payload, binding: context, localizedReason: "Synthetic test",
+                                         prompting: false) == Data("synthetic".utf8))
+        #expect(key.authorizations == 1)
+        // Expired: the session ends for inactivity, and still nothing prompts.
+        clock.advance(301)
+        var reasons: [ViewingInvalidationReason] = []
+        viewing.onInvalidate = { reasons.append($0) }
+        await #expect(throws: ViewingAuthorizationError.invalidated) {
+            try await viewing.reveal(payload, binding: context, localizedReason: "Synthetic test", prompting: false)
+        }
+        #expect(reasons == [.inactivity])
+        #expect(key.authorizations == 1)
+        #expect(!viewing.isAuthorized)
+        #expect(viewing.revealed.isEmpty)
+        await viewing.deauthorize()
+    }
+
     @Test @MainActor func concealDropsPlaintextAndKeepsTheSessionUnlocked() async throws {
         let (crypto, viewing, key, _) = try fixture()
         let context = binding(.value)

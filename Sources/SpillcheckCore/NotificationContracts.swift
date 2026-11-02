@@ -17,7 +17,7 @@ public struct MaskedConversationLabel: Hashable, Codable, Sendable {
 public struct MaskedValueLabel: Hashable, Codable, Sendable {
     public let index: Int
     public init(index: Int) { self.index = max(1, index) }
-    public var text: String { "L-\(index)" }
+    public var text: String { "#\(index)" }
 }
 
 public struct HistoricalNotificationDecision: Equatable, Codable, Sendable {

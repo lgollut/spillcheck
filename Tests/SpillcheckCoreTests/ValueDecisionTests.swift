@@ -158,6 +158,26 @@ struct ValueDecisionTests {
         #expect(assembled.valueDecisions == ledger.snapshot.valueDecisions)
     }
 
+    @Test func inverseChangesUndoDecisionsAndAcknowledgements() throws {
+        var ledger = InventoryLedger()
+        let first = try fingerprint(1), second = try fingerprint(2)
+        _ = try ledger.ingest(analysis(item: "a", fingerprintByte: 1))
+        _ = try ledger.ingest(analysis(item: "b", fingerprintByte: 2))
+        try ledger.decide(second, as: .needsRotation, at: fixtureTime)
+        let before = ledger.snapshot
+        let changes: [InventoryDecisionChange] = [.decide(first, .notSecret), .acknowledge(second, .rotated)]
+        for change in changes { try ledger.apply(change, at: fixtureTime) }
+        #expect(ledger.valueDecisions[first]?.decision == .notSecret)
+        #expect(ledger.obsoleteMarkers[second] != nil && ledger.valueDecisions[second] == nil)
+
+        let undo = InventoryDecisionChange.inverse(of: changes, in: before)
+        #expect(undo == [.forgetMarker(second), .decide(second, .needsRotation), .decide(first, nil)])
+        for change in undo { try ledger.apply(change, at: fixtureTime) }
+        #expect(ledger.valueDecisions[first] == nil)
+        #expect(ledger.obsoleteMarkers[second] == nil)
+        #expect(ledger.valueDecisions[second]?.decision == .needsRotation)
+    }
+
     @Test func unlocatedDecisionCoversThatResultOnly() throws {
         var ledger = InventoryLedger()
         let source = try sourceRecord(item: "unlocated")

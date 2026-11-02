@@ -73,3 +73,43 @@ extension ValueDecisionRecord {
         return decisions
     }
 }
+
+/// A change to what the user decided about a value. Several apply in order, as one write.
+public enum InventoryDecisionChange: Hashable, Sendable {
+    case decide(ValueFingerprint, ValueDecision?)
+    case decideUnlocated(UUID, ValueDecision?)
+    case acknowledge(ValueFingerprint, ObsoleteAcknowledgement)
+    case forgetMarker(ValueFingerprint)
+
+    /// The changes that put back what `snapshot` recorded before this change, so it can be undone.
+    public func inverse(in snapshot: InventorySnapshot) -> [InventoryDecisionChange] {
+        switch self {
+        case .decide(let fingerprint, _):
+            return [.decide(fingerprint, snapshot.valueDecisions[fingerprint]?.decision)]
+        case .decideUnlocated(let resultID, _):
+            return [.decideUnlocated(resultID, snapshot.unlocatedDecisions[resultID]?.decision)]
+        case .acknowledge(let fingerprint, _):
+            // Acknowledging replaced the decision, so undoing restores it after forgetting the marker.
+            return [.forgetMarker(fingerprint)]
+                + (snapshot.valueDecisions[fingerprint].map { [.decide(fingerprint, $0.decision)] } ?? [])
+        case .forgetMarker(let fingerprint):
+            return snapshot.obsoleteMarkers[fingerprint].map { [.acknowledge(fingerprint, $0.acknowledgement)] } ?? []
+        }
+    }
+
+    /// The inverse of several changes, undone last first.
+    public static func inverse(of changes: [Self], in snapshot: InventorySnapshot) -> [Self] {
+        changes.reversed().flatMap { $0.inverse(in: snapshot) }
+    }
+}
+
+extension InventoryLedger {
+    public mutating func apply(_ change: InventoryDecisionChange, at time: Date) throws {
+        switch change {
+        case .decide(let fingerprint, let decision): try decide(fingerprint, as: decision, at: time)
+        case .decideUnlocated(let resultID, let decision): try decide(unlocated: resultID, as: decision, at: time)
+        case .acknowledge(let fingerprint, let acknowledgement): try acknowledgeObsolete(fingerprint, as: acknowledgement, at: time)
+        case .forgetMarker(let fingerprint): try forgetObsoleteMarker(fingerprint)
+        }
+    }
+}

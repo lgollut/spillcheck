@@ -502,6 +502,8 @@ final class AppRuntime {
             self?.viewingGeneration = UUID()
             self?.viewing?.didInvalidate(reason)
             self?.model.clearRevealedContent()
+            // The next unlock shows values again.
+            self?.model.valuesHidden = false
         }
         let ownedSetup = AgentSetupController(store: store,
             helperURL: Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/spillcheck-hook"),
@@ -552,6 +554,8 @@ final class AppRuntime {
                 self.model.route = .coverage
                 self.model.actionMessage = "Collection has a scoped limitation. Review the affected route and content in Coverage."
             }
+            // The selection may not have changed, so it wouldn't show again on its own.
+            self.showSelectionIfUnlocked()
             self.onShowInventory?()
         }
         await notifications.refreshPermission()
@@ -563,45 +567,30 @@ final class AppRuntime {
             self?.viewingGeneration = UUID()
             self?.viewing?.select(valueID: Self.viewingID(entry))
             self?.sourceOpening.cancel()
+            self?.showSelectionIfUnlocked()
         }
         model.onOccurrenceSelectionChanged = { [weak self] occurrence in
             guard let self else { return }
             self.viewingGeneration = UUID()
             self.sourceOpening.cancel()
-            // Revealing covers the whole value, so another of its appearances stays revealed and shows
-            // its own context. A new entry selects its default appearance before the viewing selection
-            // follows, so that change is not mistaken for one within the revealed entry.
-            if let viewing = self.viewing, viewing.state == .revealed || viewing.state == .authenticating,
-               let entry = self.model.selectedEntryID, let id = Self.viewingID(entry), viewing.selectedValueID == id {
-                let generation = self.viewingGeneration
-                self.performAction { runtime in
-                    await runtime.reveal(entry: entry, occurrenceID: occurrence, generation: generation)
-                }
+            // The value stays on screen while another of its appearances loads its own context. A new
+            // entry selects its default appearance before the viewing selection follows, so that change
+            // is not mistaken for one within the shown entry.
+            if let viewing = self.viewing, let entry = self.model.selectedEntryID, let id = Self.viewingID(entry),
+               viewing.selectedValueID == id, viewing.isAuthorized, !self.model.valuesHidden {
+                self.showSelectionIfUnlocked()
             } else {
                 self.viewing?.hide()
             }
         }
         model.onHide = { [weak self] in self?.hide() }
+        model.onShowValues = { [weak self] in self?.showSelectionIfUnlocked() }
         model.onLock = { [weak self] in self?.lock() }
         model.onUnlock = { [weak self] in
             self?.performAction { runtime in await runtime.unlock() }
         }
-        model.onReveal = { [weak self] entry, occurrence in
-            guard let self else { return }
-            self.model.selectedOccurrenceID = occurrence
-            let generation = self.viewingGeneration
-            self.performAction { runtime in
-                await runtime.reveal(entry: entry, occurrenceID: occurrence, generation: generation)
-            }
-        }
-        model.onDecide = { [weak self] fingerprint, decision in
-            self?.performAction { runtime in await runtime.mutateInventory(.decide(fingerprint, decision)) }
-        }
-        model.onDecideUnlocated = { [weak self] resultID, decision in
-            self?.performAction { runtime in await runtime.mutateInventory(.decideUnlocated(resultID, decision)) }
-        }
-        model.onAcknowledge = { [weak self] fingerprint, acknowledgement in
-            self?.performAction { runtime in await runtime.mutateInventory(.acknowledge(fingerprint, acknowledgement)) }
+        model.onApply = { [weak self] changes, undoing in
+            self?.performAction { runtime in await runtime.mutateInventory(.apply(changes, undoing: undoing)) }
         }
         model.onRemoveContent = { [weak self] fingerprint in
             self?.performAction { runtime in await runtime.mutateInventory(.remove(fingerprint)) }
@@ -743,14 +732,29 @@ final class AppRuntime {
 
     private func unlock() async {
         guard let viewing, model.windowVisible, !terminating else { return }
-        do { try await viewing.unlock() }
-        catch ViewingAuthorizationError.denied, ViewingAuthorizationError.unavailable {
+        do {
+            try await viewing.unlock()
+            model.valuesHidden = false
+            showSelectionIfUnlocked()
+        } catch ViewingAuthorizationError.denied, ViewingAuthorizationError.unavailable {
             model.actionMessage = "Authentication failed. Values stay hidden."
         } catch {}
     }
 
+    /// While the session is unlocked and values aren't hidden, whatever is selected shows its value
+    /// and the selected appearance's context, with no prompt and no Reveal action.
+    private func showSelectionIfUnlocked() {
+        guard let viewing, viewing.isAuthorized, !model.valuesHidden, model.windowVisible, !terminating,
+              let entry = model.selectedEntryID, Self.viewingID(entry) != nil else { return }
+        let occurrence = model.selectedOccurrenceID, generation = viewingGeneration
+        performAction { runtime in
+            await runtime.reveal(entry: entry, occurrenceID: occurrence, generation: generation)
+        }
+    }
+
+    /// Never prompts: a session that is locked, or locks meanwhile, leaves the selection masked.
     private func reveal(entry: InventoryEntryID, occurrenceID: UUID?, generation: UUID) async {
-        guard let store, let viewing, entry == model.selectedEntryID,
+        guard let store, let viewing, viewing.isAuthorized, !model.valuesHidden, entry == model.selectedEntryID,
               occurrenceID == model.selectedOccurrenceID,
               generation == viewingGeneration, model.windowVisible else { return }
         do {
@@ -771,24 +775,20 @@ final class AppRuntime {
             case .obsoleteMarker, .rememberedDecision: return
             }
             guard model.selectedEntryID == entry, generation == viewingGeneration,
-                  occurrenceID == model.selectedOccurrenceID,
+                  occurrenceID == model.selectedOccurrenceID, !model.valuesHidden,
                   model.windowVisible, !terminating, !Task.isCancelled else { return }
             viewing.select(valueID: selection.valueID)
-            await viewing.reveal(selection)
+            await viewing.reveal(selection, prompting: false)
         } catch {
-            if model.selectedEntryID == entry, generation == viewingGeneration,
-               occurrenceID == model.selectedOccurrenceID {
-                model.viewingMessage = "No retained content is available for this appearance."
-            }
+            // Nothing retained to show, which the detail already says. Shown on its own, so it stays silent.
         }
     }
 
     private enum InventoryMutation {
         /// Per-appearance review, kept for the acceptance fixture that builds an older vault's state.
         case review(UUID, OccurrenceReview)
-        case decide(ValueFingerprint, ValueDecision?)
-        case decideUnlocated(UUID, ValueDecision?)
-        case acknowledge(ValueFingerprint, ObsoleteAcknowledgement)
+        /// Decisions, rotations and revocations, applied as one write. Undoing applies their inverse.
+        case apply([InventoryDecisionChange], undoing: Bool)
         case remove(ValueFingerprint)
         case forget(ValueFingerprint)
     }
@@ -817,26 +817,16 @@ final class AppRuntime {
                 recordWorkflowEvent("review-" + state.rawValue)
                 #endif
                 model.actionMessage = "Review saved for this appearance. Other appearances are unchanged."
-            case .decide(let fingerprint, let decision):
-                try await store.decide(fingerprint, as: decision, at: .now)
+            case .apply(let changes, let undoing):
+                try await store.apply(changes, at: .now)
                 #if DEBUG
-                recordWorkflowEvent("decide-" + (decision?.rawValue ?? "cleared"))
+                for change in changes { recordWorkflowEvent(undoing ? "undo" : Self.eventName(change)) }
                 #endif
-                model.actionMessage = Self.decisionMessage(decision)
-            case .decideUnlocated(let resultID, let decision):
-                try await store.decide(unlocated: resultID, as: decision, at: .now)
-                #if DEBUG
-                recordWorkflowEvent("decide-unlocated-" + (decision?.rawValue ?? "cleared"))
-                #endif
-                model.actionMessage = Self.decisionMessage(decision)
-            case .acknowledge(let fingerprint, let acknowledgement):
-                try await store.acknowledgeObsolete(fingerprint, as: acknowledgement, at: .now)
-                #if DEBUG
-                recordWorkflowEvent("acknowledge-" + acknowledgement.rawValue)
-                #endif
-                // The selected value moves into the rotated or revoked section; keep it in view.
-                model.handledExpanded = true
-                model.actionMessage = "Acknowledged as \(acknowledgement.rawValue). Later appearances will show as obsolete, without alerts. This wasn’t checked with the service."
+                if undoing {
+                    model.actionMessage = "Undone."
+                } else {
+                    model.offerUndo(InventoryDecisionChange.inverse(of: changes, in: before), message: Self.message(for: changes))
+                }
             case .remove(let fingerprint):
                 hide()
                 let plan = try await store.removeContent(for: fingerprint)
@@ -867,21 +857,49 @@ final class AppRuntime {
                 }
             }
             await refresh()
+            if case .apply(let changes, true) = mutation { model.reselect(changes) }
+            // Removal and forgetting hide what was shown; what is still selected shows again.
+            if viewing?.state == .masked { showSelectionIfUnlocked() }
         } catch {
+            model.undo = nil
             model.actionMessage = "The change could not be saved. Reload the inventory and try again."
         }
     }
 
-    private static func decisionMessage(_ decision: ValueDecision?) -> String {
-        switch decision {
-        case .needsRotation?:
-            "Marked as needing rotation. Change it at its service, then mark it rotated or revoked."
-        case let decision?:
-            "Marked “\(decision.displayName)”. Later appearances stay quiet."
+    private static func message(for changes: [InventoryDecisionChange]) -> String {
+        let count = changes.count
+        switch changes.first {
+        case .decide(_, let decision)?, .decideUnlocated(_, let decision)?:
+            switch decision {
+            case .needsRotation?:
+                return count == 1 ? "Moved to To rotate. Change it at its service, then mark it rotated."
+                    : "\(count) values moved to To rotate. Change them at their services, then mark them rotated."
+            case let decision?:
+                return (count == 1 ? "Marked" : "\(count) values marked") + " “\(decision.displayName)”. Later appearances stay quiet."
+            case nil:
+                return (count == 1 ? "Back to review." : "\(count) values are back to review.")
+                    + " Later appearances alert and wait for review as before."
+            }
+        case .acknowledge(_, let acknowledgement)?:
+            return (count == 1 ? "Marked" : "\(count) values marked") + " \(acknowledgement.rawValue)."
+                + " Later appearances show as obsolete, without alerts. Spillcheck didn’t check this with the service."
+        case .forgetMarker?:
+            return "Obsolete recognition forgotten. New appearances will be evaluated normally."
         case nil:
-            "Back in review. Later appearances alert and wait for review as before."
+            return ""
         }
     }
+
+    #if DEBUG
+    private static func eventName(_ change: InventoryDecisionChange) -> String {
+        switch change {
+        case .decide(_, let decision): "decide-" + (decision?.rawValue ?? "cleared")
+        case .decideUnlocated(_, let decision): "decide-unlocated-" + (decision?.rawValue ?? "cleared")
+        case .acknowledge(_, let acknowledgement): "acknowledge-" + acknowledgement.rawValue
+        case .forgetMarker: "marker-forgotten"
+        }
+    }
+    #endif
 
     private func sourceReference(id: UUID, snapshot: InventorySnapshot) -> (SessionIdentity, Bool)? {
         if let occurrence = snapshot.occurrences[id] { return (occurrence.source.identity.session, occurrence.protectedExcerpt != nil) }
@@ -1462,7 +1480,7 @@ final class AppRuntime {
                 acceptanceInventoryReviewApplied = true
             } else if acknowledgement {
                 try InventoryStateAcceptance.requireRetainedRevocation(snapshot, fingerprint: fingerprint)
-                await mutateInventory(.acknowledge(fingerprint, .revoked))
+                await mutateInventory(.apply([.acknowledge(fingerprint, .revoked)], undoing: false))
                 guard InventoryStateAcceptance.phase(await store.snapshot(), fingerprint: fingerprint, upgradeState: true)
                         == "reviewed-revoked7" else { throw InventoryStateAcceptance.Failure.postconditionFailed }
                 acceptanceInventoryAcknowledgementApplied = true
@@ -1473,7 +1491,7 @@ final class AppRuntime {
                 if recovery.upgradeRemovedStateEnabled {
                     try InventoryStateAcceptance.requireRetainedRevocation(snapshot, fingerprint: fingerprint)
                 }
-                await mutateInventory(.acknowledge(fingerprint, .revoked))
+                await mutateInventory(.apply([.acknowledge(fingerprint, .revoked)], undoing: false))
                 guard await store.snapshot().obsoleteMarkers[fingerprint]?.acknowledgement == .revoked else {
                     throw InventoryStateAcceptance.Failure.postconditionFailed
                 }
@@ -1972,6 +1990,7 @@ final class AppRuntime {
         else { protection?.viewingSession.invalidate(reason: reason) }
         sourceOpening.cancel()
         model.clearRevealedContent()
+        model.valuesHidden = false
     }
 
     func shutdown() async {

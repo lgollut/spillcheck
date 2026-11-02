@@ -422,6 +422,28 @@ struct DetectionPipelineTests {
         try await restarted.close()
     }
 
+    @Test func decisionsApplyTogetherOrNotAtAll() async throws {
+        let fixture = try await PipelineFixture()
+        defer { fixture.remove() }
+        let now = Date()
+        let pipeline = DetectionPipeline(store: fixture.store, cryptography: fixture.crypto,
+            normalizer: PipelineNormalizer(["original": [PipelineSourceSpec(item: "original", contentTime: now)]]),
+            detector: PipelineDetector(), detectorVersion: pipelineDetectorVersion, liveSince: now.addingTimeInterval(-60))
+        try await enqueuePipeline("original", into: fixture.store)
+        #expect(try await pipeline.processNext() == .processed)
+        let fingerprint = try await fixture.crypto.fingerprint(exactBytes: Data(pipelineValue.utf8))
+        let unknown = try await fixture.crypto.fingerprint(exactBytes: Data("not-in-the-inventory".utf8))
+        await #expect(throws: ContractError.unknownValue) {
+            try await fixture.store.apply([.decide(fingerprint, .notSecret), .decide(unknown, .notSecret)], at: now)
+        }
+        #expect(await fixture.store.snapshot().valueDecisions.isEmpty)
+        try await fixture.store.apply([.decide(fingerprint, .needsRotation), .acknowledge(fingerprint, .revoked)], at: now)
+        let applied = await fixture.store.snapshot()
+        #expect(applied.obsoleteMarkers[fingerprint]?.acknowledgement == .revoked)
+        #expect(applied.valueDecisions.isEmpty)
+        try await fixture.store.close()
+    }
+
     @Test func acknowledgementAndRemovalDuringScanRetryAsMetadataOnlyAfterRestart() async throws {
         let fixture = try await PipelineFixture()
         defer { fixture.remove() }

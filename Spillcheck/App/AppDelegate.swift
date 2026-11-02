@@ -91,7 +91,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NotificationCenter.default.addObserver(forName: NSWindow.didChangeOcclusionStateNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.reportUIVisibilityChanged() }
         }
-        if !previewOnly { runtime.start() }
+        if !previewOnly {
+            model.useStoredReadMarks()
+            runtime.start()
+        }
         observeStatusItem()
         record("started")
         if let setupStep { onboarding.show(at: setupStep) } else { showInventory() }
@@ -104,11 +107,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// Opens a specific sample state, for design review screenshots.
     private func applyPreviewArguments(_ args: [String]) {
         func value(_ flag: String) -> String? { args.firstIndex(of: flag).flatMap { args.indices.contains($0 + 1) ? args[$0 + 1] : nil } }
+        switch value("--demo-bucket") {
+        case "rotate": model.selectBucket(.toRotate)
+        case "done": model.selectBucket(.done)
+        default: break
+        }
         if let label = value("--demo-entry"),
            let summary = model.summaries.first(where: { $0.label == label }) {
-            model.selectedEntryID = summary.id
+            model.selectEntry(summary.id)
         }
-        if args.contains("--demo-expand") { model.expandedOccurrenceID = model.selectedOccurrenceID }
+        if args.contains("--demo-revealed") { model.showDemoContent() }
         switch value("--demo-route") {
         case "coverage": model.route = .coverage
         case "general": model.route = .settings(.general)
@@ -122,7 +130,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         default: break
         }
         switch value("--demo-sheet") {
-        case "acknowledge": model.detailSheet = .acknowledge
         case "remove": model.detailSheet = .remove
         case "forget": model.detailSheet = .forget
         case "resume": model.selectedOccurrenceID.map { model.detailSheet = .resume($0) }

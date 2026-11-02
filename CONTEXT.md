@@ -80,6 +80,10 @@ _Avoid_: Remediated secret, which assumes an actual secret and a remediation act
 A value decision that the value is a real credential still to change at its service. It does not establish whether the value is still usable.
 _Avoid_: Active secret, which implies validity that has not been checked.
 
+**Unread value**:
+A value still to review or rotate with an appearance newer than the user last saw. A decided value never becomes unread; it only counts its new appearances.
+_Avoid_: New value, which describes the first appearance of a value rather than what the user has seen.
+
 **Obsolete value**:
 A secret value the user has acknowledged as rotated or revoked. A later appearance of that exact value retains this classification, based on the user's acknowledgement rather than verification by the application.
 _Avoid_: False positive, which concerns whether a value is a secret.

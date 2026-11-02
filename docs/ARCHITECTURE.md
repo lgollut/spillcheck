@@ -84,14 +84,20 @@ create a replacement vault. Raw values, excerpts, titles and paths stay encrypte
 at rest; diagnostics and searchable summaries use controlled metadata.
 
 `InventoryViewingWorkflow.swift` and the app's `ViewingController.swift` manage
-reveals. One authentication unlocks a viewing session, and revealing needs no
-further prompt while it lasts. A revealed value stays revealed across its
-appearances. Hiding content or selecting another entry clears what was shown
-without ending the session. The session expires after five
+reveals. One authentication unlocks a viewing session. While it lasts, the app
+shows each selection's value and context on its own, through reveals that may
+not prompt: a locked or expired session fails them, and the content stays
+masked. Hide values masks content across selections without ending the
+session. The session expires after five
 minutes of inactivity and ends on locking, window closure, sleep or macOS
 session lock. Closing a window keeps
 monitoring active; pause suspends collection, processing and alerts; quit stops
 owned workers. Monitoring necessarily handles newly captured plaintext in memory.
+
+Read marks for the inbox are the one inventory fact kept outside the vault: the
+app's preferences store, per entry number, the time of the latest appearance the
+user has seen, plus a baseline set on first use. Entry numbers and times say
+nothing about a value or its context. See [ADR 0011](adr/0011-read-marks-outside-the-vault.md).
 
 Deletion and obsolete-value recognition are separate operations. Removing
 retained content preserves independent source receipts against historical

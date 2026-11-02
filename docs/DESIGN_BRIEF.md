@@ -59,7 +59,7 @@ The current settings expose executable paths, profile directories, and versions.
 
 ### Investigate a new appearance
 
-For a new value with a strong signal, the user receives a masked macOS notification. Opening it selects the corresponding inventory detail while protected content remains masked. The detail should let the user establish what was detected, how often it appeared, and which occurrence to inspect before revealing anything.
+For a new value with a strong signal, the user receives a masked macOS notification. Opening it selects the corresponding inventory detail, in the list it belongs to, while protected content remains masked until the user unlocks. The detail leads with evidence: what was detected and why, the value inside the context of one appearance, then every conversation that printed it. Values that appeared while the user was away carry an unread mark and sort first, instead of a separate catch-up summary in the list.
 
 The user can authenticate, inspect the exact value and retained context, decide about the value, and access an appearance's source when a validated route is available. Tool output and tool error must remain visible as source types, even if the assistant never mentioned the value.
 
@@ -75,7 +75,7 @@ Alert behavior limits interruption:
 
 Direct conversation opening is a capability with known limits, not a guaranteed outcome. Show an unavailable or unverified route clearly and offer authenticated retained context when it exists. A transcript file path is not a conversation deep link.
 
-The existing app can separately prepare an authenticated terminal resume command. It displays the command for the user to run. Resuming can cause new provider requests, so the interaction must explain that effect and remain distinct from simply inspecting retained evidence.
+The existing app can separately prepare an authenticated terminal resume command. It displays the command for the user to run. Resuming can cause new provider requests, so the interaction must explain that effect and remain distinct from simply inspecting retained evidence. Opening and resuming belong to a conversation's menu, away from the value's decision.
 
 A detector result whose exact source range could not be located has its own state. Show the available evidence and source information, with an explicit explanation that there is no exact value to reveal.
 
@@ -123,7 +123,7 @@ The user should be able to answer these questions in order:
 4. What retained value and context can I inspect after authentication?
 5. What decision, source, acknowledgement, or removal action is appropriate here?
 
-Keep the decision with the value, since it covers every appearance, and source actions with the appearance they open. Explain evidence in plain language, with rule identifiers available as secondary detail. Retained excerpts can be clipped and must be identified as excerpts rather than complete conversations.
+Keep the decision with the value, since it covers every appearance, and source actions with the appearance they open. A large backlog needs two speeds: the inbox for browsing, and Focus for going through values one at a time with the keyboard. Values that obviously share an answer, such as a set of test fixtures, can be selected and decided together. Explain evidence in plain language, with rule identifiers available as secondary detail. Retained excerpts can be clipped and must be identified as excerpts rather than complete conversations.
 
 ### Monitoring, history, and settings
 
@@ -139,7 +139,7 @@ Exact values, raw context, conversation titles and identifiers, and project path
 
 Support locked and unlocked viewing sessions, and masked, authenticating, revealed, cancelled, failed, and unavailable-content states. Cancelling or failing authentication leaves protected content masked and lets the user retry. Use the system Touch ID or password prompt.
 
-One authentication unlocks a viewing session, like a password manager: while it is unlocked, revealing another value needs no further prompt. The session locks after five minutes of inactivity, when the window closes, when the Mac sleeps or locks, and when the user chooses Lock. A revealed value stays revealed while the user moves between its appearances, and each appearance shows its own context. Hiding content and selecting another entry clear revealed content without locking. Authentication finishing for an old selection may unlock the session, but must not reveal that selection in a new detail view. Monitoring can continue while viewing is locked.
+One authentication unlocks a viewing session, like a password manager: while it is unlocked, every value the user selects shows with its context, with no reveal action and no further prompt. The session locks after five minutes of inactivity, when the window closes, when the Mac sleeps or locks, and when the user chooses Lock. Moving between a value's appearances keeps the value on screen, and each appearance shows its own context. Hide values masks them without locking, and they stay hidden across selections until the user shows them again or the session ends. Nothing shown on its own may open an authentication prompt. Authentication finishing for an old selection may unlock the session, but must not reveal that selection in a new detail view. Monitoring can continue while viewing is locked.
 
 Masked content, removed content, and an unlocated value have different meanings. Their explanations and available controls must match what the app can actually show.
 

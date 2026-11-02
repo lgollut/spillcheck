@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import GRDB
+import SQLite3
 
 private struct StoredCapture: Sendable {
     let id: UUID
@@ -909,6 +910,23 @@ public actor ProtectedStore {
                 try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM protected_payloads") ?? 0
             }
         } catch { throw StorageError.databaseUnavailable }
+    }
+
+    /// How many times each statement the vault connection keeps prepared has run, by its SQL.
+    /// A statement parsed again for every use is finalized after it runs and is not listed.
+    @_spi(Testing) public func preparedStatementRunsForTesting() throws -> [String: Int] {
+        guard !closed else { throw StorageError.databaseUnavailable }
+        return try Self.read(database) { db in
+            var runs: [String: Int] = [:]
+            var statement = sqlite3_next_stmt(db.sqliteConnection, nil)
+            while let current = statement {
+                if let sql = sqlite3_sql(current) {
+                    runs[String(cString: sql), default: 0] += Int(sqlite3_stmt_status(current, SQLITE_STMTSTATUS_RUN, 0))
+                }
+                statement = sqlite3_next_stmt(db.sqliteConnection, current)
+            }
+            return runs
+        }
     }
 
     public func payload(_ reference: ProtectedPayloadReference) throws -> ProtectedPayload? {
@@ -2420,7 +2438,7 @@ public actor ProtectedStore {
     private static func metadataRecoveryRows(locationID: UUID, at now: Date, limit: Int = 256,
                                              in db: Database) throws -> [MetadataRecoveryRow] {
         guard (1...256).contains(limit) else { throw StorageError.invalidPayload }
-        let rows = try Row.fetchAll(db, sql: HotQueries.recoverableOmissionsAtLocation, arguments: [locationID.uuidString, CoverageOmissionState.blocked.rawValue,
+        let rows = try Row.fetchAll(db.cachedStatement(sql: HotQueries.recoverableOmissionsAtLocation), arguments: [locationID.uuidString, CoverageOmissionState.blocked.rawValue,
                 CoverageOmissionState.retryable.rawValue,
                 now.addingTimeInterval(-HistoricalAuditContext.lookback).timeIntervalSince1970,
                 now.timeIntervalSince1970, limit + 1])
@@ -2501,11 +2519,11 @@ public actor ProtectedStore {
         // invalidates the old age/meaning we encrypted. Roll back all source progress so
         // the caller can prepare again, including when an absent row appeared meanwhile.
         for omission in prepared.omissions where omission.checksPrevious {
-            let current = try Data.fetchOne(db, sql: "SELECT encoded FROM coverage_omissions WHERE id = ?",
+            let current = try Data.fetchOne(db.cachedStatement(sql: "SELECT encoded FROM coverage_omissions WHERE id = ?"),
                 arguments: [omission.id.uuidString])
             guard current == omission.previousEncoded else { throw StorageError.stateChanged }
             if let previous = omission.reclassifiedLocalMedia {
-                let row = try Row.fetchOne(db, sql: "SELECT id, location_id, encoded, state, created_at, content_at, incident_key, resolved_at FROM coverage_omissions WHERE id = ?",
+                let row = try Row.fetchOne(db.cachedStatement(sql: "SELECT id, location_id, encoded, state, created_at, content_at, incident_key, resolved_at FROM coverage_omissions WHERE id = ?"),
                     arguments: [omission.id.uuidString])
                 guard let row, try metadataRecoveryRow(row) == previous else { throw StorageError.stateChanged }
             }
@@ -2517,21 +2535,21 @@ public actor ProtectedStore {
         }
         for gap in prepared.gaps { try insertGap(gap, at: now, in: db) }
         for id in prepared.workWithGapEvidence {
-            try db.execute(sql: "UPDATE collection_work SET retain_evidence = 1 WHERE id = ?", arguments: [id.uuidString])
+            try db.executeCached(sql: "UPDATE collection_work SET retain_evidence = 1 WHERE id = ?", arguments: [id.uuidString])
         }
         for link in prepared.captureLossLinks {
-            try db.execute(sql: "UPDATE collection_work SET omission_id = ? WHERE id = ?",
+            try db.executeCached(sql: "UPDATE collection_work SET omission_id = ? WHERE id = ?",
                 arguments: [link.omission.uuidString, link.capture.uuidString])
         }
         for omission in prepared.omissions {
             if omission.reclassifiedLocalMedia != nil {
                 // Reclassification preserves the original lifecycle and age. It removes
                 // only this obsolete format warning's incident membership, not the row.
-                try db.execute(sql: "UPDATE coverage_omissions SET encoded = ?, incident_key = NULL WHERE id = ?",
+                try db.executeCached(sql: "UPDATE coverage_omissions SET encoded = ?, incident_key = NULL WHERE id = ?",
                     arguments: [omission.encoded, omission.id.uuidString])
                 continue
             }
-            try db.execute(sql: """
+            try db.executeCached(sql: """
                 INSERT INTO coverage_omissions
                     (id, location_id, incident_key, created_at, content_at, state, encoded)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -2551,7 +2569,7 @@ public actor ProtectedStore {
                 // its age or resetting its lifecycle. An authenticated optional unknown
                 // warning likewise cannot hide a later known or required failure. Recovered
                 // rows follow the existing recurrence policy in the INSERT above.
-                try db.execute(sql: """
+                try db.executeCached(sql: """
                     UPDATE coverage_omissions SET encoded = ?,
                         content_at = COALESCE(content_at, ?)
                     WHERE id = ? AND state != ?
@@ -2561,7 +2579,7 @@ public actor ProtectedStore {
             // A position first recorded without a required failure must still join the
             // later incident. Include expired losses so expiry can settle their incident.
             if let key = omission.incidentKey {
-                try db.execute(sql: """
+                try db.executeCached(sql: """
                     UPDATE coverage_omissions SET incident_key = ?
                     WHERE id = ? AND incident_key IS NULL AND state != ?
                     """, arguments: [key.uuidString, omission.id.uuidString,
@@ -2573,14 +2591,14 @@ public actor ProtectedStore {
             guard bytes <= maximumBytes else { throw StorageError.stateTooLarge }
         }
         for incident in prepared.incidents {
-            try db.execute(sql: """
+            try db.executeCached(sql: """
                 INSERT OR IGNORE INTO collection_health_incidents
                     (id, key_id, created_at, delivery, requires_assessment, encoded)
                 VALUES (?, ?, ?, ?, ?, ?)
                 """, arguments: [incident.id.uuidString, incident.key.uuidString, now.timeIntervalSince1970,
                     AlertDeliveryState.pending.rawValue, incident.requiresAssessment, incident.encoded])
             if incident.requiresAssessment {
-                try db.execute(sql: "UPDATE collection_health_incidents SET requires_assessment = 1 WHERE key_id = ? AND resolved_at IS NULL",
+                try db.executeCached(sql: "UPDATE collection_health_incidents SET requires_assessment = 1 WHERE key_id = ? AND resolved_at IS NULL",
                                arguments: [incident.key.uuidString])
             }
         }
@@ -2591,7 +2609,7 @@ public actor ProtectedStore {
         let cutoff = now.addingTimeInterval(-HistoricalAuditContext.lookback).timeIntervalSince1970
         for recovery in prepared.metadataRecoveries {
             for id in recovery.recoveredIDs {
-                try db.execute(sql: """
+                try db.executeCached(sql: """
                     UPDATE coverage_omissions SET state = ?, resolved_at = ?
                     WHERE id = ? AND state IN (?, ?) AND COALESCE(content_at, created_at) >= ?
                         AND COALESCE(content_at, created_at) <= ?
@@ -2605,7 +2623,7 @@ public actor ProtectedStore {
             }
         }
         for locationID in prepared.recoveredLocations {
-            try db.execute(sql: HotQueries.recoverOmissionsAtLocation, arguments: [CoverageOmissionState.recovered.rawValue, now.timeIntervalSince1970,
+            try db.executeCached(sql: HotQueries.recoverOmissionsAtLocation, arguments: [CoverageOmissionState.recovered.rawValue, now.timeIntervalSince1970,
                     locationID.uuidString, CoverageOmissionState.blocked.rawValue, CoverageOmissionState.retryable.rawValue,
                     cutoff, now.timeIntervalSince1970])
             // Clearing one item cannot resolve the incident while another item remains omitted.
@@ -2621,7 +2639,7 @@ public actor ProtectedStore {
     /// forever and silently absorb a later failure with the same identity.
     private static func resolveHealthIncidents(where condition: String, arguments: StatementArguments,
                                                at now: Date, in db: Database) throws -> Int {
-        try db.execute(sql: """
+        try db.executeCached(sql: """
             UPDATE collection_health_incidents SET resolved_at = ?,
                 delivery = CASE WHEN delivery = ? THEN ? ELSE delivery END
             WHERE resolved_at IS NULL AND \(condition)
@@ -2716,7 +2734,7 @@ public actor ProtectedStore {
         try db.execute(sql: "DELETE FROM captures WHERE id = ?", arguments: [id.uuidString])
     }
     private static func insertGap(_ payload: ProtectedPayload, at time: Date, in db: Database) throws {
-        try db.execute(sql: "INSERT INTO coverage_gaps (id, created_at, encoded) VALUES (?, ?, ?)",
+        try db.executeCached(sql: "INSERT INTO coverage_gaps (id, created_at, encoded) VALUES (?, ?, ?)",
                        arguments: [payload.binding.reference.id.uuidString, time.timeIntervalSince1970, try payload.encoded()])
     }
     private static func requiredPayloads(in snapshot: InventorySnapshot) throws -> [ProtectedPayloadReference: ProtectedPayloadKind] {
@@ -2971,5 +2989,14 @@ extension ProtectedStore {
             WHERE location_id = ? AND state IN (?, ?) AND COALESCE(content_at, created_at) >= ?
                 AND COALESCE(content_at, created_at) <= ?
             """
+    }
+}
+
+private extension Database {
+    /// Runs a statement this connection keeps prepared. Settlement repeats the same statements for
+    /// each omission and location in a capture, and a history pass settles thousands of them;
+    /// parsing and planning each again took longer than running it.
+    func executeCached(sql: String, arguments: StatementArguments) throws {
+        try cachedStatement(sql: sql).execute(arguments: arguments)
     }
 }

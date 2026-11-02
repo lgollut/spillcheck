@@ -2229,8 +2229,18 @@ public actor ProtectedStore {
             resolvedAt: resolved.map(Date.init(timeIntervalSince1970:)), delivery: delivery)
     }
 
+    /// Per-appearance review predates value decisions. The app no longer offers it; acceptance
+    /// fixtures still use it to build vaults as an older build would have left them.
     public func review(_ occurrenceID: UUID, as state: OccurrenceReview) async throws {
         _ = try await mutateLedger { try $0.review(occurrenceID, as: state) }
+    }
+
+    public func decide(_ fingerprint: ValueFingerprint, as decision: ValueDecision?, at time: Date) async throws {
+        _ = try await mutateLedger { try $0.decide(fingerprint, as: decision, at: time) }
+    }
+
+    public func decide(unlocated resultID: UUID, as decision: ValueDecision?, at time: Date) async throws {
+        _ = try await mutateLedger { try $0.decide(unlocated: resultID, as: decision, at: time) }
     }
 
     public func acknowledgeObsolete(

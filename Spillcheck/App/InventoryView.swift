@@ -216,24 +216,33 @@ private struct SidebarView: View {
                             .font(.system(size: 12)).foregroundStyle(Palette.tertiary)
                             .frame(maxWidth: .infinity).padding(.vertical, 24)
                     } else {
-                        GroupHeading(title: "Not rotated yet", count: groups.active.count, top: 4)
-                        ForEach(groups.active) { summary in
+                        GroupHeading(title: "To review", count: groups.toReview.count, top: 4)
+                        ForEach(groups.toReview) { summary in
                             ActiveValueRow(model: model, summary: summary,
                                            isNew: summary.entry.valueID.map(newValueIDs.contains) == true)
                         }
-                        if groups.active.isEmpty {
+                        if groups.toReview.isEmpty {
                             HStack(spacing: 10) {
                                 Image(systemName: "checkmark").font(.system(size: 11, weight: .bold))
-                                Text("Nothing left to rotate")
+                                Text("Nothing left to review")
                             }
                             .font(.system(size: 12)).foregroundStyle(Palette.secondary)
                             .padding(12).frame(maxWidth: .infinity, alignment: .leading)
                             .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color(hex: 0xd3d9d6, dark: 0x404341), style: StrokeStyle(lineWidth: 1.5, dash: [4, 3])))
                             .padding(.horizontal, 2)
                         }
-                        if !groups.notSecrets.isEmpty {
-                            GroupHeading(title: "Not secrets", count: groups.notSecrets.count, top: 14)
-                            ForEach(groups.notSecrets) { CompactValueRow(model: model, summary: $0, tail: "Not a secret", dimmed: false) }
+                        if !groups.toRotate.isEmpty {
+                            GroupHeading(title: "To rotate", count: groups.toRotate.count, top: 14)
+                            ForEach(groups.toRotate) { summary in
+                                ActiveValueRow(model: model, summary: summary, isNew: false)
+                            }
+                        }
+                        if !groups.noAction.isEmpty {
+                            GroupHeading(title: "No action needed", count: groups.noAction.count, top: 14)
+                            ForEach(groups.noAction) { summary in
+                                CompactValueRow(model: model, summary: summary,
+                                                tail: summary.decision?.displayName ?? "", dimmed: false)
+                            }
                         }
                     }
                 }
@@ -426,7 +435,9 @@ private struct ActiveValueRow: View {
 
     private var selected: Bool { model.selectedEntryID == summary.id }
     private var appearances: String {
-        summary.occurrences.isEmpty ? "Recognition marker only" : plural(summary.occurrences.count, "appearance")
+        summary.occurrences.isEmpty
+            ? (summary.entry.kind == .rememberedDecision ? "Decision only" : "Recognition marker only")
+            : plural(summary.occurrences.count, "appearance")
     }
 
     var body: some View {
@@ -460,7 +471,7 @@ private struct ActiveValueRow: View {
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(summary.name), \(summary.needsReview ? "\(summary.unreviewed) to review" : "reviewed"), \(appearances), \(summary.strong ? "strong" : "ambiguous") match")
+        .accessibilityLabel("\(summary.name), \(summary.decision?.displayName ?? "to review"), \(appearances), \(summary.strong ? "strong" : "ambiguous") match")
         .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
     }
 }

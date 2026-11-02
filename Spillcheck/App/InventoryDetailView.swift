@@ -11,7 +11,7 @@ struct InventoryDetailView: View {
     private var selectedOccurrence: InventoryOccurrencePresentation? {
         summary.occurrences.first { $0.id == model.selectedOccurrenceID }
     }
-    private var quiet: Bool { summary.acknowledged || summary.allFalsePositive }
+    private var quiet: Bool { summary.acknowledged || summary.dismissed }
     private var sheet: Binding<DetailSheet?> { Binding(get: { model.detailSheet }, set: { model.detailSheet = $0 }) }
 
     var body: some View {
@@ -121,9 +121,11 @@ struct InventoryDetailView: View {
     private var actions: [ValueAction] {
         guard entry.fingerprint != nil else { return [] }
         var actions: [ValueAction] = []
-        if entry.kind != .rememberedObsoleteMarker {
+        if entry.kind != .rememberedObsoleteMarker && entry.kind != .rememberedDecision {
             actions.append(ValueAction(title: "Remove retained content…",
-                detail: summary.acknowledged ? "Deletes value and excerpts. Still recognized as obsolete." : "Deletes value and excerpts. If seen again, it’s new.",
+                detail: summary.acknowledged ? "Deletes value and excerpts. Still recognized as obsolete."
+                    : summary.decision != nil ? "Deletes value and excerpts. Your decision still applies."
+                    : "Deletes value and excerpts. If seen again, it’s new.",
                 sheet: .remove, identifier: "inventory.remove-content"))
         }
         if summary.acknowledged {
@@ -138,7 +140,7 @@ struct InventoryDetailView: View {
     @ViewBuilder
     private var secretSection: some View {
         if summary.occurrences.isEmpty {
-            Text("Recognition marker only. No value kept.")
+            Text(entry.kind == .rememberedDecision ? "Only your decision is kept. No value." : "Recognition marker only. No value kept.")
                 .font(.system(size: 12.5)).foregroundStyle(Palette.tertiary)
                 .padding(.horizontal, 16).padding(.vertical, 14)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -259,7 +261,9 @@ struct InventoryDetailView: View {
                     Text("∅").font(.system(size: 13)).foregroundStyle(Palette.quaternary)
                         .frame(width: 30, height: 30)
                         .overlay(Circle().strokeBorder(Palette.ring, style: StrokeStyle(lineWidth: 1.5, dash: [3, 2])))
-                    Text("Recognition marker only. If it appears again: listed as obsolete, source and time only, no alert.")
+                    Text(entry.kind == .rememberedDecision
+                         ? "Only your decision is kept. If the value appears again, your decision still applies to it."
+                         : "Recognition marker only. If it appears again: listed as obsolete, source and time only, no alert.")
                         .font(.system(size: 12)).foregroundStyle(Palette.secondary).lineSpacing(2)
                 }
                 .padding(.horizontal, 16).padding(.vertical, 14)
@@ -419,13 +423,6 @@ private struct OccurrenceRow: View {
             Spacer(minLength: 8)
             if occurrence.metadataOnly {
                 Text("Obsolete · nothing kept").font(.system(size: 11.5)).foregroundStyle(Palette.tertiary)
-            } else if let review = occurrence.review, review != .unreviewed {
-                Text(review == .confirmedSecret ? "Secret" : "Not a secret")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(review == .confirmedSecret ? Palette.onAccent : Palette.ink2)
-                    .padding(.horizontal, 7).frame(height: 18)
-                    .background(review == .confirmedSecret ? Color(hex: 0x2c2c2e, dark: 0xe1e6e3) : Palette.surface, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous).strokeBorder(review == .confirmedSecret ? .clear : Color(hex: 0xced4d1, dark: 0x3a3e3c)))
             }
             Image(systemName: "chevron.down")
                 .font(.system(size: 9, weight: .bold))
@@ -651,16 +648,12 @@ private struct OccurrenceDetail: View {
 
     // MARK: Actions
 
-    /// Judging this appearance on the left, going to its conversation on the right.
+    /// Going to this appearance's conversation. The decision belongs to the value, in the footer.
     @ViewBuilder
     private var actionBar: some View {
         let route = route
-        if occurrence.review != nil || route.openLabel != nil || canResume {
+        if route.openLabel != nil || canResume {
             HStack(spacing: 8) {
-                if let review = occurrence.review {
-                    ReviewToggle(review: review, disabled: disabled) { model.onReview?(occurrence.id, $0) }
-                        .accessibilityIdentifier("inventory.occurrence.\(occurrence.id.uuidString.lowercased()).review")
-                }
                 Spacer(minLength: 12)
                 sourceButtons(route)
             }
@@ -706,6 +699,7 @@ private struct OccurrenceDetail: View {
         case .catchUp: return ("None", "Found during catch-up and included in its summary")
         case .obsolete: return ("None", "Obsolete value")
         case .unlocated: return ("None", "The exact value wasn’t located")
+        case .dismissed: return ("None", "You decided this value needs no action")
         case .notAlerted: return ("None", nil)
         }
     }
@@ -720,58 +714,23 @@ private struct OccurrenceDetail: View {
     }
 }
 
-/// Review belongs to one appearance. Clicking the selected option again clears it.
-private struct ReviewToggle: View {
-    let review: OccurrenceReview
-    let disabled: Bool
-    let onChange: (OccurrenceReview) -> Void
-
-    var body: some View {
-        HStack(spacing: 10) {
-            // Same words either way so the control never moves; colour carries the "still to review" state.
-            Text("Is this a secret?").font(.system(size: 12))
-                .foregroundStyle(review == .unreviewed ? Palette.amberText : Palette.tertiary)
-            HStack(spacing: 2) {
-                option("Secret", .confirmedSecret)
-                option("Not a secret", .falsePositive)
-            }
-            .padding(2)
-            .background(Palette.shade.opacity(0.05), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-        }
-        .disabled(disabled)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Review for this appearance. Click the selected option again to clear.")
-    }
-
-    private func option(_ title: String, _ value: OccurrenceReview) -> some View {
-        let selected = review == value
-        return Button { onChange(selected ? .unreviewed : value) } label: {
-            Text(title)
-                .font(.system(size: 11.5, weight: .medium))
-                .foregroundStyle(selected ? (value == .confirmedSecret ? Palette.onAccent : Palette.ink) : Palette.tertiary)
-                .padding(.horizontal, 9).frame(height: 22)
-                .background(selected ? (value == .confirmedSecret ? Color(hex: 0x2c2c2e, dark: 0xe1e6e3) : Color(hex: 0xffffff, dark: 0x3a3e3c)) : .clear,
-                            in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-                .shadow(color: selected && value == .falsePositive ? Palette.shadow.opacity(0.1) : .clear, radius: 1, y: 1)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(selected ? .isSelected : [])
-    }
-}
-
 // MARK: - What to do
 
+/// One decision for the value. It covers every appearance, including later ones.
 private struct WhatToDoFooter: View {
     let model: AppModel
     let summary: EntrySummary
     let disabled: Bool
     @Binding var sheet: DetailSheet?
 
+    private typealias Copy = (title: String, body: String, quiet: Bool)
+
     private var service: String { summary.kind.servicePhrase }
     private var short: String { summary.kind.shortName }
+    /// Rotation can only be acknowledged for a value Spillcheck can recognize again.
+    private var recognizable: Bool { !summary.unlocated && summary.entry.fingerprint != nil }
 
-    private var copy: (title: String, body: String, quiet: Bool) {
+    private var copy: Copy {
         let entry = summary.entry
         if let acknowledgement = entry.acknowledgement {
             let date = DisplayTime.day(entry.acknowledgedAt ?? entry.observedAt)
@@ -780,49 +739,35 @@ private struct WhatToDoFooter: View {
                         : "If this value shows up again, it’s listed as obsolete without an alert. A replacement is a new value with normal alerts.",
                     true)
         }
-        if summary.allFalsePositive {
-            return ("You marked this as not a secret", "Nothing to rotate unless you change your mind. New appearances of this value are still checked.", true)
+        let since = entry.appearancesSinceDecision > 0 ? " Seen \(plural(entry.appearancesSinceDecision, "more time")) since." : ""
+        if let decision = summary.decision {
+            if decision == .needsRotation {
+                return ("Rotate this \(short)", recognizable
+                    ? "Change it at \(service), then confirm here." + since
+                    : "Change it at \(service). With no exact value, Spillcheck can’t recognize it later.", false)
+            }
+            let date = DisplayTime.day(entry.decidedAt ?? entry.observedAt)
+            return ("\(decision.displayName) · \(date)",
+                    (summary.nothingKept ? "Retained content was removed. " : "") + "Later appearances stay quiet." + since, true)
         }
         if summary.unlocated {
-            return ("Possible \(short), exact value not located",
-                    "Open the appearance below to check its source and decide whether anything needs rotating.", false)
+            return ("Possible \(short), exact value not located", "Check its source below, then decide.", false)
         }
-        if entry.detectorSignal == .ambiguous && summary.confirmed == 0 {
-            return ("Possibly a real \(short)", "If it’s real, change it at \(service) and confirm here.", false)
-        }
-        return ("Rotate or revoke this \(short)", "Change it at \(service), then confirm here. Later appearances won’t alert.", false)
-    }
-
-    private var canAcknowledge: Bool {
-        summary.entry.acknowledgement == nil && !summary.unlocated && summary.entry.fingerprint != nil
+        return ("Does this need rotating?", "Your answer covers every appearance of this value, including later ones.", false)
     }
 
     var body: some View {
         let copy = copy
-        HStack(spacing: 20) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(copy.title).font(.system(size: 14, weight: .semibold)).tracking(-0.1).lineLimit(1)
-                    .accessibilityAddTraits(.isHeader)
-                Text(copy.body).font(.system(size: 12)).foregroundStyle(Palette.secondary).lineLimit(1)
-                    .help(copy.body)
+        // Side by side when the window is wide enough, otherwise the decision goes under the question.
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 20) {
+                text(copy)
+                Spacer(minLength: 0)
+                actions
             }
-            Spacer(minLength: 0)
-            if canAcknowledge {
-                HStack(spacing: 8) {
-                    Button(summary.allFalsePositive ? "Mark as possible secret" : "Mark as not a secret") {
-                        let review: OccurrenceReview = summary.allFalsePositive ? .unreviewed : .falsePositive
-                        model.pinnedEntryID = summary.id
-                        model.onReviewAll?(summary.reviewable.map(\.id), review)
-                    }
-                    .buttonStyle(OutlineButtonStyle())
-                    .disabled(disabled || summary.reviewable.isEmpty)
-                    Button("Mark as handled") { sheet = .acknowledge }
-                        .buttonStyle(FilledButtonStyle())
-                        .disabled(disabled)
-                        .help("Confirm you rotated or revoked it")
-                        .accessibilityIdentifier("inventory.acknowledge-obsolete")
-                }
-                .fixedSize()
+            VStack(alignment: .leading, spacing: 10) {
+                text(copy)
+                actions.frame(maxWidth: .infinity, alignment: .trailing)
             }
         }
         .padding(.horizontal, 32)
@@ -832,6 +777,85 @@ private struct WhatToDoFooter: View {
         .shadow(color: Palette.shadow.opacity(0.035), radius: 8, y: -6)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("What to do")
+    }
+
+    private func text(_ copy: Copy) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(copy.title).font(.system(size: 14, weight: .semibold)).tracking(-0.1).lineLimit(1)
+                .accessibilityAddTraits(.isHeader)
+            Text(copy.body).font(.system(size: 12)).foregroundStyle(Palette.secondary).lineLimit(1)
+                .help(copy.body)
+        }
+    }
+
+    @ViewBuilder
+    private var actions: some View {
+        if summary.acknowledged {
+            EmptyView()
+        } else if let decision = summary.decision {
+            HStack(spacing: 8) {
+                if summary.entry.kind == .rememberedDecision {
+                    Button("Forget decision") { model.decide(summary, as: nil) }
+                        .buttonStyle(OutlineButtonStyle())
+                        .disabled(disabled)
+                        .help("Removes this entry. If the value appears again, it’s reviewed as new.")
+                        .accessibilityIdentifier("inventory.forget-decision")
+                } else {
+                    Button("Change decision") { model.decide(summary, as: nil) }
+                        .buttonStyle(OutlineButtonStyle())
+                        .disabled(disabled)
+                        .help("Back to review")
+                        .accessibilityIdentifier("inventory.change-decision")
+                }
+                if decision == .needsRotation, recognizable {
+                    Button("Mark rotated or revoked…") { sheet = .acknowledge }
+                        .buttonStyle(FilledButtonStyle())
+                        .disabled(disabled)
+                        .help("Confirm you changed it at \(service)")
+                        .accessibilityIdentifier("inventory.acknowledge-obsolete")
+                }
+            }
+            .fixedSize()
+        } else {
+            HStack(spacing: 8) {
+                decisionButton(.testOrDevelopment, "Test or dev only")
+                decisionButton(.notSecret, "Not a secret")
+                // A known format is almost always a real credential, so rotating is the likely answer.
+                decisionButton(.needsRotation, "Needs rotation", primary: summary.strong)
+                Menu {
+                    Button("Real, but keep it") { model.decide(summary, as: .acceptedRisk) }
+                    if recognizable {
+                        Button("Already rotated or revoked…") { sheet = .acknowledge }
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 13, weight: .semibold))
+                        .frame(width: 30, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .tint(Palette.ink2)
+                .fixedSize()
+                .disabled(disabled)
+                .help("Other decisions")
+                .accessibilityLabel("Other decisions")
+                .accessibilityIdentifier("inventory.more-decisions")
+            }
+            .fixedSize()
+        }
+    }
+
+    @ViewBuilder
+    private func decisionButton(_ decision: ValueDecision, _ title: String, primary: Bool = false) -> some View {
+        let button = Button(title) { model.decide(summary, as: decision) }
+        if primary {
+            button.buttonStyle(FilledButtonStyle()).disabled(disabled)
+                .accessibilityIdentifier("inventory.decide.\(decision.rawValue)")
+        } else {
+            button.buttonStyle(OutlineButtonStyle()).disabled(disabled)
+                .accessibilityIdentifier("inventory.decide.\(decision.rawValue)")
+        }
     }
 }
 
@@ -877,7 +901,7 @@ private struct ValueActionSheet: View {
     }
 
     private var items: [(Mark, String)] {
-        let count = summary.reviewable.count
+        let count = summary.occurrences.filter { !$0.metadataOnly }.count
         let provider = resumeOccurrence?.conversation.provider == .claudeCode ? "Anthropic" : "OpenAI"
         switch kind {
         case .acknowledge:
@@ -887,7 +911,8 @@ private struct ValueActionSheet: View {
             return [(.removed, "Exact value and \(plural(count, "excerpt"))"), (.removed, "Occurrence history"),
                     (.kept, "Agent histories on this Mac stay untouched"),
                     summary.acknowledged ? (.kept, "Obsolete marker kept. It holds no value.")
-                        : (.caution, "Not acknowledged, so a later appearance alerts as new")]
+                        : summary.decision != nil ? (.kept, "Your decision is kept for later appearances. It holds no value.")
+                        : (.caution, "Undecided, so a later appearance is reviewed and alerts as new")]
         case .forget:
             return [(.removed, "\(summary.entry.acknowledgement?.rawValue.capitalizedFirst ?? "") acknowledgement and recognition marker"),
                     (.caution, "New appearances are evaluated normally and may alert"),

@@ -10,7 +10,7 @@ Spillcheck is a native macOS app that finds secrets in agentic development sessi
 
 A developer can accidentally expose a credential when an agent reads a configuration file, runs a command, or receives a pasted message. The credential may appear only in a tool result. The model does not need to repeat it for Spillcheck to detect it.
 
-The main user question is "Which secrets appeared, where did they appear, and what still needs my attention?" A successful workflow ends with the user understanding an appearance and making a deliberate review or acknowledgement decision. A detection does not establish that a credential still works or that anyone else accessed it.
+The main user question is "Which secrets appeared, where did they appear, and what still needs my attention?" A successful workflow ends with the user understanding an appearance and making a deliberate decision about the value or acknowledging its rotation. A detection does not establish that a credential still works or that anyone else accessed it.
 
 The audience is developers using coding agents on their own Mac. Familiarity with developer tools is reasonable; familiarity with scanner rules or Spillcheck's collection mechanisms is not.
 
@@ -24,7 +24,7 @@ The app implements the workflows below. Design iteration can reshape their prese
 - Collection includes user messages, intermediate and final model responses, successful tool output, and tool errors where the adapter supports them. Coverage is bounded and must be described honestly.
 - Monitoring is asynchronous. A delay of tens of seconds to a few minutes is acceptable. Spillcheck discovers appearances after content becomes available; it does not block a secret from entering an agent session.
 - Exact values and context excerpts are retained encrypted until explicitly removed. They remain available if the original conversation disappears.
-- The first version supports review and acknowledgements of rotation or revocation. The user changes credentials at the relevant service themselves.
+- The first version supports a decision per value and acknowledgements of rotation or revocation. The user changes credentials at the relevant service themselves.
 
 General personal-data detection, full-history scans, automatic credential changes, service-side validity checks, cloud sync, device-loss recovery, cross-Mac migration and additional agents are outside this version. Local restart and app-update persistence remain required. Service-console links, remediation instructions, and a dedicated copy control are possible later additions.
 
@@ -41,8 +41,8 @@ Use these terms consistently in labels, counts, and discussions:
 
 Three independent kinds of status must remain understandable:
 
-1. Detector signal is strong or ambiguous. Ambiguous, unreviewed occurrences need review. A strong signal can also remain unreviewed.
-2. User review belongs to an occurrence. It can be unreviewed, confirmed as a secret, or marked as a false positive. Review is reversible. One value can have mixed reviews across its occurrences; a false positive does not create a blanket exclusion for future appearances.
+1. Detector signal is strong or ambiguous. It describes how distinctive the format is, not whether the value still works or matters. Undecided values need review whatever their signal.
+2. The user's decision belongs to the exact value: needs rotation, test or dev only, not a secret, or a real credential kept as is. It is reversible and covers later appearances of that value. A dismissed value's new appearances are counted without alerts or a return to review; a value that needs rotation keeps alerting in new conversations. [Decision 0009](adr/0009-decide-per-value.md) replaced per-occurrence review with this.
 3. Rotation or revocation acknowledgement belongs to the exact value. The user reports that they replaced and invalidated it, or invalidated it without a replacement. Spillcheck treats later appearances of that value as obsolete. It does not verify the acknowledgement with the service.
 
 Counts must name what they count. "3 values in 12 occurrences" is meaningful. An undifferentiated "12 secrets" can exaggerate the amount of work.
@@ -61,7 +61,7 @@ The current settings expose executable paths, profile directories, and versions.
 
 For a new value with a strong signal, the user receives a masked macOS notification. Opening it selects the corresponding inventory detail while protected content remains masked. The detail should let the user establish what was detected, how often it appeared, and which occurrence to inspect before revealing anything.
 
-The user can authenticate, inspect the exact value and retained context, review the selected occurrence, and access its source when a validated route is available. Tool output and tool error must remain visible as source types, even if the assistant never mentioned the value.
+The user can authenticate, inspect the exact value and retained context, decide about the value, and access an appearance's source when a validated route is available. Tool output and tool error must remain visible as source types, even if the assistant never mentioned the value.
 
 Alert behavior limits interruption:
 
@@ -107,7 +107,7 @@ The following is a recommended hierarchy. Screen structure and navigation remain
 
 ### Inventory
 
-Make comparison and selection easy while values stay masked. Each entry needs a suspected type, agents, occurrence count, last observation time, and a useful summary of review and acknowledgement status. Provide agent, conversation, and review filters. Obsolete values and unlocated detections need recognizable entry types.
+Make comparison and selection easy while values stay masked. Each entry needs a suspected type, agents, occurrence count, last observation time, and a useful summary of the decision and acknowledgement status. Provide agent, conversation, and review filters. Obsolete values and unlocated detections need recognizable entry types.
 
 An empty state must distinguish setup still needed, no detections in analyzed content, a scan still underway, and filters matching nothing. An empty inventory alone is insufficient evidence for "Everything is safe."
 
@@ -118,12 +118,12 @@ A design question is how users recognize several masked values of the same type.
 The user should be able to answer these questions in order:
 
 1. What kind of value is this, and what did the detector conclude?
-2. Which occurrences remain unreviewed, and has the value been acknowledged obsolete?
+2. Has the value been decided or acknowledged obsolete, and how often has it appeared since?
 3. Where and when did a specific appearance happen, and was it a prompt, model response, tool output, or error?
 4. What retained value and context can I inspect after authentication?
-5. What review, source, acknowledgement, or removal action is appropriate here?
+5. What decision, source, acknowledgement, or removal action is appropriate here?
 
-Keep occurrence review controls attached to the occurrence they change. Show mixed reviews at the value level. Explain evidence in plain language, with rule identifiers available as secondary detail. Retained excerpts can be clipped and must be identified as excerpts rather than complete conversations.
+Keep the decision with the value, since it covers every appearance, and source actions with the appearance they open. Explain evidence in plain language, with rule identifiers available as secondary detail. Retained excerpts can be clipped and must be identified as excerpts rather than complete conversations.
 
 ### Monitoring, history, and settings
 
@@ -154,8 +154,8 @@ Visual style is unsettled. This brief does not select branding, colors, typograp
 ## Questions for the first design iterations
 
 - Should opening the app prioritize all recent values or the work awaiting review? How does the user move between them without losing context?
-- Does a two-column inventory and detail view give enough room for occurrence review, or should occurrences have their own navigation level?
-- How should a value with strong signals, mixed reviews, and a rotation acknowledgement summarize its status without collapsing those facts?
+- Does a two-column inventory and detail view give enough room to inspect occurrences, or should occurrences have their own navigation level?
+- How should a value with strong signals, a decision, and a rotation acknowledgement summarize its status without collapsing those facts?
 - How prominent should remembered obsolete markers be after their retained content is removed?
 - How can setup make the chosen profile, interface, and verification step clear without making every user edit filesystem paths?
 - Where should coverage gaps and historical progress appear so the user understands an empty inventory and can act on incomplete monitoring?
@@ -169,7 +169,7 @@ Use these fictional scenarios to evaluate an iteration:
 
 1. A fresh install finds Codex, but delivery is unverified. The user can identify the next setup action and understands that monitoring is not yet proven.
 2. A token appears twice in one tool output and once in another conversation. The UI represents one value and three occurrences, with an alert for each conversation's first strong appearance.
-3. One occurrence is confirmed and another is a false positive. The value summary communicates mixed reviews, and changing either occurrence leaves the other unchanged.
+3. The user decides that a test password needs no action. A later appearance in another conversation only adds to its count, without an alert, and changing the decision returns the value to review.
 4. The user cancels authentication, then retries successfully. The cancelled state exposes no protected content; the successful state offers an obvious way to mask it.
 5. The source conversation disappears. A retained occurrence still offers authenticated context. An obsolete appearance recorded after content removal accurately shows that no context was retained.
 6. The user acknowledges rotation, removes retained content, and later sees the old value again. It appears obsolete without an alert or reconstructed secret. A replacement value receives ordinary treatment.

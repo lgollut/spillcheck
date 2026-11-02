@@ -48,13 +48,28 @@ public extension SecretCategory {
     }
 }
 
+public extension ValueDecision {
+    var displayName: String {
+        switch self {
+        case .needsRotation: "Needs rotation"
+        case .testOrDevelopment: "Test or dev only"
+        case .notSecret: "Not a secret"
+        case .acceptedRisk: "Accepted risk"
+        }
+    }
+}
+
 public enum InventoryEntryID: Hashable, Sendable {
     case value(UUID)
     case obsoleteMarker(ValueFingerprint)
+    /// A decision kept after its value's retained content was removed.
+    case rememberedDecision(ValueFingerprint)
     case unlocated(UUID)
 }
 
-public enum InventoryEntryKind: String, Sendable { case retainedValue, obsoleteValue, rememberedObsoleteMarker, unlocatedDetection }
+public enum InventoryEntryKind: String, Sendable {
+    case retainedValue, obsoleteValue, rememberedObsoleteMarker, rememberedDecision, unlocatedDetection
+}
 
 public enum InventoryReviewFilter: String, CaseIterable, Hashable, Sendable {
     case all, needsReview, unreviewed, confirmedSecret, falsePositive, obsolete
@@ -102,6 +117,11 @@ public struct InventoryEntry: Identifiable, Hashable, Sendable {
     public let detectorSignal: SignalStrength?
     public let acknowledgement: ObsoleteAcknowledgement?
     public let acknowledgedAt: Date?
+    /// The user's decision about this value, or about this unlocated result. Never set alongside
+    /// an acknowledgement: rotation or revocation replaces it.
+    public let decision: ValueDecision?
+    public let decidedAt: Date?
+    public let appearancesSinceDecision: Int
     public let protectedValue: ProtectedPayloadReference?
     /// Evidence from every retained occurrence, for naming and explanation.
     public let evidence: [DetectionEvidence]
@@ -119,6 +139,8 @@ public enum OccurrenceAlertState: Hashable, Sendable {
     case catchUp
     case obsolete
     case unlocated
+    /// The value was decided as needing no action, so its appearances stay quiet.
+    case dismissed
     case notAlerted
 }
 
@@ -168,13 +190,16 @@ public struct InventoryPresentation: Sendable {
             let id = InventoryEntryID.value(record.id)
             let occurrences = snapshot.occurrences.values.filter { $0.valueID == record.id }
             let obsolete = snapshot.obsoleteAppearances.values.filter { $0.valueID == record.id }
-            let alerts = Self.alertStates(occurrences, decisions: snapshot.alertDecisions.values.filter { $0.valueID == record.id })
+            let decision = summary.decision
+            let alerts = Self.alertStates(occurrences, decisions: snapshot.alertDecisions.values.filter { $0.valueID == record.id },
+                                          dismissed: decision?.decision.dismissesValue == true)
             var states = Set(occurrences.map { Self.filter($0.review) })
-            if summary.reviewCounts.needsReview > 0 { states.insert(.needsReview) }
+            if summary.reviewCounts.needsReview > 0 && decision == nil { states.insert(.needsReview) }
             if summary.obsoleteMarker != nil || summary.obsoleteAppearanceCount > 0 { states.insert(.obsolete) }
             let providers = Set(occurrences.map { $0.source.identity.session.provider })
                 .union(obsolete.map { $0.source.session.provider })
             let label = summary.obsoleteMarker.map { $0.acknowledgement == .rotated ? "Acknowledged rotated" : "Acknowledged revoked" }
+                ?? decision?.decision.displayName
                 ?? (summary.reviewCounts.total == 0 ? "Obsolete value"
                     : summary.reviewCounts.needsReview > 0 ? "Needs review"
                     : summary.reviewCounts.confirmed == summary.reviewCounts.total ? "Confirmed secret"
@@ -185,6 +210,8 @@ public struct InventoryPresentation: Sendable {
                 agentLabels: providers.sorted { $0.rawValue < $1.rawValue }.map(\.displayName), occurrenceCount: summary.occurrenceCount,
                 observedAt: record.lastOccurrenceAt, reviewLabel: label, reviewStates: states, detectorSignal: summary.detectorSignal,
                 acknowledgement: summary.obsoleteMarker?.acknowledgement, acknowledgedAt: summary.obsoleteMarker?.acknowledgedAt,
+                decision: decision?.decision, decidedAt: decision?.decidedAt,
+                appearancesSinceDecision: summary.appearancesSinceDecision,
                 protectedValue: record.protectedValue,
                 evidence: Self.evidence(occurrences.reduce(into: Set<DetectionEvidence>()) { $0.formUnion($1.evidence) })))
             details[id] = occurrences.compactMap { occurrence in
@@ -210,19 +237,30 @@ public struct InventoryPresentation: Sendable {
                 label: snapshot.valueLabels[marker.fingerprint], valueID: nil, fingerprint: marker.fingerprint, categoryLabels: [], agentLabels: [], occurrenceCount: 0,
                 observedAt: marker.acknowledgedAt, reviewLabel: marker.acknowledgement == .rotated ? "Acknowledged rotated" : "Acknowledged revoked",
                 reviewStates: [.obsolete], detectorSignal: nil, acknowledgement: marker.acknowledgement,
-                acknowledgedAt: marker.acknowledgedAt, protectedValue: nil,
-                evidence: []))
+                acknowledgedAt: marker.acknowledgedAt, decision: nil, decidedAt: nil, appearancesSinceDecision: 0,
+                protectedValue: nil, evidence: []))
+        }
+        for decision in ledger.valueDecisions.values where snapshot.records[decision.fingerprint] == nil {
+            entries.append(InventoryEntry(id: .rememberedDecision(decision.fingerprint), kind: .rememberedDecision,
+                label: ledger.valueLabels[decision.fingerprint], valueID: nil, fingerprint: decision.fingerprint,
+                categoryLabels: [], agentLabels: [], occurrenceCount: 0, observedAt: decision.decidedAt,
+                reviewLabel: decision.decision.displayName, reviewStates: [], detectorSignal: nil,
+                acknowledgement: nil, acknowledgedAt: nil, decision: decision.decision, decidedAt: decision.decidedAt,
+                appearancesSinceDecision: 0, protectedValue: nil, evidence: []))
         }
         for result in snapshot.unlocatedResults.values {
             guard let conversation = conversationMap[result.source.identity.session] else { continue }
             let id = InventoryEntryID.unlocated(result.id)
+            let decision = ledger.unlocatedDecisions[result.id]
             entries.append(InventoryEntry(id: id, kind: .unlocatedDetection, label: snapshot.unlocatedLabels[result.id],
                 valueID: nil, fingerprint: nil,
                 categoryLabels: Set(result.evidence.map(\.category)).sorted { $0.rawValue < $1.rawValue }.map(\.displayName),
                 agentLabels: [result.source.identity.session.provider.displayName], occurrenceCount: 0,
-                observedAt: result.source.contentTime, reviewLabel: "Value not located", reviewStates: [.needsReview],
+                observedAt: result.source.contentTime, reviewLabel: decision?.decision.displayName ?? "Value not located",
+                reviewStates: decision == nil ? [.needsReview] : [],
                 detectorSignal: result.evidence.contains { $0.signal == .strong } ? .strong : .ambiguous,
-                acknowledgement: nil, acknowledgedAt: nil, protectedValue: nil, evidence: Self.evidence(result.evidence)))
+                acknowledgement: nil, acknowledgedAt: nil, decision: decision?.decision, decidedAt: decision?.decidedAt,
+                appearancesSinceDecision: 0, protectedValue: nil, evidence: Self.evidence(result.evidence)))
             details[id] = [InventoryOccurrencePresentation(id: result.id, source: result.source.identity, interface: result.source.origin.interface,
                 contentType: result.source.contentType, observedAt: result.source.contentTime,
                 timeBasis: result.source.timeBasis, conversation: conversation,
@@ -246,7 +284,9 @@ public struct InventoryPresentation: Sendable {
                 switch filter.review {
                 case .all: return true
                 case .obsolete: return entry.acknowledgement != nil || occurrence.classification == .obsolete
-                case .needsReview: return occurrence.locationFailure != nil || occurrence.review == .unreviewed && !occurrence.evidence.contains { $0.signal == .strong }
+                case .needsReview:
+                    return entry.decision == nil && (occurrence.locationFailure != nil
+                        || occurrence.review == .unreviewed && !occurrence.evidence.contains { $0.signal == .strong })
                 case .unreviewed: return occurrence.review == .unreviewed
                 case .confirmedSecret: return occurrence.review == .confirmedSecret
                 case .falsePositive: return occurrence.review == .falsePositive
@@ -261,6 +301,20 @@ public struct InventoryPresentation: Sendable {
         switch state { case .unreviewed: .unreviewed; case .confirmedSecret: .confirmedSecret; case .falsePositive: .falsePositive }
     }
     /// Alert decisions are per value and conversation. The earliest eligible live appearance carries it.
+    /// A dismissed value's appearances stay quiet, except an alert that was already sent.
+    private static func alertStates(
+        _ occurrences: [Occurrence], decisions: [AlertDecision], dismissed: Bool
+    ) -> [UUID: OccurrenceAlertState] {
+        let states = alertStates(occurrences, decisions: decisions)
+        guard dismissed else { return states }
+        return states.mapValues { state in
+            switch state {
+            case .alerted, .obsolete: state
+            default: .dismissed
+            }
+        }
+    }
+
     private static func alertStates(_ occurrences: [Occurrence], decisions: [AlertDecision]) -> [UUID: OccurrenceAlertState] {
         let delivery = Dictionary(decisions.map { ($0.eligibility.session, $0.delivery) }, uniquingKeysWith: { first, _ in first })
         var carrier: [SessionIdentity: UUID] = [:]

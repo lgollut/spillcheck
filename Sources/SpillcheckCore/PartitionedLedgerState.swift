@@ -76,6 +76,8 @@ struct LedgerCore: Codable, Equatable, Sendable {
     var valueLabels: [ValueFingerprint: MaskedValueLabel]
     var unlocatedLabels: [UUID: MaskedValueLabel]
     var nextValueLabel: Int
+    var valueDecisions: [ValueFingerprint: ValueDecisionRecord]
+    var unlocatedDecisions: [UUID: UnlocatedDecisionRecord]
 
     init(_ snapshot: InventorySnapshot) {
         schemaVersion = snapshot.schemaVersion
@@ -89,6 +91,35 @@ struct LedgerCore: Codable, Equatable, Sendable {
         valueLabels = snapshot.valueLabels
         unlocatedLabels = snapshot.unlocatedLabels
         nextValueLabel = snapshot.nextValueLabel
+        valueDecisions = snapshot.valueDecisions
+        unlocatedDecisions = snapshot.unlocatedDecisions
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, records, occurrences, obsoleteAppearances, obsoleteMarkers, unlocatedResults
+        case locationReceipts, unlocatedReceipts, valueLabels, unlocatedLabels, nextValueLabel
+        case valueDecisions, unlocatedDecisions
+    }
+
+    /// A core written before value decisions existed has neither decision key. Its per-appearance
+    /// reviews become decisions, exactly as they do for a version-1 ledger.
+    init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try c.decode(Int.self, forKey: .schemaVersion)
+        records = try c.decode([ValueFingerprint: InventoryRecord].self, forKey: .records)
+        occurrences = try c.decode([UUID: Occurrence].self, forKey: .occurrences)
+        obsoleteAppearances = try c.decode([UUID: ObsoleteAppearance].self, forKey: .obsoleteAppearances)
+        obsoleteMarkers = try c.decode([ValueFingerprint: ObsoleteValueMarker].self, forKey: .obsoleteMarkers)
+        unlocatedResults = try c.decode([UUID: UnlocatedResult].self, forKey: .unlocatedResults)
+        locationReceipts = try c.decode([OccurrenceIdentity: LocationReceipt].self, forKey: .locationReceipts)
+        unlocatedReceipts = try c.decode(Set<UnlocatedIdentity>.self, forKey: .unlocatedReceipts)
+        valueLabels = try c.decode([ValueFingerprint: MaskedValueLabel].self, forKey: .valueLabels)
+        unlocatedLabels = try c.decode([UUID: MaskedValueLabel].self, forKey: .unlocatedLabels)
+        nextValueLabel = try c.decode(Int.self, forKey: .nextValueLabel)
+        valueDecisions = try c.decodeIfPresent([ValueFingerprint: ValueDecisionRecord].self, forKey: .valueDecisions)
+            ?? ValueDecisionRecord.derived(records: records, occurrences: occurrences,
+                                           obsoleteAppearances: obsoleteAppearances, obsoleteMarkers: obsoleteMarkers)
+        unlocatedDecisions = try c.decodeIfPresent([UUID: UnlocatedDecisionRecord].self, forKey: .unlocatedDecisions) ?? [:]
     }
 }
 
@@ -412,7 +443,8 @@ extension InventorySnapshot {
             strongSignalReceipts: notifications.strongSignalReceipts, unlocatedReceipts: core.unlocatedReceipts,
             sourceKinds: kinds, sourceTimes: times, conversationLabels: conversations.conversationLabels,
             historicalNotificationDecisions: notifications.historicalNotificationDecisions,
-            valueLabels: core.valueLabels, unlocatedLabels: core.unlocatedLabels, nextValueLabel: core.nextValueLabel)
+            valueLabels: core.valueLabels, unlocatedLabels: core.unlocatedLabels, nextValueLabel: core.nextValueLabel,
+            valueDecisions: core.valueDecisions, unlocatedDecisions: core.unlocatedDecisions)
     }
 
     /// Field-by-field equality, used to prove that what was written reads back as the ledger.

@@ -185,19 +185,19 @@ struct EntrySummary: Identifiable {
     var id: InventoryEntryID { entry.id }
     var label: String { entry.label?.text ?? "" }
     var name: String { label.isEmpty ? kind.shortName : "\(kind.shortName) \(label)" }
-    var unreviewed: Int { occurrences.filter { $0.review == .unreviewed }.count }
-    var confirmed: Int { occurrences.filter { $0.review == .confirmedSecret }.count }
-    var falsePositive: Int { occurrences.filter { $0.review == .falsePositive }.count }
-    var reviewable: [InventoryOccurrencePresentation] { occurrences.filter { $0.review != nil } }
     var conversationCount: Int { Set(occurrences.map(\.conversation.id)).count }
     var agents: [String] { Array(Set(occurrences.map(\.conversation.provider.displayName))).sorted() }
     var strong: Bool { entry.detectorSignal == .strong }
     var acknowledged: Bool { entry.acknowledgement != nil }
     var unlocated: Bool { entry.kind == .unlocatedDetection }
-    /// Values without an acknowledgement that still have unreviewed appearances.
-    var needsReview: Bool { !acknowledged && (unreviewed > 0 || unlocated) }
-    var allFalsePositive: Bool { unreviewed == 0 && confirmed == 0 && falsePositive > 0 }
-    var nothingKept: Bool { acknowledged && !entry.canRevealRetainedValue }
+    var decision: ValueDecision? { entry.decision }
+    /// Neither decided nor acknowledged rotated or revoked yet.
+    var needsReview: Bool { !acknowledged && decision == nil }
+    var awaitingRotation: Bool { !acknowledged && decision == .needsRotation }
+    /// Decided as needing no action: later appearances stay quiet.
+    var dismissed: Bool { !acknowledged && decision?.dismissesValue == true }
+    /// A rotated, revoked or decided value whose retained content was removed.
+    var nothingKept: Bool { !unlocated && !entry.canRevealRetainedValue && (acknowledged || decision != nil) }
     var latestOccurrence: Date? { occurrences.map(\.observedAt).max() }
 
     init(entry: InventoryEntry, occurrences: [InventoryOccurrencePresentation]) {
@@ -205,6 +205,8 @@ struct EntrySummary: Identifiable {
         self.occurrences = occurrences
         if entry.evidence.isEmpty, let acknowledgement = entry.acknowledgement {
             kind = .remembered(acknowledgement)
+        } else if entry.kind == .rememberedDecision {
+            kind = .removed
         } else {
             kind = entry.valueKind
         }
@@ -219,12 +221,14 @@ struct EntrySummary: Identifiable {
     }
 }
 
+/// Values by what they still need: a decision, a rotation, or nothing.
 struct InventoryGroups {
-    var active: [EntrySummary] = []
-    var notSecrets: [EntrySummary] = []
+    var toReview: [EntrySummary] = []
+    var toRotate: [EntrySummary] = []
+    var noAction: [EntrySummary] = []
     var handled: [EntrySummary] = []
-    var isEmpty: Bool { active.isEmpty && notSecrets.isEmpty && handled.isEmpty }
-    var all: [EntrySummary] { active + notSecrets + handled }
+    var isEmpty: Bool { toReview.isEmpty && toRotate.isEmpty && noAction.isEmpty && handled.isEmpty }
+    var all: [EntrySummary] { toReview + toRotate + noAction + handled }
 }
 
 /// A host-specific presentation or an aggregate for a profile whose transport
@@ -447,7 +451,6 @@ final class AppModel {
             guard oldValue != selectedEntryID else { return }
             // Selecting a rotated or revoked value opens its section; collapsing it again is up to the user.
             if let selectedEntryID, groups.handled.contains(where: { $0.id == selectedEntryID }) { handledExpanded = true }
-            pinnedEntryID = nil
             expandedOccurrenceID = nil
             detailSheet = nil
             selectedOccurrenceID = selectedEntryID.flatMap { defaultOccurrence(for: $0) }
@@ -477,8 +480,6 @@ final class AppModel {
     var route: MainRoute = .inventory
     var handledExpanded = false
     var expandedOccurrenceID: UUID?
-    /// Keeps a value in place after a review until the user selects something else.
-    var pinnedEntryID: InventoryEntryID?
     /// The value action sheet belongs to the selected value and closes when the selection changes.
     var detailSheet: DetailSheet?
     var toast: String?
@@ -496,8 +497,8 @@ final class AppModel {
     @ObservationIgnored var onHide: (() -> Void)?
     @ObservationIgnored var onUnlock: (() -> Void)?
     @ObservationIgnored var onLock: (() -> Void)?
-    @ObservationIgnored var onReview: ((UUID, OccurrenceReview) -> Void)?
-    @ObservationIgnored var onReviewAll: (([UUID], OccurrenceReview) -> Void)?
+    @ObservationIgnored var onDecide: ((ValueFingerprint, ValueDecision?) -> Void)?
+    @ObservationIgnored var onDecideUnlocated: ((UUID, ValueDecision?) -> Void)?
     @ObservationIgnored var onAcknowledge: ((ValueFingerprint, ObsoleteAcknowledgement) -> Void)?
     @ObservationIgnored var onRemoveContent: ((ValueFingerprint) -> Void)?
     @ObservationIgnored var onForgetMarker: ((ValueFingerprint) -> Void)?
@@ -585,8 +586,9 @@ final class AppModel {
         var groups = InventoryGroups()
         for summary in sorted {
             if summary.acknowledged { groups.handled.append(summary) }
-            else if summary.allFalsePositive && summary.id != pinnedEntryID { groups.notSecrets.append(summary) }
-            else { groups.active.append(summary) }
+            else if summary.awaitingRotation { groups.toRotate.append(summary) }
+            else if summary.decision != nil { groups.noAction.append(summary) }
+            else { groups.toReview.append(summary) }
         }
         return groups
     }
@@ -594,7 +596,26 @@ final class AppModel {
     /// The order arrow keys follow, which includes the collapsed section only when it is open.
     var navigableEntries: [EntrySummary] {
         let groups = groups
-        return groups.active + groups.notSecrets + (handledExpanded ? groups.handled : [])
+        return groups.toReview + groups.toRotate + groups.noAction + (handledExpanded ? groups.handled : [])
+    }
+
+    /// Records the decision. Deciding a value still to review then opens the next one, like an inbox.
+    func decide(_ summary: EntrySummary, as decision: ValueDecision?) {
+        let next = summary.needsReview && decision != nil ? nextToReview(after: summary.id) : nil
+        if case .unlocated(let resultID) = summary.id {
+            onDecideUnlocated?(resultID, decision)
+        } else if let fingerprint = summary.entry.fingerprint {
+            onDecide?(fingerprint, decision)
+        } else {
+            return
+        }
+        if let next { selectedEntryID = next }
+    }
+
+    private func nextToReview(after id: InventoryEntryID) -> InventoryEntryID? {
+        let list = groups.toReview
+        guard let index = list.firstIndex(where: { $0.id == id }) else { return nil }
+        return (list.dropFirst(index + 1).first ?? list.prefix(index).last)?.id
     }
 
     var needsReview: [EntrySummary] {
@@ -636,8 +657,7 @@ final class AppModel {
     }
 
     private func defaultOccurrence(for id: InventoryEntryID) -> UUID? {
-        let occurrences = presentation?.occurrences(for: id) ?? []
-        return (occurrences.first { $0.review == .unreviewed } ?? occurrences.first)?.id
+        presentation?.occurrences(for: id).first?.id
     }
 
     private func keepSelectionVisible() {
@@ -1058,15 +1078,15 @@ private enum DemoInventory {
         func deliver(_ transition: InventoryTransition) throws {
             for alert in transition.alerts { try ledger.recordAlertDelivery(alert.id, state: .delivered) }
         }
-        // Stripe key: both appearances confirmed, then acknowledged as rotated.
+        // Stripe key, acknowledged as rotated.
         try add(4, rule: "stripe-access-token", .apiKey, .strong, .claudeCode, "s1", "s1a", .toolOutput, .t3, ago: 6 * day)
         try add(4, rule: "stripe-access-token", .apiKey, .strong, .claudeCode, "s1", "s1b", .finalResponse, .t3, ago: 6 * day - 60)
         // An old AWS key: revoked, removed, then seen again as an obsolete appearance.
         try add(5, rule: "aws-access-token", .apiKey, .strong, .codex, "s12", "s12old", .toolOutput, .t3, ago: 2 * day)
-        // OpenAI key with mixed reviews.
+        // OpenAI key the user still has to rotate.
         try deliver(try add(2, rule: "openai-api-key", .apiKey, .strong, .codex, "s2", "s2a", .userPrompt, ago: 3 * day))
         try add(2, rule: "openai-api-key", .apiKey, .strong, .codex, "s2", "s2b", .finalResponse, ago: 3 * day - 60)
-        // A generic value the user marked as not a secret.
+        // A generic value the user decided isn't a secret.
         try add(8, rule: "generic-api-key", .apiKey, .ambiguous, .codex, "s3", "s3a", .toolOutput, ago: 4 * day)
         // Private key whose exact range could not be located.
         let unlocated = try record(.claudeCode, "s7", "s7key", .toolOutput, .standaloneCLI, at: now.addingTimeInterval(-day + 600))
@@ -1082,14 +1102,10 @@ private enum DemoInventory {
         // A replacement AWS key, which is a different value.
         try deliver(try add(7, rule: "aws-access-token", .apiKey, .strong, .codex, "s12", "s12new", .toolOutput, .t3, ago: 5 * 3600))
 
-        let snapshot = ledger.snapshot
-        for occurrence in snapshot.occurrences.values {
-            switch occurrence.source.identity.itemID {
-            case "s1a", "s1b", "s2a": try ledger.review(occurrence.id, as: .confirmedSecret)
-            case "s2b", "s3a": try ledger.review(occurrence.id, as: .falsePositive)
-            default: break
-            }
-        }
+        try ledger.decide(ValueFingerprint(keyedDigest: Data(repeating: 2, count: 32)), as: .needsRotation,
+                          at: now.addingTimeInterval(-2 * day))
+        try ledger.decide(ValueFingerprint(keyedDigest: Data(repeating: 8, count: 32)), as: .notSecret,
+                          at: now.addingTimeInterval(-3 * day))
         let stripe = try ValueFingerprint(keyedDigest: Data(repeating: 4, count: 32))
         let oldAWS = try ValueFingerprint(keyedDigest: Data(repeating: 5, count: 32))
         try ledger.acknowledgeObsolete(stripe, as: .rotated, at: now.addingTimeInterval(-5 * day))

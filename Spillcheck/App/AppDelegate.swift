@@ -211,6 +211,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let hosting = NSHostingView(rootView: InventoryView(model: model))
             // Scrolling content must not grow the window to its full height.
             hosting.sizingOptions = [.minSize]
+            // Every page draws its own 52 pt header in the title bar. Since macOS 26 the toolbar's safe
+            // area is taller than that, and a scroll view starting inside it extends to the window's
+            // top edge, so its content scrolled over the Focus, Coverage, and Settings headers.
+            hosting.safeAreaRegions = []
             newWindow.contentView = hosting
             newWindow.setFrameAutosaveName("SpillcheckInventory")
             if !newWindow.setFrameUsingName("SpillcheckInventory") { newWindow.center() }

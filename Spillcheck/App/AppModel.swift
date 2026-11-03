@@ -302,8 +302,15 @@ struct FocusSession: Equatable {
     enum Start { case list, selection, rotationAfterReview }
     let bucket: InventoryBucket
     let ids: [InventoryEntryID]
-    let title: String
+    /// What the title counts: "value", or "selected value" for a session started from a selection.
+    let noun: String
     var current: InventoryEntryID?
+
+    /// Counts the values still left, so the title follows every decision and undo.
+    func title(left: Int) -> String {
+        let action = bucket == .toRotate ? "rotate" : "review"
+        return left == 0 ? "Nothing left to \(action)" : "\(plural(left, noun)) to \(action)"
+    }
 }
 
 /// A host-specific presentation or an aggregate for a profile whose transport
@@ -890,8 +897,7 @@ final class AppModel {
         if self.bucket != bucket { self.bucket = bucket }
         multiSelection = []
         refreshPinnedUnread()
-        focus = FocusSession(bucket: bucket, ids: ids, title: "\(plural(ids.count, noun)) to \(bucket == .toRotate ? "rotate" : "review")",
-                             current: first)
+        focus = FocusSession(bucket: bucket, ids: ids, noun: noun, current: first)
         selectedEntryID = first
     }
 

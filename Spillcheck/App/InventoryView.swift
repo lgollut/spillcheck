@@ -792,9 +792,9 @@ private struct FocusView: View {
 
     var body: some View {
         if let session = model.focus {
-            let pending = model.pending(in: session)
+            let left = model.pending(in: session).count
             VStack(spacing: 0) {
-                header(session, done: session.ids.count - pending.count)
+                header(session, left: left)
                 Rectangle().fill(Palette.separator).frame(height: 1)
                 if session.current != nil, let summary = model.selectedSummary {
                     InventoryDetailView(model: model, summary: summary)
@@ -832,8 +832,9 @@ private struct FocusView: View {
         }
     }
 
-    private func header(_ session: FocusSession, done: Int) -> some View {
-        HStack(spacing: 12) {
+    private func header(_ session: FocusSession, left: Int) -> some View {
+        let done = session.ids.count - left
+        return HStack(spacing: 12) {
             // Room for the window's traffic lights.
             Color.clear.frame(width: 62, height: 12)
             Button { model.exitFocus() } label: {
@@ -843,7 +844,7 @@ private struct FocusView: View {
             .buttonStyle(QuietButtonStyle(height: 26))
             .help("Back to the Inbox (Esc)")
             .accessibilityIdentifier("inventory.focus.exit")
-            Text(session.title).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+            Text(session.title(left: left)).font(.system(size: 13, weight: .semibold)).lineLimit(1)
             Spacer(minLength: 12)
             if session.current != nil {
                 HStack(spacing: 2) {

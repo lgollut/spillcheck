@@ -393,6 +393,41 @@ private struct NativeWorkflowProbe {
             try require(batch.focus == nil && batch.bucket == .toReview && batch.selectedEntryID == list[0], "focus-exit")
             checks.append("selection-and-focus")
 
+            // Focus titles count what's left, so they follow each decision and its undo. Decisions are
+            // applied to a ledger and reloaded, as the app does once they're written.
+            var ledger = try InventoryLedger(snapshot: try DemoInventory.snapshot())
+            let live = AppModel()
+            live.loadSnapshot(ledger.snapshot)
+            live.storageReady = true
+            var liveApplied: [[InventoryDecisionChange]] = []
+            live.onApply = { changes, _ in
+                liveApplied.append(changes)
+                for change in changes { try? ledger.apply(change, at: Date()) }
+                live.loadSnapshot(ledger.snapshot)
+            }
+            func focusTitle(_ model: AppModel) -> String? { model.focus.map { $0.title(left: model.pending(in: $0).count) } }
+            live.startFocus(.list)
+            try require(focusTitle(live) == "4 values to review", "focus-title-counts-the-list")
+            let beforeDecision = ledger.snapshot
+            try require(live.decide(byKey: "r") && focusTitle(live) == "3 values to review", "focus-title-follows-a-decision")
+            live.offerUndo(InventoryDecisionChange.inverse(of: liveApplied.last ?? [], in: beforeDecision), message: "synthetic decision")
+            live.undoLastDecision()
+            try require(focusTitle(live) == "4 values to review", "focus-title-follows-undo")
+            for _ in 0..<8 where live.focus?.current != nil { _ = live.decide(byKey: "n") }
+            try require(live.focus?.current == nil && focusTitle(live) == "Nothing left to review", "focus-title-when-done")
+            let picked = AppModel()
+            picked.loadSnapshot(try DemoInventory.snapshot())
+            let pickedList = picked.bucketEntries.map(\.id)
+            picked.select(pickedList[0], gesture: .single)
+            picked.select(pickedList[1], gesture: .toggle)
+            picked.startFocus(.selection)
+            try require(focusTitle(picked) == "2 selected values to review", "focus-title-names-a-selection")
+            picked.exitFocus()
+            picked.selectBucket(.toRotate)
+            picked.startFocus(.list)
+            try require(focusTitle(picked) == "1 value to rotate", "focus-title-to-rotate")
+            checks.append("focus-title-counts-what-is-left")
+
             // Switching appearance while the prompt is open reveals only the newer one, after a single prompt.
             let firstAppearance = try InventoryRevealSelection.occurrenceWithValue(in: intraEntry.ledger.snapshot,
                 occurrenceID: intraEntry.occurrenceID)

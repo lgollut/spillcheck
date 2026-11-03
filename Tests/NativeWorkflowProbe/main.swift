@@ -393,6 +393,58 @@ private struct NativeWorkflowProbe {
             try require(batch.focus == nil && batch.bucket == .toReview && batch.selectedEntryID == list[0], "focus-exit")
             checks.append("selection-and-focus")
 
+            // X answers that a value no longer works. Without an exact value there is nothing to
+            // recognize later, so the key explains that instead of doing nothing.
+            let expired = AppModel()
+            expired.loadSnapshot(try DemoInventory.snapshot())
+            expired.storageReady = true
+            var expiredApplied: [[InventoryDecisionChange]] = []
+            expired.onApply = { changes, _ in expiredApplied.append(changes) }
+            guard let exact = expired.bucketEntries.first(where: { !$0.unlocated && $0.entry.fingerprint != nil }),
+                  let exactFingerprint = exact.entry.fingerprint,
+                  let inexact = expired.bucketEntries.first(where: \.unlocated) else {
+                throw ProbeFailure.failed("no-longer-works-sample")
+            }
+            expired.select(exact.id, gesture: .single)
+            try require(expired.decide(byKey: "x") && expiredApplied.last == [.acknowledge(exactFingerprint, .revoked)],
+                "no-longer-works-key")
+            expired.select(inexact.id, gesture: .single)
+            try require(expired.decide(byKey: "x") && expiredApplied.count == 1 && expired.toast != nil,
+                "no-longer-works-needs-the-exact-value")
+            // A selection mixing both applies to none, so nothing is left behind in To review.
+            expired.select(inexact.id, gesture: .single)
+            if let other = expired.bucketEntries.first(where: { $0.id != inexact.id && $0.id != exact.id }) {
+                expired.select(other.id, gesture: .toggle)
+            }
+            try require(expired.multiSelection.count == 2 && expired.decide(byKey: "x") && expiredApplied.count == 1,
+                "no-longer-works-all-or-nothing")
+            checks.append("no-longer-works-key")
+
+            // An expiry read from revealed content belongs to the selection, and goes when it's hidden.
+            let expiring = AppModel()
+            expiring.loadSnapshot(try DemoInventory.snapshot())
+            expiring.storageReady = true
+            guard let shown = expiring.bucketEntries.first(where: { !$0.unlocated && $0.entry.valueID != nil }),
+                  let shownValue = shown.entry.valueID, let shownOccurrence = shown.occurrences.first else {
+                throw ProbeFailure.failed("expiry-sample")
+            }
+            expiring.select(shown.id, gesture: .single)
+            expiring.contentRevealed = true
+            expiring.revealedContent[shownValue] = "placeholder-value-0001"
+            expiring.revealedExcerpts[shownOccurrence.id] = RetainedExcerpt(
+                text: #"{"session":{"expiresAt":"2020-01-01T00:00:00Z","token":"placeholder-value-0001"}}"#, clipped: true)
+            expiring.updateRevealedExpiry()
+            let readHint = expiring.expiryHint(for: shown)
+            try require(readHint?.source == .field("expiresAt") && readHint?.suggestsNoLongerWorks(at: .now) == true,
+                "expiry-hint-from-revealed-excerpt")
+            guard let other = expiring.bucketEntries.first(where: { $0.id != shown.id }) else {
+                throw ProbeFailure.failed("expiry-sample")
+            }
+            try require(expiring.expiryHint(for: other) == nil, "expiry-hint-belongs-to-the-selection")
+            expiring.clearRevealedContent()
+            try require(expiring.expiryHint(for: shown) == nil, "expiry-hint-cleared-with-content")
+            checks.append("expiry-hint")
+
             // Focus titles count what's left, so they follow each decision and its undo. Decisions are
             // applied to a ledger and reloaded, as the app does once they're written.
             var ledger = try InventoryLedger(snapshot: try DemoInventory.snapshot())

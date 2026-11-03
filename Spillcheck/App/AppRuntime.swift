@@ -741,6 +741,7 @@ final class AppRuntime {
         if let valueID = model.selectedID, let value = viewing.content.value { model.revealedContent[valueID] = value }
         model.revealedExcerpts = viewing.content.excerpts
         model.revealedSourceMetadata = viewing.content.sourceMetadata
+        model.updateRevealedExpiry()
     }
 
     private static func viewingID(_ entry: InventoryEntryID?) -> UUID? {
@@ -855,7 +856,7 @@ final class AppRuntime {
                 #endif
                 notifications.cancel(identifiers: plan.notificationIdentifiers)
                 model.actionMessage = plan.retainedObsoleteMarker != nil
-                    ? "Retained content removed. It stays recognized as obsolete."
+                    ? "Retained content removed. Your answer that it no longer works still applies."
                     : plan.retainedDecision != nil
                     ? "Retained content removed. Your decision still covers later appearances."
                     : "Retained content removed. Agent histories weren’t touched. If it appears again, it’s treated as new."
@@ -865,7 +866,7 @@ final class AppRuntime {
                 #if DEBUG
                 recordWorkflowEvent("marker-forgotten")
                 #endif
-                model.actionMessage = "Obsolete recognition forgotten. New appearances will be evaluated normally."
+                model.actionMessage = "“No longer works” forgotten. New appearances will be evaluated normally."
             }
             for presentation in oldPresentations {
                 if try await store.notificationCanRemain(presentation) == false {
@@ -892,19 +893,23 @@ final class AppRuntime {
         case .decide(_, let decision)?, .decideUnlocated(_, let decision)?:
             switch decision {
             case .needsRotation?:
-                return count == 1 ? "Moved to To rotate. Change it at its service, then mark it rotated."
-                    : "\(count) values moved to To rotate. Change them at their services, then mark them rotated."
+                return count == 1 ? "Moved to To rotate. Change it at its service, then mark it rotated or revoked."
+                    : "\(count) values moved to To rotate. Change them at their services, then mark them rotated or revoked."
             case let decision?:
-                return (count == 1 ? "Marked" : "\(count) values marked") + " “\(decision.displayName)”. Later appearances stay quiet."
+                // Without an exact value, Spillcheck can't recognize a later appearance.
+                let unlocatedOnly = changes.allSatisfy { if case .decideUnlocated = $0 { true } else { false } }
+                return (count == 1 ? "Marked" : "\(count) values marked") + " “\(decision.displayName)”."
+                    + (!unlocatedOnly ? " Later appearances stay quiet."
+                       : count == 1 ? " It covers this detection only." : " They cover these detections only.")
             case nil:
                 return (count == 1 ? "Back to review." : "\(count) values are back to review.")
                     + " Later appearances alert and wait for review as before."
             }
         case .acknowledge(_, let acknowledgement)?:
-            return (count == 1 ? "Marked" : "\(count) values marked") + " \(acknowledgement.rawValue)."
-                + " Later appearances show as obsolete, without alerts. Spillcheck didn’t check this with the service."
+            return (count == 1 ? "Marked" : "\(count) values marked") + " “\(acknowledgement.displayName)”."
+                + " Later appearances stay quiet. Spillcheck didn’t check this with the service."
         case .forgetMarker?:
-            return "Obsolete recognition forgotten. New appearances will be evaluated normally."
+            return "“No longer works” forgotten. New appearances will be evaluated normally."
         case nil:
             return ""
         }

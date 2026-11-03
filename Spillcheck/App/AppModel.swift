@@ -210,9 +210,7 @@ struct EntrySummary: Identifiable {
     init(entry: InventoryEntry, occurrences: [InventoryOccurrencePresentation]) {
         self.entry = entry
         self.occurrences = occurrences
-        if entry.evidence.isEmpty, let acknowledgement = entry.acknowledgement {
-            kind = .remembered(acknowledgement)
-        } else if entry.kind == .rememberedDecision {
+        if (entry.evidence.isEmpty && entry.acknowledgement != nil) || entry.kind == .rememberedDecision {
             kind = .removed
         } else {
             kind = entry.valueKind
@@ -515,6 +513,8 @@ final class AppModel {
     var revealedContent: [UUID: String] = [:]
     var revealedExcerpts: [UUID: RetainedExcerpt] = [:]
     var revealedSourceMetadata: [UUID: RetainedSourceContext] = [:]
+    /// What the selection's revealed appearances say about when its value stops working.
+    private(set) var revealedExpiry: (entry: InventoryEntryID, hint: ExpiryHint)?
     /// The viewing session is authorized: every selection shows its value and context without a prompt.
     var viewingUnlocked = false
     /// Unlocked, but values are hidden until shown again or the session ends. No prompt either way.
@@ -780,7 +780,8 @@ final class AppModel {
         return (rest.first { $0.offset > first } ?? rest.last { $0.offset < first })?.element
     }
 
-    /// T, N and R decide what's selected to review; D marks what's selected to rotate as rotated.
+    /// N, T and X answer no for what's selected to review, and R yes; D marks what's selected to
+    /// rotate as rotated or revoked.
     func decide(byKey key: String) -> Bool {
         let targets = multiSelection.isEmpty ? (selectedSummary.map { [$0] } ?? []) : selectedSummaries
         guard let bucket = targets.first?.bucket, route == .inventory, storageReady, !isDemo, !actionBusy else { return false }
@@ -788,6 +789,15 @@ final class AppModel {
         case (.toReview, "t"): decide(targets, as: .testOrDevelopment)
         case (.toReview, "n"): decide(targets, as: .notSecret)
         case (.toReview, "r"): decide(targets, as: .needsRotation)
+        case (.toReview, "x"):
+            // Spillcheck can only tell a value no longer works when it can recognize it again, so
+            // a selection with a value it can't recognize is left as it is.
+            guard targets.allSatisfy({ !$0.unlocated && $0.entry.fingerprint != nil }) else {
+                showToast(targets.count == 1 ? "“No longer works” needs the exact value, which wasn’t located."
+                          : "“No longer works” needs each exact value, and some of these weren’t located.")
+                return true
+            }
+            acknowledge(targets, as: .revoked)
         case (.toRotate, "d"):
             guard targets.contains(where: { !$0.unlocated && $0.entry.fingerprint != nil }) else { return false }
             acknowledge(targets, as: .rotated)
@@ -934,7 +944,7 @@ final class AppModel {
         var order: [String] = []
         for id in session.ids {
             let summary = byID[id]
-            let label = summary?.entry.acknowledgement?.rawValue
+            let label = summary?.entry.acknowledgement.map { _ in "no longer working" }
                 ?? summary?.decision.map { $0 == .needsRotation ? "to rotate" : $0.displayName.lowercased() }
                 ?? (summary == nil ? "removed" : "still to review")
             if counts[label] == nil { order.append(label) }
@@ -1275,20 +1285,29 @@ final class AppModel {
         actionMessage = "Sample mode. Revealing and changing values are disabled."
     }
 
+    /// What the sample excerpt shows, so expiry hints can be reviewed too.
+    enum DemoContentSample: String { case environment, expiredSession = "session", downloadLink = "link" }
+
     /// Sample mode as if unlocked, for design review. The content is synthetic: nothing is decrypted.
-    func showDemoContent() {
+    func showDemoContent(_ sample: DemoContentSample = .environment) {
         guard isDemo, let summary = selectedSummary else { return }
         let value = "sample-value-not-a-secret"
         viewingUnlocked = true
         contentRevealed = true
         if let valueID = summary.entry.valueID { revealedContent[valueID] = value }
         if let occurrence = selectedOccurrenceID {
-            revealedExcerpts[occurrence] = RetainedExcerpt(
-                text: "NODE_ENV=development\nAPI_TOKEN=\(value)\nLOG_LEVEL=debug", clipped: true)
+            let expired = Date.now.addingTimeInterval(-2 * 86_400).formatted(.iso8601)
+            let text = switch sample {
+            case .environment: "NODE_ENV=development\nAPI_TOKEN=\(value)\nLOG_LEVEL=debug"
+            case .expiredSession: #"{"session":{"expiresAt":"\#(expired)","token":"\#(value)","ipAddress":"127.0.0.1"},"user":{"id":"sample"}}"#
+            case .downloadLink: #"[{"name":"README.md","download_url":"https://raw.githubusercontent.com/sample/app/main/README.md?token=\#(value)"}]"#
+            }
+            revealedExcerpts[occurrence] = RetainedExcerpt(text: text, clipped: true)
             revealedSourceMetadata[occurrence] = RetainedSourceContext(
                 sessionIdentifier: "sample", title: "Fix the flaky deploy script", projectPath: "~/dev/sample-app",
                 toolCall: RetainedToolCall(tool: "exec_command", program: "cat", paths: ["~/dev/sample-app/.env.local"]))
         }
+        updateRevealedExpiry()
     }
 
     /// Sample setup-assistant state matching a first launch: Codex found, Claude Code at an untested
@@ -1352,8 +1371,26 @@ final class AppModel {
         revealedContent.removeAll()
         revealedExcerpts.removeAll()
         revealedSourceMetadata.removeAll()
+        revealedExpiry = nil
         terminalResumeCommand = nil
         contentRevealed = false
+    }
+
+    /// Reads expiry evidence from the value and the excerpts revealed for the selection. It's only
+    /// ever derived from content on screen, never stored.
+    func updateRevealedExpiry() {
+        guard contentRevealed, let summary = selectedSummary, let valueID = summary.entry.valueID,
+              let value = revealedContent[valueID] else { revealedExpiry = nil; return }
+        let appearances = summary.occurrences.compactMap { occurrence in
+            revealedExcerpts[occurrence.id].map { ExpiryDetector.Appearance(text: $0.text, observedAt: occurrence.observedAt) }
+        }
+        revealedExpiry = ExpiryDetector.hint(for: value, in: appearances).map { (summary.id, $0) }
+    }
+
+    /// The expiry hint for a value, while its content is revealed.
+    func expiryHint(for summary: EntrySummary) -> ExpiryHint? {
+        guard contentRevealed, let revealedExpiry, revealedExpiry.entry == summary.id else { return nil }
+        return revealedExpiry.hint
     }
     func loadSnapshot(_ snapshot: InventorySnapshot) {
         guard !isDemo, let next = try? InventoryPresentation(snapshot: snapshot) else { return }

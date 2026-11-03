@@ -69,12 +69,12 @@ A signal identifying a value as a probable secret in an occurrence, together wit
 _Avoid_: Active secret, which assumes validity that the signal has not established.
 
 **Value decision**:
-The user's answer to whether a detected value needs rotating: needs rotation, test or dev only, not a secret, or a real credential kept as is. It covers every appearance of that exact value, including later ones, until the user changes it.
+The user's answer to whether a detected value needs rotating: needs rotation, or no because it is not a secret, test or dev only, or a real credential kept as is. It covers every appearance of that exact value, including later ones, until the user changes it. Answering that the value no longer works makes it an obsolete value instead.
 _Avoid_: Occurrence review, which judged one appearance at a time before decisions belonged to the value.
 
 **Dismissed value**:
 A value decided as test or dev only, not a secret, or kept as is. Its later appearances are recorded and counted without alerts or a return to review.
-_Avoid_: Obsolete value, which the user reported as rotated or revoked.
+_Avoid_: Obsolete value, which the user reported as rotated, revoked or expired.
 
 **False positive**:
 A detected value that the user has decided is not a secret.
@@ -89,8 +89,12 @@ A value still to review or rotate with an appearance newer than the user last sa
 _Avoid_: New value, which describes the first appearance of a value rather than what the user has seen.
 
 **Obsolete value**:
-A secret value the user has acknowledged as rotated or revoked. A later appearance of that exact value retains this classification, based on the user's acknowledgement rather than verification by the application.
+A secret value the user has said no longer works because it was rotated, revoked or expired. A later appearance of that exact value retains this classification, based on the user's acknowledgement rather than verification by the application.
 _Avoid_: False positive, which concerns whether a value is a secret.
+
+**Expiry hint**:
+What a value's revealed content says about when it stops working: the token's own expiry claim, a signed link's end, a field printed next to it such as an expiry date, or a link format its service documents as expiring on its own. It suggests an answer and never decides one.
+_Avoid_: Expired value, which asserts what a printed date can only suggest.
 
 **Secret inventory**:
 The central list of detected secrets and their associated occurrences, available for the user to browse.

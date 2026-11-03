@@ -116,7 +116,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
            let summary = model.summaries.first(where: { $0.label == label }) {
             model.selectEntry(summary.id)
         }
-        if args.contains("--demo-revealed") { model.showDemoContent() }
+        let sample = value("--demo-expiry").flatMap(AppModel.DemoContentSample.init(rawValue:))
+        if args.contains("--demo-revealed") || sample != nil { model.showDemoContent(sample ?? .environment) }
         switch value("--demo-route") {
         case "coverage": model.route = .coverage
         case "general": model.route = .settings(.general)

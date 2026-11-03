@@ -43,7 +43,10 @@ Three independent kinds of status must remain understandable:
 
 1. Detector signal is strong or ambiguous. It describes how distinctive the format is, not whether the value still works or matters. Undecided values need review whatever their signal.
 2. The user's decision belongs to the exact value: needs rotation, test or dev only, not a secret, or a real credential kept as is. It is reversible and covers later appearances of that value. A dismissed value's new appearances are counted without alerts or a return to review; a value that needs rotation keeps alerting in new conversations. [Decision 0009](adr/0009-decide-per-value.md) replaced per-occurrence review with this.
-3. Rotation or revocation acknowledgement belongs to the exact value. The user reports that they replaced and invalidated it, or invalidated it without a replacement. Spillcheck treats later appearances of that value as obsolete. It does not verify the acknowledgement with the service.
+3. Rotation or revocation acknowledgement belongs to the exact value. The user reports that they replaced and invalidated it, invalidated it without a replacement, or that it expired. Spillcheck treats later appearances of that value as obsolete. It does not verify the acknowledgement with the service.
+Review asks for the second and third through one question: does this value need rotating? Every no carries a reason (not a secret, test or dev only, no longer works, or kept as is). The reason doesn't change where the value goes or whether it alerts; it names the value in Done. Rotated, revoked and expired are shown as one answer, "No longer works". [Decision 0013](adr/0013-one-question-reasons-as-labels.md) records this.
+
+While a value is revealed, its content can say when it stops working: a token's own expiry claim, a signed link's end, an expiry field printed next to it, or a link its service documents as expiring on its own. The detail then names that evidence. When the date has passed, or a link meant to expire on its own was last seen more than a day ago, No longer works leads the review. A token's own expiry claim is reliable, and so is a signed link's end when the value is that link's signature. A printed field is only what the output said then: a session can be extended each time it is used. An unnamed expiry field counts only for a session or token, never for a client secret, password or API key printed in the same object. Spillcheck suggests and never decides from it, and it reads the evidence only from content on screen, without storing it.
 
 Counts must name what they count. "3 values in 12 occurrences" is meaningful. An undifferentiated "12 secrets" can exaggerate the amount of work.
 
@@ -81,13 +84,13 @@ A detector result whose exact source range could not be located has its own stat
 
 ### Record that a credential was addressed
 
-After changing the credential at its service, the user can acknowledge the old exact value as rotated or revoked. Later new appearances of it remain visible as obsolete and produce no notification. A different replacement value receives ordinary detection and alerts.
+When a credential no longer works, because the user rotated or revoked it at its service or because it expired, the user can mark the old exact value as no longer working. Later new appearances of it remain visible as obsolete and produce no notification. A different replacement value receives ordinary detection and alerts.
 
 There are three separate actions with different consequences:
 
-- **Acknowledge rotated or revoked** records the user's report and changes treatment of future appearances. It does not change the credential at its service.
+- **Mark as no longer working** (rotated, revoked or expired) records the user's report and changes treatment of future appearances. It does not change the credential at its service.
 - **Remove retained content** removes the exact value, excerpts, and occurrence history from active Spillcheck storage. It leaves agent histories alone. If the value was acknowledged obsolete, its recognition marker remains; otherwise a later new appearance can be detected normally.
-- **Forget obsolete recognition** removes that marker and acknowledgement. Future new appearances return to ordinary evaluation and may alert. Already processed history is still prevented from recreating removed occurrences.
+- **Back to review** (or **Forget**, once retained content is removed) removes that marker and acknowledgement. Future new appearances return to ordinary evaluation and may alert. Already processed history is still prevented from recreating removed occurrences.
 
 The recognition marker holds no retained value, excerpt, or old occurrence history. A new obsolete appearance after removal stores only its source reference, time, and obsolete label. It has nothing to reveal and no context fallback if its source disappears. This state must look different from protected content that is merely locked.
 

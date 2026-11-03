@@ -165,7 +165,7 @@ private struct GeneralSettings: View {
 
     private var notificationDetail: String {
         switch model.notificationState {
-        case .allowed: "Strong new values alert once per conversation. Ambiguous detections and obsolete values never alert."
+        case .allowed: "Strong new values alert once per conversation. Ambiguous detections and values you’ve said don’t need rotating never alert."
         case .denied: "Notifications are turned off in System Settings. Detections still appear here and in the menu bar."
         case .notRequested: "\(AppIdentity.name) asks once you allow it. Detections always appear here and in the menu bar."
         case .unavailable: "Notifications aren’t available right now. Detections still appear here and in the menu bar."

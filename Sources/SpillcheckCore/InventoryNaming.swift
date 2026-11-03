@@ -36,13 +36,8 @@ public struct ValueKind: Equatable, Sendable {
         }
     }
 
-    /// After content removal only the acknowledgement remains, so the credential type is unknown.
-    public static func remembered(_ acknowledgement: ObsoleteAcknowledgement) -> ValueKind {
-        let name = acknowledgement == .rotated ? "Rotated value" : "Revoked value"
-        return ValueKind(shortName: name, title: name, service: nil, monogram: "↻", category: nil)
-    }
-
-    /// A decided value whose retained content was removed: only the decision remains.
+    /// A decided value, or one marked as no longer working, whose retained content was removed: only
+    /// the answer remains, so the credential type is unknown.
     public static let removed = ValueKind(shortName: "Removed value", title: "Removed value", service: nil,
                                           monogram: "∅", category: nil)
 

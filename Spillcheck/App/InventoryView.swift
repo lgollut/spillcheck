@@ -299,7 +299,7 @@ private struct SidebarView: View {
         .focusEffectDisabled()
         .onKeyPress(.downArrow) { model.moveSelection(by: 1); return .handled }
         .onKeyPress(.upArrow) { model.moveSelection(by: -1); return .handled }
-        .onKeyPress(characters: CharacterSet(charactersIn: "jkntrdzf"), phases: .down) { press in handle(press) }
+        .onKeyPress(characters: CharacterSet(charactersIn: "jkntrxdzf"), phases: .down) { press in handle(press) }
         .onAppear { listFocused = true }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Values")
@@ -382,14 +382,13 @@ private struct InboxRow: View {
     private var selected: Bool { model.isSelected(summary.id) }
     private var appearances: String {
         summary.occurrences.isEmpty
-            ? (summary.entry.kind == .rememberedDecision ? "Decision only" : "Marker only")
+            ? "Answer only"
             : "\(summary.occurrences.count.formatted())×"
     }
     /// Done rows lead with the reason; the others with the entry number and how often it appeared.
     private var detail: String {
         if summary.bucket == .done {
-            let reason = summary.entry.acknowledgement.map { $0.rawValue.capitalizedFirst }
-                ?? summary.decision?.displayName ?? "Done"
+            let reason = summary.entry.acknowledgement?.displayName ?? summary.decision?.displayName ?? "Done"
             let since = summary.entry.appearancesSinceDecision
             return reason + (summary.nothingKept ? " · nothing kept" : "") + (since > 0 ? " · +\(since.formatted()) since" : "")
         }
@@ -742,7 +741,9 @@ private struct SelectionDetail: View {
                     Text("\(summaries.count) values selected")
                         .font(.system(size: 19, weight: .semibold)).tracking(-0.2)
                         .accessibilityAddTraits(.isHeader)
-                    Text(model.bucket == .done ? "Change their decisions together below."
+                    Text(model.bucket == .done
+                         ? (summaries.contains { !$0.acknowledged && $0.decision != nil } ? "Send them back to review together below."
+                            : "Open one at a time to send it back to review.")
                          : "Decide them together below, or go through them one at a time.")
                         .font(.system(size: 13)).foregroundStyle(Palette.secondary)
                 }
@@ -826,7 +827,7 @@ private struct FocusView: View {
             .onKeyPress(.escape) { model.exitFocus(); return .handled }
             .onKeyPress(.upArrow) { model.moveFocus(by: -1); return .handled }
             .onKeyPress(.downArrow) { model.moveFocus(by: 1); return .handled }
-            .onKeyPress(characters: CharacterSet(charactersIn: "jkntrdzf"), phases: .down) { press in handle(press) }
+            .onKeyPress(characters: CharacterSet(charactersIn: "jkntrxdzf"), phases: .down) { press in handle(press) }
             .onAppear { focused = true }
             .accessibilityIdentifier("inventory.focus-session")
         }
@@ -878,8 +879,8 @@ private struct FocusView: View {
 
     private func hint(for summary: EntrySummary) -> String {
         let keys = switch summary.bucket {
-        case .toReview: "T, N or R to decide · "
-        case .toRotate: "D once rotated · "
+        case .toReview: "N, T, X or R to decide · "
+        case .toRotate: "D once rotated or revoked · "
         case .done: ""
         }
         return keys + "↑ ↓ previous and next · Esc back to the Inbox · ⌘Z undo"
@@ -928,7 +929,7 @@ private struct FocusSummary: View {
             }
             Text(reviewing
                  ? "These decisions cover later appearances too." + (toRotate > 0 ? " What needs rotation waits in To rotate." : "")
-                 : "Later appearances of rotated or revoked values show as obsolete, without alerts.")
+                 : "Values marked rotated or revoked stay quiet when they appear again.")
                 .font(.system(size: 13)).lineSpacing(3).foregroundStyle(Palette.secondary)
                 .multilineTextAlignment(.center)
             HStack(spacing: 8) {

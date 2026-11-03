@@ -226,7 +226,7 @@ private struct ReviewArt: View {
             }
             pill {
                 Circle().fill(Palette.quaternary).frame(width: 6, height: 6)
-                Text("Rotated · \(DisplayTime.day(.now))")
+                Text("No longer works · \(DisplayTime.day(.now))")
             }
             HStack(spacing: 7) {
                 Image(systemName: "lock.fill").font(.system(size: 9.5))

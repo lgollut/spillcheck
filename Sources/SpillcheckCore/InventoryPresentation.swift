@@ -54,7 +54,17 @@ public extension ValueDecision {
         case .needsRotation: "Needs rotation"
         case .testOrDevelopment: "Test or dev only"
         case .notSecret: "Not a secret"
-        case .acceptedRisk: "Accepted risk"
+        case .acceptedRisk: "Real, kept as is"
+        }
+    }
+}
+
+public extension ObsoleteAcknowledgement {
+    /// Rotated and revoked lead to the same place, so they share one name. Review records an
+    /// expired value as revoked: invalidated without a replacement from the user (ADR 0013).
+    var displayName: String {
+        switch self {
+        case .rotated, .revoked: "No longer works"
         }
     }
 }

@@ -210,9 +210,7 @@ struct EntrySummary: Identifiable {
     init(entry: InventoryEntry, occurrences: [InventoryOccurrencePresentation]) {
         self.entry = entry
         self.occurrences = occurrences
-        if entry.evidence.isEmpty, let acknowledgement = entry.acknowledgement {
-            kind = .remembered(acknowledgement)
-        } else if entry.kind == .rememberedDecision {
+        if (entry.evidence.isEmpty && entry.acknowledgement != nil) || entry.kind == .rememberedDecision {
             kind = .removed
         } else {
             kind = entry.valueKind
@@ -780,7 +778,8 @@ final class AppModel {
         return (rest.first { $0.offset > first } ?? rest.last { $0.offset < first })?.element
     }
 
-    /// T, N and R decide what's selected to review; D marks what's selected to rotate as rotated.
+    /// N, T and X answer no for what's selected to review, and R yes; D marks what's selected to
+    /// rotate as rotated or revoked.
     func decide(byKey key: String) -> Bool {
         let targets = multiSelection.isEmpty ? (selectedSummary.map { [$0] } ?? []) : selectedSummaries
         guard let bucket = targets.first?.bucket, route == .inventory, storageReady, !isDemo, !actionBusy else { return false }
@@ -788,6 +787,15 @@ final class AppModel {
         case (.toReview, "t"): decide(targets, as: .testOrDevelopment)
         case (.toReview, "n"): decide(targets, as: .notSecret)
         case (.toReview, "r"): decide(targets, as: .needsRotation)
+        case (.toReview, "x"):
+            // Spillcheck can only tell a value no longer works when it can recognize it again, so
+            // a selection with a value it can't recognize is left as it is.
+            guard targets.allSatisfy({ !$0.unlocated && $0.entry.fingerprint != nil }) else {
+                showToast(targets.count == 1 ? "“No longer works” needs the exact value, which wasn’t located."
+                          : "“No longer works” needs each exact value, and some of these weren’t located.")
+                return true
+            }
+            acknowledge(targets, as: .revoked)
         case (.toRotate, "d"):
             guard targets.contains(where: { !$0.unlocated && $0.entry.fingerprint != nil }) else { return false }
             acknowledge(targets, as: .rotated)
@@ -934,7 +942,7 @@ final class AppModel {
         var order: [String] = []
         for id in session.ids {
             let summary = byID[id]
-            let label = summary?.entry.acknowledgement?.rawValue
+            let label = summary?.entry.acknowledgement.map { _ in "no longer working" }
                 ?? summary?.decision.map { $0 == .needsRotation ? "to rotate" : $0.displayName.lowercased() }
                 ?? (summary == nil ? "removed" : "still to review")
             if counts[label] == nil { order.append(label) }

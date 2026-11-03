@@ -393,6 +393,33 @@ private struct NativeWorkflowProbe {
             try require(batch.focus == nil && batch.bucket == .toReview && batch.selectedEntryID == list[0], "focus-exit")
             checks.append("selection-and-focus")
 
+            // X answers that a value no longer works. Without an exact value there is nothing to
+            // recognize later, so the key explains that instead of doing nothing.
+            let expired = AppModel()
+            expired.loadSnapshot(try DemoInventory.snapshot())
+            expired.storageReady = true
+            var expiredApplied: [[InventoryDecisionChange]] = []
+            expired.onApply = { changes, _ in expiredApplied.append(changes) }
+            guard let exact = expired.bucketEntries.first(where: { !$0.unlocated && $0.entry.fingerprint != nil }),
+                  let exactFingerprint = exact.entry.fingerprint,
+                  let inexact = expired.bucketEntries.first(where: \.unlocated) else {
+                throw ProbeFailure.failed("no-longer-works-sample")
+            }
+            expired.select(exact.id, gesture: .single)
+            try require(expired.decide(byKey: "x") && expiredApplied.last == [.acknowledge(exactFingerprint, .revoked)],
+                "no-longer-works-key")
+            expired.select(inexact.id, gesture: .single)
+            try require(expired.decide(byKey: "x") && expiredApplied.count == 1 && expired.toast != nil,
+                "no-longer-works-needs-the-exact-value")
+            // A selection mixing both applies to none, so nothing is left behind in To review.
+            expired.select(inexact.id, gesture: .single)
+            if let other = expired.bucketEntries.first(where: { $0.id != inexact.id && $0.id != exact.id }) {
+                expired.select(other.id, gesture: .toggle)
+            }
+            try require(expired.multiSelection.count == 2 && expired.decide(byKey: "x") && expiredApplied.count == 1,
+                "no-longer-works-all-or-nothing")
+            checks.append("no-longer-works-key")
+
             // Focus titles count what's left, so they follow each decision and its undo. Decisions are
             // applied to a ledger and reloaded, as the app does once they're written.
             var ledger = try InventoryLedger(snapshot: try DemoInventory.snapshot())

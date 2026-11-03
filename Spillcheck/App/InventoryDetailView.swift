@@ -122,14 +122,16 @@ struct InventoryDetailView: View {
         var actions: [ValueAction] = []
         if entry.kind != .rememberedObsoleteMarker && entry.kind != .rememberedDecision {
             actions.append(ValueAction(title: "Remove retained content…",
-                detail: summary.acknowledged ? "Deletes value and excerpts. Still recognized as obsolete."
-                    : summary.decision != nil ? "Deletes value and excerpts. Your decision still applies."
+                detail: summary.acknowledged || summary.decision != nil ? "Deletes value and excerpts. Your answer still applies."
                     : "Deletes value and excerpts. If seen again, it’s new.",
                 sheet: .remove, identifier: "inventory.remove-content"))
         }
         if summary.acknowledged {
-            actions.append(ValueAction(title: "Forget obsolete recognition…", detail: "Undoes the acknowledgement. May alert again.",
-                sheet: .forget, identifier: "inventory.forget-marker"))
+            actions.append(entry.kind == .rememberedObsoleteMarker
+                ? ValueAction(title: "Forget…", detail: "Removes this entry. If the value appears again, it’s reviewed as new.",
+                              sheet: .forget, identifier: "inventory.forget-marker")
+                : ValueAction(title: "Back to review…", detail: "Undoes “No longer works”. Later appearances may alert again.",
+                              sheet: .forget, identifier: "inventory.forget-marker"))
         }
         return actions
     }
@@ -198,7 +200,7 @@ struct InventoryDetailView: View {
                 .overlay(Circle().strokeBorder(Palette.ring, style: StrokeStyle(lineWidth: 1.5, dash: [3, 2])))
             Text(entry.kind == .rememberedDecision
                  ? "Only your decision is kept, without the value or its appearances. If the value appears again, your decision still applies to it."
-                 : "Recognition marker only. If it appears again: listed as obsolete, source and time only, no alert.")
+                 : "Only your answer that it no longer works is kept, without the value or its appearances. If the value appears again, it’s listed by source and time only, without an alert.")
                 .font(.system(size: 12)).foregroundStyle(Palette.secondary).lineSpacing(2)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -264,7 +266,7 @@ private struct SignalTag: View {
         case .ambiguous? where entry.evidence.first?.reason == .recognizedFormat:
             ("Unsure match", "It has a known format, but the detector isn’t confident it’s real, so its context decides.", Palette.chip, Palette.ink2)
         case .ambiguous?: ("Generic pattern", "A generic pattern, so its context decides.", Palette.chip, Palette.ink2)
-        case nil: ("Recognition marker", "No detection is kept, only the marker.", Palette.chip, Palette.ink2)
+        case nil: ("Answer only", "No detection is kept, only your answer.", Palette.chip, Palette.ink2)
         }
         Text(title)
             .font(.system(size: 11.5, weight: .semibold))
@@ -686,7 +688,7 @@ private struct AppearanceLine: View {
                         .background(Palette.amberSoft, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
                 }
                 if occurrence.metadataOnly {
-                    Text("Obsolete · nothing kept").font(.system(size: 11.5)).foregroundStyle(Palette.tertiary)
+                    Text("No longer works · nothing kept").font(.system(size: 11.5)).foregroundStyle(Palette.tertiary)
                 }
                 Spacer(minLength: 8)
                 if shown {
@@ -714,7 +716,7 @@ private struct AppearanceLine: View {
         case .repeatInConversation: "No alert: a repeat in the same conversation."
         case .awaitingReview: "No alert: generic matches wait for your review."
         case .catchUp: "No alert: found during a catch-up and included in its summary."
-        case .obsolete: "No alert: an obsolete value."
+        case .obsolete: "No alert: you marked this value as no longer working."
         case .unlocated: "No alert: the exact value wasn’t located."
         case .dismissed: "No alert: you decided this value needs no action."
         case .notAlerted: "No alert."
@@ -778,17 +780,19 @@ struct DecisionBar: View {
     private var many: Bool { summaries.count > 1 }
     private var disabled: Bool { !model.storageReady || model.actionBusy || model.isDemo }
     private var service: String { many ? "each service" : summary.kind.servicePhrase }
-    /// Rotation can only be acknowledged for a value Spillcheck can recognize again.
+    /// Rotation can only be confirmed for a value Spillcheck can recognize again.
     private var recognizable: Bool { summaries.contains { !$0.unlocated && $0.entry.fingerprint != nil } }
+    /// No longer works applies to the whole selection or not at all, so a value without an exact
+    /// match is never left behind in To review.
+    private var allRecognizable: Bool { summaries.allSatisfy { !$0.unlocated && $0.entry.fingerprint != nil } }
 
     private var copy: Copy {
         if many { return manyCopy }
         let entry = summary.entry
         if let acknowledgement = entry.acknowledgement {
             let date = DisplayTime.day(entry.acknowledgedAt ?? entry.observedAt)
-            return ("\(acknowledgement.rawValue.capitalizedFirst) · \(date)",
-                    (summary.nothingKept ? "Retained content was removed. " : "") + "Later appearances show as obsolete, without alerts.",
-                    true)
+            return ("\(acknowledgement.displayName) · \(date)",
+                    (summary.nothingKept ? "Retained content was removed. " : "") + "Later appearances stay quiet.", true)
         }
         let since = entry.appearancesSinceDecision
         if let decision = summary.decision {
@@ -798,10 +802,13 @@ struct DecisionBar: View {
                             "With no exact value, Spillcheck can’t recognize it later.", false)
                 }
                 return ("Change it at \(service), then confirm",
-                        "Later appearances then show as obsolete, without alerts."
+                        "Later appearances then stay quiet."
                             + (since > 0 ? " Seen \(plural(since, "more time")) since you marked it." : ""), false)
             }
             let date = DisplayTime.day(entry.decidedAt ?? entry.observedAt)
+            if summary.unlocated {
+                return ("\(decision.displayName) · \(date)", "Covers this detection only. With no exact value, Spillcheck can’t recognize it later.", true)
+            }
             return ("\(decision.displayName) · \(date)",
                     (summary.nothingKept ? "Retained content was removed. " : "") + "Later appearances stay quiet."
                         + (since > 0 ? " \(plural(since, "new appearance")) since." : ""), true)
@@ -809,18 +816,24 @@ struct DecisionBar: View {
         if summary.unlocated {
             return ("Possible \(summary.kind.shortName), exact value not located", "Check its source above, then decide.", false)
         }
-        return ("Does this need rotating?", "Your answer covers every appearance of this value, including later ones.", false)
+        return ("Does this need rotating?",
+                "Every answer but Needs rotation moves it to Done, where it stays quiet.", false)
     }
 
     private var manyCopy: Copy {
         let count = summaries.count
         switch summary.bucket {
         case .toReview:
-            return ("Do these \(count) values need rotating?", "Your answer covers all their appearances, including later ones.", false)
+            return ("Do these \(count) values need rotating?",
+                    "Every answer but Needs rotation moves them to Done, where they stay quiet.", false)
         case .toRotate:
-            return ("Change them at each service, then confirm", "Later appearances then show as obsolete, without alerts.", false)
+            return ("Change them at each service, then confirm", "Later appearances then stay quiet.", false)
         case .done:
-            return ("\(count) values done", "Changing the decision sends values back to review. Rotated or revoked ones stay.", true)
+            let decided = summaries.contains { !$0.acknowledged && $0.decision != nil }
+            let body = !decided ? "Open one at a time to send it back to review."
+                : summaries.contains(where: \.acknowledged) ? "Back to review skips the ones that no longer work."
+                : "Later appearances stay quiet."
+            return ("\(count) values done", body, true)
         }
     }
 
@@ -870,10 +883,13 @@ struct DecisionBar: View {
         if many {
             manyActions
         } else if summary.acknowledged {
-            Button("Change decision…") { model.detailSheet = .forget }
+            // With its content removed, only the answer is left: forgetting it removes the entry.
+            let markerOnly = summary.entry.kind == .rememberedObsoleteMarker
+            Button(markerOnly ? "Forget…" : "Back to review…") { model.detailSheet = .forget }
                 .buttonStyle(OutlineButtonStyle(height: 30))
                 .disabled(disabled)
-                .help("Forgets that it was rotated or revoked. Later appearances may alert again.")
+                .help(markerOnly ? "Removes this entry. If the value appears again, it’s reviewed as new."
+                      : "Undoes “No longer works”. Later appearances may alert again.")
                 .accessibilityIdentifier("inventory.change-decision")
         } else if let decision = summary.decision {
             HStack(spacing: 8) {
@@ -886,13 +902,13 @@ struct DecisionBar: View {
                 } else if decision == .needsRotation {
                     backToReview
                 } else {
-                    Button("Change decision") { model.decide(summary, as: nil) }
+                    Button("Back to review") { model.decide(summary, as: nil) }
                         .buttonStyle(OutlineButtonStyle(height: 30))
                         .disabled(disabled)
-                        .help("Back to review")
+                        .help("Forgets your answer. Later appearances may alert again.")
                         .accessibilityIdentifier("inventory.change-decision")
                 }
-                if decision == .needsRotation, recognizable { rotationButtons }
+                if decision == .needsRotation, recognizable { rotationButton }
             }
             .fixedSize()
         } else {
@@ -907,7 +923,7 @@ struct DecisionBar: View {
         case .toRotate:
             HStack(spacing: 8) {
                 backToReview
-                if recognizable { rotationButtons }
+                if recognizable { rotationButton }
             }
             .fixedSize()
         case .done:
@@ -930,35 +946,35 @@ struct DecisionBar: View {
             .accessibilityIdentifier("inventory.change-decision")
     }
 
-    private var rotationButtons: some View {
-        HStack(spacing: 8) {
-            Button("Mark revoked") { model.acknowledge(summaries, as: .revoked) }
-                .buttonStyle(OutlineButtonStyle(height: 30))
-                .disabled(disabled)
-                .help("Invalidated at \(service) without a replacement")
-                .accessibilityIdentifier("inventory.mark-revoked")
-            Button { model.acknowledge(summaries, as: .rotated) } label: {
-                HStack(spacing: 7) { KeyCap(key: "D", onAccent: true); Text("Mark rotated") }
-            }
-            .buttonStyle(FilledButtonStyle(height: 30))
-            .disabled(disabled)
-            .help("Replaced at \(service) and the old value invalidated. Spillcheck doesn’t check this.")
-            .accessibilityIdentifier("inventory.mark-rotated")
+    /// Rotated and revoked lead to the same place, so one button confirms either.
+    private var rotationButton: some View {
+        Button { model.acknowledge(summaries, as: .rotated) } label: {
+            HStack(spacing: 7) { KeyCap(key: "D", onAccent: true); Text("Mark rotated or revoked") }
         }
+        .buttonStyle(FilledButtonStyle(height: 30))
+        .disabled(disabled)
+        .help("Replaced or invalidated at \(service). Spillcheck doesn’t check this.")
+        .accessibilityIdentifier("inventory.mark-rotated")
     }
 
+    /// One question with two outcomes: needs rotation, or one of several reasons it doesn’t. The
+    /// reasons only change the label the value keeps in Done.
     private var reviewButtons: some View {
         HStack(spacing: 8) {
-            decisionButton(.testOrDevelopment, "Test or dev only", key: "T")
-            decisionButton(.notSecret, "Not a secret", key: "N")
-            // A known format is almost always a real credential, so rotating is the likely answer.
-            decisionButton(.needsRotation, "Needs rotation", key: "R", primary: summaries.contains(where: \.strong))
+            Text("No:")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Palette.tertiary)
+                .accessibilityHidden(true)
+            decisionButton(.notSecret, "Not a secret", key: "N",
+                           help: "Looks like a credential but isn’t one, such as a placeholder or a variable name.")
+            decisionButton(.testOrDevelopment, "Test or dev only", key: "T",
+                           help: "A real credential that only works in tests or local development.")
             Menu {
-                Button("Real, but keep it") { model.decide(summaries, as: .acceptedRisk) }
-                if recognizable {
-                    Divider()
-                    Button("Already rotated") { model.acknowledge(summaries, as: .rotated) }
-                    Button("Already revoked") { model.acknowledge(summaries, as: .revoked) }
+                Section("Other reasons it doesn’t") {
+                    if allRecognizable {
+                        Button("No longer works (expired, revoked or rotated)") { model.acknowledge(summaries, as: .revoked) }
+                    }
+                    Button("Real, kept as is") { model.decide(summaries, as: .acceptedRisk) }
                 }
             } label: {
                 Image(systemName: "ellipsis")
@@ -971,23 +987,28 @@ struct DecisionBar: View {
             .tint(Palette.ink2)
             .fixedSize()
             .disabled(disabled)
-            .help("Other decisions")
-            .accessibilityLabel("Other decisions")
+            .help(allRecognizable ? "Other reasons: no longer works (X), or real but kept as is" : "Other reason: real, but kept as is")
+            .accessibilityLabel("Other reasons it doesn’t")
             .accessibilityIdentifier("inventory.more-decisions")
+            // A known format is almost always a real credential, so rotating is the likely answer.
+            decisionButton(.needsRotation, "Needs rotation", key: "R", primary: summaries.contains(where: \.strong),
+                           help: "Moves \(many ? "them" : "it") to To rotate until you’ve changed \(many ? "them" : "it") at \(service).")
+                .padding(.leading, 8)
         }
         .fixedSize()
     }
 
     @ViewBuilder
-    private func decisionButton(_ decision: ValueDecision, _ title: String, key: String, primary: Bool = false) -> some View {
+    private func decisionButton(_ decision: ValueDecision, _ title: String, key: String, primary: Bool = false,
+                                help: String) -> some View {
         let button = Button { model.decide(summaries, as: decision) } label: {
             HStack(spacing: 7) { KeyCap(key: key, onAccent: primary); Text(title) }
         }
         if primary {
-            button.buttonStyle(FilledButtonStyle(height: 30)).disabled(disabled)
+            button.buttonStyle(FilledButtonStyle(height: 30)).disabled(disabled).help(help)
                 .accessibilityIdentifier("inventory.decide.\(decision.rawValue)")
         } else {
-            button.buttonStyle(OutlineButtonStyle(height: 30)).disabled(disabled)
+            button.buttonStyle(OutlineButtonStyle(height: 30)).disabled(disabled).help(help)
                 .accessibilityIdentifier("inventory.decide.\(decision.rawValue)")
         }
     }
@@ -1031,6 +1052,8 @@ private struct ValueActionSheet: View {
 
     private var name: String { summary.name }
     private var service: String { summary.kind.servicePhrase }
+    /// With its content removed, only the answer is left: forgetting it removes the entry.
+    private var markerOnly: Bool { summary.entry.kind == .rememberedObsoleteMarker }
 
     private enum Mark { case removed, kept, caution, info }
 
@@ -1042,7 +1065,7 @@ private struct ValueActionSheet: View {
     private var title: String {
         switch kind {
         case .remove: "Remove retained content for \(name)?"
-        case .forget: "Forget obsolete recognition for \(name)?"
+        case .forget: markerOnly ? "Forget \(name)?" : "Send \(name) back to review?"
         case .resume: "Resume \(resumeOccurrence?.conversation.label.text ?? "this conversation") in \(resumeOccurrence?.conversation.provider.displayName ?? "its agent")"
         }
     }
@@ -1054,13 +1077,13 @@ private struct ValueActionSheet: View {
         case .remove:
             return [(.removed, "Exact value and \(plural(count, "excerpt"))"), (.removed, "Occurrence history"),
                     (.kept, "Agent histories on this Mac stay untouched"),
-                    summary.acknowledged ? (.kept, "Obsolete marker kept. It holds no value.")
-                        : summary.decision != nil ? (.kept, "Your decision is kept for later appearances. It holds no value.")
+                    summary.acknowledged || summary.decision != nil
+                        ? (.kept, "Your answer is kept for later appearances. It holds no value.")
                         : (.caution, "Undecided, so a later appearance is reviewed and alerts as new")]
         case .forget:
-            return [(.removed, "\(summary.entry.acknowledgement?.rawValue.capitalizedFirst ?? "") acknowledgement and recognition marker"),
+            return [(.removed, markerOnly ? "Your answer that it no longer works, and this entry" : "Your answer that it no longer works"),
                     (.caution, "New appearances are evaluated normally and may alert"),
-                    summary.entry.kind == .rememberedObsoleteMarker ? (.kept, "Processed history won’t recreate removed occurrences")
+                    markerOnly ? (.kept, "Processed history won’t recreate removed occurrences")
                         : (.kept, "Retained appearances stay")]
         case .resume:
             return [(.caution, "Resuming can send new requests to \(provider)"),
@@ -1143,7 +1166,7 @@ private struct ValueActionSheet: View {
     private var confirmTitle: String {
         switch kind {
         case .remove: "Remove retained content"
-        case .forget: "Forget recognition"
+        case .forget: markerOnly ? "Forget" : "Back to review"
         case .resume: "Done"
         }
     }

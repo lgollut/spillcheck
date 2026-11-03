@@ -741,6 +741,7 @@ final class AppRuntime {
         if let valueID = model.selectedID, let value = viewing.content.value { model.revealedContent[valueID] = value }
         model.revealedExcerpts = viewing.content.excerpts
         model.revealedSourceMetadata = viewing.content.sourceMetadata
+        model.updateRevealedExpiry()
     }
 
     private static func viewingID(_ entry: InventoryEntryID?) -> UUID? {

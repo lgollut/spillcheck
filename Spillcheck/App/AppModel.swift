@@ -513,6 +513,8 @@ final class AppModel {
     var revealedContent: [UUID: String] = [:]
     var revealedExcerpts: [UUID: RetainedExcerpt] = [:]
     var revealedSourceMetadata: [UUID: RetainedSourceContext] = [:]
+    /// What the selection's revealed appearances say about when its value stops working.
+    private(set) var revealedExpiry: (entry: InventoryEntryID, hint: ExpiryHint)?
     /// The viewing session is authorized: every selection shows its value and context without a prompt.
     var viewingUnlocked = false
     /// Unlocked, but values are hidden until shown again or the session ends. No prompt either way.
@@ -1283,20 +1285,29 @@ final class AppModel {
         actionMessage = "Sample mode. Revealing and changing values are disabled."
     }
 
+    /// What the sample excerpt shows, so expiry hints can be reviewed too.
+    enum DemoContentSample: String { case environment, expiredSession = "session", downloadLink = "link" }
+
     /// Sample mode as if unlocked, for design review. The content is synthetic: nothing is decrypted.
-    func showDemoContent() {
+    func showDemoContent(_ sample: DemoContentSample = .environment) {
         guard isDemo, let summary = selectedSummary else { return }
         let value = "sample-value-not-a-secret"
         viewingUnlocked = true
         contentRevealed = true
         if let valueID = summary.entry.valueID { revealedContent[valueID] = value }
         if let occurrence = selectedOccurrenceID {
-            revealedExcerpts[occurrence] = RetainedExcerpt(
-                text: "NODE_ENV=development\nAPI_TOKEN=\(value)\nLOG_LEVEL=debug", clipped: true)
+            let expired = Date.now.addingTimeInterval(-2 * 86_400).formatted(.iso8601)
+            let text = switch sample {
+            case .environment: "NODE_ENV=development\nAPI_TOKEN=\(value)\nLOG_LEVEL=debug"
+            case .expiredSession: #"{"session":{"expiresAt":"\#(expired)","token":"\#(value)","ipAddress":"127.0.0.1"},"user":{"id":"sample"}}"#
+            case .downloadLink: #"[{"name":"README.md","download_url":"https://raw.githubusercontent.com/sample/app/main/README.md?token=\#(value)"}]"#
+            }
+            revealedExcerpts[occurrence] = RetainedExcerpt(text: text, clipped: true)
             revealedSourceMetadata[occurrence] = RetainedSourceContext(
                 sessionIdentifier: "sample", title: "Fix the flaky deploy script", projectPath: "~/dev/sample-app",
                 toolCall: RetainedToolCall(tool: "exec_command", program: "cat", paths: ["~/dev/sample-app/.env.local"]))
         }
+        updateRevealedExpiry()
     }
 
     /// Sample setup-assistant state matching a first launch: Codex found, Claude Code at an untested
@@ -1360,8 +1371,26 @@ final class AppModel {
         revealedContent.removeAll()
         revealedExcerpts.removeAll()
         revealedSourceMetadata.removeAll()
+        revealedExpiry = nil
         terminalResumeCommand = nil
         contentRevealed = false
+    }
+
+    /// Reads expiry evidence from the value and the excerpts revealed for the selection. It's only
+    /// ever derived from content on screen, never stored.
+    func updateRevealedExpiry() {
+        guard contentRevealed, let summary = selectedSummary, let valueID = summary.entry.valueID,
+              let value = revealedContent[valueID] else { revealedExpiry = nil; return }
+        let appearances = summary.occurrences.compactMap { occurrence in
+            revealedExcerpts[occurrence.id].map { ExpiryDetector.Appearance(text: $0.text, observedAt: occurrence.observedAt) }
+        }
+        revealedExpiry = ExpiryDetector.hint(for: value, in: appearances).map { (summary.id, $0) }
+    }
+
+    /// The expiry hint for a value, while its content is revealed.
+    func expiryHint(for summary: EntrySummary) -> ExpiryHint? {
+        guard contentRevealed, let revealedExpiry, revealedExpiry.entry == summary.id else { return nil }
+        return revealedExpiry.hint
     }
     func loadSnapshot(_ snapshot: InventorySnapshot) {
         guard !isDemo, let next = try? InventoryPresentation(snapshot: snapshot) else { return }

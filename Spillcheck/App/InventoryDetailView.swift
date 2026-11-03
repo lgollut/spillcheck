@@ -56,6 +56,7 @@ struct InventoryDetailView: View {
                 }
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     SignalTag(entry: entry)
+                    if let hint = model.expiryHint(for: summary) { ExpiryTag(hint: hint) }
                     if let why {
                         Text(why).font(.system(size: 12.5)).foregroundStyle(Palette.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -276,6 +277,80 @@ private struct SignalTag: View {
             .fixedSize()
             .help(rule.map { "Rule \($0). \(detail)" } ?? detail)
             .accessibilityLabel("\(title). \(detail)")
+    }
+}
+
+/// What the revealed content says about when the value stops working.
+private struct ExpiryTag: View {
+    let hint: ExpiryHint
+
+    var body: some View {
+        let now = Date.now
+        let title = hint.tagTitle(at: now)
+        Text(title)
+            .font(.system(size: 11.5, weight: .semibold))
+            .foregroundStyle(Palette.ink2)
+            .padding(.horizontal, 7).frame(height: 20)
+            .background(Palette.chip, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+            .fixedSize()
+            .help(hint.sentence(at: now))
+            .accessibilityLabel("\(title). \(hint.sentence(at: now))")
+    }
+}
+
+extension ExpiryHint {
+    /// Whether the evidence says the value has expired, so No longer works is the likely answer.
+    func suggestsNoLongerWorks(at now: Date) -> Bool {
+        switch state(at: now) {
+        case .expired, .probablyExpired: true
+        case .expires, .expiresOnItsOwn: false
+        }
+    }
+
+    func tagTitle(at now: Date) -> String {
+        switch state(at: now) {
+        case .expired: "Expired"
+        case .probablyExpired: "Probably expired"
+        case .expires(let date): "Expires \(Self.moment(date, now: now, preposition: false))"
+        case .expiresOnItsOwn: "Expires on its own"
+        }
+    }
+
+    /// Where the evidence comes from and what it says, without claiming more than it shows.
+    func sentence(at now: Date) -> String {
+        let state = state(at: now)
+        switch source {
+        case .tokenClaim, .signedLink:
+            let subject = source == .tokenClaim ? "The token itself" : "The link’s signature"
+            switch state {
+            case .expired(let date): return "\(subject) says it expired \(Self.moment(date, now: now))."
+            case .expires(let date): return "\(subject) says it expires \(Self.moment(date, now: now))."
+            case .probablyExpired, .expiresOnItsOwn: return "\(subject) says when it expires."
+            }
+        case .field(let name):
+            switch state {
+            case .probablyExpired(let date?):
+                return "The \(name) next to it said \(Self.moment(date, now: now, preposition: false)), which has passed. A session used since may have been extended."
+            case .expires(let date): return "The \(name) next to it says it expires \(Self.moment(date, now: now))."
+            default: return "The \(name) next to it says when it expires."
+            }
+        case .shortLivedLink(let service):
+            return "\(service) says download links like this expire and are meant to be used once."
+                + (state == .probablyExpired(nil) ? " This one was last seen \(Self.moment(seenAt, now: now))." : "")
+        }
+    }
+
+    /// "today at 14:02", "yesterday at 18:40", "on Oct 6 at 10:15", or with the year when it differs.
+    static func moment(_ date: Date, now: Date, preposition: Bool = true) -> String {
+        let calendar = Calendar.current
+        let time = date.formatted(date: .omitted, time: .shortened)
+        if calendar.isDate(date, inSameDayAs: now) { return "today at \(time)" }
+        if calendar.isDateInYesterday(date) { return "yesterday at \(time)" }
+        if calendar.isDateInTomorrow(date) { return "tomorrow at \(time)" }
+        let sameYear = calendar.component(.year, from: date) == calendar.component(.year, from: now)
+        let day = sameYear ? date.formatted(.dateTime.month(.abbreviated).day())
+            : date.formatted(.dateTime.month(.abbreviated).day().year())
+        return (preposition ? "on " : "") + day + (sameYear ? " at \(time)" : "")
     }
 }
 
@@ -785,6 +860,10 @@ struct DecisionBar: View {
     /// No longer works applies to the whole selection or not at all, so a value without an exact
     /// match is never left behind in To review.
     private var allRecognizable: Bool { summaries.allSatisfy { !$0.unlocated && $0.entry.fingerprint != nil } }
+    /// What the revealed content says about the value's expiry. Only for a single value on screen.
+    private var expiry: ExpiryHint? { many ? nil : model.expiryHint(for: summary) }
+    /// The evidence says it expired, so No longer works moves out of the menu and leads.
+    private var suggestsNoLongerWorks: Bool { allRecognizable && expiry?.suggestsNoLongerWorks(at: .now) == true }
 
     private var copy: Copy {
         if many { return manyCopy }
@@ -817,7 +896,7 @@ struct DecisionBar: View {
             return ("Possible \(summary.kind.shortName), exact value not located", "Check its source above, then decide.", false)
         }
         return ("Does this need rotating?",
-                "Every answer but Needs rotation moves it to Done, where it stays quiet.", false)
+                expiry?.sentence(at: .now) ?? "Every answer but Needs rotation moves it to Done, where it stays quiet.", false)
     }
 
     private var manyCopy: Copy {
@@ -967,12 +1046,27 @@ struct DecisionBar: View {
                 .accessibilityHidden(true)
             decisionButton(.notSecret, "Not a secret", key: "N",
                            help: "Looks like a credential but isn’t one, such as a placeholder or a variable name.")
-            decisionButton(.testOrDevelopment, "Test or dev only", key: "T",
-                           help: "A real credential that only works in tests or local development.")
+            // When No longer works leads, Test or dev only makes room for it in the menu; T still works.
+            if !suggestsNoLongerWorks {
+                decisionButton(.testOrDevelopment, "Test or dev only", key: "T",
+                               help: "A real credential that only works in tests or local development.")
+            }
+            if suggestsNoLongerWorks {
+                Button { model.acknowledge(summaries, as: .revoked) } label: {
+                    HStack(spacing: 7) { KeyCap(key: "X", onAccent: true); Text("No longer works") }
+                }
+                .buttonStyle(FilledButtonStyle(height: 30))
+                .disabled(disabled)
+                .help("Expired, revoked or rotated. Moves it to Done, where it stays quiet.")
+                .accessibilityIdentifier("inventory.no-longer-works")
+            }
             Menu {
                 Section("Other reasons it doesn’t") {
-                    if allRecognizable {
+                    if allRecognizable && !suggestsNoLongerWorks {
                         Button("No longer works (expired, revoked or rotated)") { model.acknowledge(summaries, as: .revoked) }
+                    }
+                    if suggestsNoLongerWorks {
+                        Button("Test or dev only (T)") { model.decide(summaries, as: .testOrDevelopment) }
                     }
                     Button("Real, kept as is") { model.decide(summaries, as: .acceptedRisk) }
                 }
@@ -987,11 +1081,14 @@ struct DecisionBar: View {
             .tint(Palette.ink2)
             .fixedSize()
             .disabled(disabled)
-            .help(allRecognizable ? "Other reasons: no longer works (X), or real but kept as is" : "Other reason: real, but kept as is")
+            .help(suggestsNoLongerWorks ? "Other reasons: test or dev only (T), or real but kept as is"
+                  : allRecognizable ? "Other reasons: no longer works (X), or real but kept as is"
+                  : "Other reason: real, but kept as is")
             .accessibilityLabel("Other reasons it doesn’t")
             .accessibilityIdentifier("inventory.more-decisions")
             // A known format is almost always a real credential, so rotating is the likely answer.
-            decisionButton(.needsRotation, "Needs rotation", key: "R", primary: summaries.contains(where: \.strong),
+            decisionButton(.needsRotation, "Needs rotation", key: "R",
+                           primary: summaries.contains(where: \.strong) && !suggestsNoLongerWorks,
                            help: "Moves \(many ? "them" : "it") to To rotate until you’ve changed \(many ? "them" : "it") at \(service).")
                 .padding(.leading, 8)
         }

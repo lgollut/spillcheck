@@ -92,6 +92,10 @@ _Avoid_: New value, which describes the first appearance of a value rather than 
 A secret value the user has said no longer works because it was rotated, revoked or expired. A later appearance of that exact value retains this classification, based on the user's acknowledgement rather than verification by the application.
 _Avoid_: False positive, which concerns whether a value is a secret.
 
+**Expiry hint**:
+What a value's revealed content says about when it stops working: the token's own expiry claim, a signed link's end, a field printed next to it such as an expiry date, or a link format its service documents as expiring on its own. It suggests an answer and never decides one.
+_Avoid_: Expired value, which asserts what a printed date can only suggest.
+
 **Secret inventory**:
 The central list of detected secrets and their associated occurrences, available for the user to browse.
 _Avoid_: Alert log, when referring to browsable secret records.

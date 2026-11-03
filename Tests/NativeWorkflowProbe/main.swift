@@ -420,6 +420,31 @@ private struct NativeWorkflowProbe {
                 "no-longer-works-all-or-nothing")
             checks.append("no-longer-works-key")
 
+            // An expiry read from revealed content belongs to the selection, and goes when it's hidden.
+            let expiring = AppModel()
+            expiring.loadSnapshot(try DemoInventory.snapshot())
+            expiring.storageReady = true
+            guard let shown = expiring.bucketEntries.first(where: { !$0.unlocated && $0.entry.valueID != nil }),
+                  let shownValue = shown.entry.valueID, let shownOccurrence = shown.occurrences.first else {
+                throw ProbeFailure.failed("expiry-sample")
+            }
+            expiring.select(shown.id, gesture: .single)
+            expiring.contentRevealed = true
+            expiring.revealedContent[shownValue] = "placeholder-value-0001"
+            expiring.revealedExcerpts[shownOccurrence.id] = RetainedExcerpt(
+                text: #"{"session":{"expiresAt":"2020-01-01T00:00:00Z","token":"placeholder-value-0001"}}"#, clipped: true)
+            expiring.updateRevealedExpiry()
+            let readHint = expiring.expiryHint(for: shown)
+            try require(readHint?.source == .field("expiresAt") && readHint?.suggestsNoLongerWorks(at: .now) == true,
+                "expiry-hint-from-revealed-excerpt")
+            guard let other = expiring.bucketEntries.first(where: { $0.id != shown.id }) else {
+                throw ProbeFailure.failed("expiry-sample")
+            }
+            try require(expiring.expiryHint(for: other) == nil, "expiry-hint-belongs-to-the-selection")
+            expiring.clearRevealedContent()
+            try require(expiring.expiryHint(for: shown) == nil, "expiry-hint-cleared-with-content")
+            checks.append("expiry-hint")
+
             // Focus titles count what's left, so they follow each decision and its undo. Decisions are
             // applied to a ledger and reloaded, as the app does once they're written.
             var ledger = try InventoryLedger(snapshot: try DemoInventory.snapshot())

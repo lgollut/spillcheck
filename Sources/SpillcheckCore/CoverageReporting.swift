@@ -197,8 +197,11 @@ public struct CoverageReport: Sendable {
     }
 
     public func hasRecoveredBacklog(_ event: StoredCoverageGapEvent) -> Bool {
-        guard event.isIntermediateBacklog, event.gap.reason == .budgetExhausted,
-              event.gap.recovery == nil, let audit = event.audit else { return false }
+        guard event.gap.reason == .budgetExhausted, event.gap.recovery == nil, let audit = event.audit else { return false }
+        // A later catch-up of the whole profile read everything up to its own end, which covers
+        // this audit's window within the seven days still analyzed. Its stopped pages don't matter.
+        if let covered = lookup.coveredByLaterAudit[audit], covered >= event.observedAt { return true }
+        guard event.isIntermediateBacklog else { return false }
         // Only completed or recovered work is pruned, so an event whose work row is gone settled
         // with it. A truncated page may hide unsettled work of the audit, so it settles nothing.
         if event.workID != nil {
@@ -206,6 +209,13 @@ public struct CoverageReport: Sendable {
         }
         return lookup.latestSettledHistory[audit].map { $0 >= event.observedAt } == true
     }
+
+    /// A profile catch-up that a newer one took over before it finished. Its unread content is the
+    /// newer audit's to read, so it is not reported again under this audit.
+    public func isSupersededAudit(_ audit: CoverageAuditIdentity) -> Bool { lookup.supersededAudits.contains(audit) }
+
+    /// Whether a later, completed catch-up of the whole profile covers this audit's window.
+    public func isCoveredByLaterAudit(_ audit: CoverageAuditIdentity) -> Bool { lookup.coveredByLaterAudit[audit] != nil }
 
     /// Presentation joins every event and omission against work and history on each refresh.
     /// Indexes into the report's own arrays keep those joins linear in the report size.
@@ -256,6 +266,9 @@ public struct CoverageReport: Sendable {
         var auditsWithUnsettledWork: Set<CoverageAuditIdentity> = []
         /// Latest completion of each audit that finished without unread content or a queued continuation.
         var latestSettledHistory: [CoverageAuditIdentity: Date] = [:]
+        /// Unfinished audits that a later completed profile catch-up covers, with its completion time.
+        var coveredByLaterAudit: [CoverageAuditIdentity: Date] = [:]
+        var supersededAudits: Set<CoverageAuditIdentity> = []
         var latestReads: [ReadKey: Date] = [:]
         var pendingWorkBySource: [SourceKey: [Int]] = [:]
         var providersReadingHistory: Set<AgentProvider> = []
@@ -280,6 +293,25 @@ public struct CoverageReport: Sendable {
                 let audit = CoverageAuditIdentity(auditID: item.progress.audit.id, provider: item.provider,
                                                   profileID: item.profileID)
                 latestSettledHistory[audit] = max(latestSettledHistory[audit] ?? completedAt, completedAt)
+            }
+            // The latest end each profile's completed catch-ups reached, and when the latest of them finished.
+            struct ProfileKey: Hashable { let provider: AgentProvider; let profileID: String }
+            var completedProfiles: [ProfileKey: [(end: Date, completedAt: Date)]] = [:]
+            for item in history where item.completedProfileAudit {
+                guard let completedAt = item.completedAt else { continue }
+                completedProfiles[ProfileKey(provider: item.provider, profileID: item.profileID), default: []]
+                    .append((item.progress.audit.end, completedAt))
+            }
+            for item in history where item.completedAt == nil {
+                let audit = CoverageAuditIdentity(auditID: item.progress.audit.id, provider: item.provider,
+                                                  profileID: item.profileID)
+                if item.supersededAt != nil { supersededAudits.insert(audit) }
+                let covering = (completedProfiles[ProfileKey(provider: item.provider, profileID: item.profileID)] ?? [])
+                    .filter { $0.end >= item.progress.audit.end }.map(\.completedAt).max()
+                if let covering {
+                    coveredByLaterAudit[audit] = covering
+                    latestSettledHistory[audit] = max(latestSettledHistory[audit] ?? covering, covering)
+                }
             }
             for read in successfulReads {
                 let key = ReadKey(scope: read.scope, operation: read.operation)

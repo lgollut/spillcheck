@@ -183,6 +183,9 @@ public actor ProtectedStore {
     private var consecutiveLiveClaims = 0
     private var openedOmissions = OpenedRows<CoverageOmission>()
     private var openedGapEvents = OpenedRows<OpenedGapEvent>()
+    /// Profile catch-ups replaced by a newer one in this run. A page of one still being read
+    /// when it was replaced finishes, but queues no next page.
+    private var retiredAudits: Set<UUID> = []
     private var openedWorkContexts = OpenedRows<CollectionWorkContext>()
 
     private init(
@@ -961,14 +964,16 @@ public actor ProtectedStore {
         let count = progressed ? capture.retryCount : capture.retryCount + 1
         let shouldDrop = count > limits.maxRetryCount || capture.expiresAt <= now
         let opened = try? await openCapturedWork(capture)
-        let attempted = try await prepareFailedHistoricalAttempt(opened: opened, continuing: !shouldDrop, at: now)
+        let workContext = try await collectionWork(id: capture.id)?.context
+        let attempted = try await prepareFailedHistoricalAttempt(opened: opened, continuing: !shouldDrop,
+            sourceRecovery: workContext.map { $0.retry != nil }, at: now)
         let loss: PreparedCoverageSettlement?
         if shouldDrop {
             let expired = capture.expiresAt <= now
             loss = try await prepareCaptureLoss(id: capture.id, body: opened?.body,
                 capturedAt: capture.capturedAt, reason: expired ? .queueExpired : reason,
                 diagnosticCode: expired ? nil : diagnosticCode,
-                at: now, audit: opened?.historicalAudit, context: try await collectionWork(id: capture.id)?.context)
+                at: now, audit: opened?.historicalAudit, context: workContext)
         } else { loss = nil }
         try check(permit)
         do {
@@ -1175,7 +1180,10 @@ public actor ProtectedStore {
         if continuation != nil || historicalProgress != nil {
             let opened = try await openCapturedWork(capture)
             let original = try CapturePacket(body: opened.body)
-            if let continuation {
+            // A newer catch-up of the same profile took over while this page was read. Its next page
+            // would run a second chain beside the newer one, and the two rewind each other's cursors.
+            let superseded = continuation != nil && opened.historicalAudit.map { retiredAudits.contains($0.id) } == true
+            if let continuation, !superseded {
                 guard continuation.metadata == original.metadata,
                       continuation.body.count <= limits.maxEventBytes else { throw StorageError.invalidPayload }
                 let id = UUID()
@@ -1217,7 +1225,9 @@ public actor ProtectedStore {
                     profileID: original.metadata.profileID, progress: accumulated,
                     lastAttemptedAt: now,
                     completedAt: !progress.hasUnreadContent && continuation == nil ? now : nil,
-                    continuationQueued: continuation != nil)
+                    continuationQueued: continuation != nil && !superseded,
+                    sourceRecovery: currentWork.map { $0.context.retry != nil } ?? previous?.sourceRecovery,
+                    supersededAt: previous?.supersededAt ?? (superseded ? now : nil))
                 gapAudit = CoverageAuditIdentity(auditID: progress.audit.id, provider: original.metadata.agent,
                     profileID: original.metadata.profileID)
                 let protected = try await cryptography.sealBackground(JSONEncoder().encode(record),
@@ -1863,7 +1873,8 @@ public actor ProtectedStore {
             let updated: Double = row["updated_at"]
             result.append(StoredHistoricalProgress(provider: stored.provider, profileID: stored.profileID,
                 progress: stored.progress, lastAttemptedAt: stored.lastAttemptedAt ?? Date(timeIntervalSince1970: updated),
-                completedAt: stored.completedAt, continuationQueued: stored.continuationQueued))
+                completedAt: stored.completedAt, continuationQueued: stored.continuationQueued,
+                sourceRecovery: stored.sourceRecovery, supersededAt: stored.supersededAt))
         }
         return CoverageQueryPage(items: result, totalCount: count)
     }
@@ -1876,12 +1887,68 @@ public actor ProtectedStore {
         return try JSONDecoder().decode(StoredHistoricalProgress.self, from: plaintext)
     }
 
+    /// One catch-up per profile. Before a new audit of a profile starts, its other queued catch-ups
+    /// stop: two chains interleave their pages, and each rewinds the per-file positions the other
+    /// saved, so neither finishes. Their unread content is the new audit's to read, from the positions
+    /// they saved. A page still being read finishes but queues no next page. A retry's reread of one
+    /// source is left alone. Returns whether `audit` itself is already queued.
+    public func supersedeHistory(provider: AgentProvider, profileID: String, by audit: HistoricalAuditContext,
+                                 at now: Date = Date()) async throws -> Bool {
+        guard !closed else { throw StorageError.databaseUnavailable }
+        guard now.timeIntervalSince1970.isFinite else { throw StorageError.invalidTime }
+        let rows: [Row]
+        do {
+            rows = try Self.read(database) { db in
+                try Row.fetchAll(db, sql: "SELECT id, encoded, state FROM captures WHERE work_class = 1")
+            }
+        } catch { throw StorageError.databaseUnavailable }
+        var alreadyQueued = false
+        var retiredCaptures: [UUID] = []
+        var progress: [UUID: Data] = [:]
+        for row in rows {
+            guard let id = UUID(uuidString: row["id"]),
+                  let bytes = try? await cryptography.openBackground(Self.decode(row["encoded"]), binding: Self.captureBinding(id)),
+                  let opened = try? CapturedWorkCodec.decode(bytes), let previous = opened.historicalAudit,
+                  let metadata = try? CapturePacket(body: opened.body).metadata,
+                  metadata.agent == provider, metadata.profileID == profileID else { continue }
+            let work = try await collectionWork(id: id)
+            guard work?.context.retry == nil, work?.recoveryOf == nil else { continue }
+            if previous.id == audit.id { alreadyQueued = true; continue }
+            retiredAudits.insert(previous.id)
+            retiredCaptures.append(id)
+            let progressID = try await historicalProgressID(audit: previous, metadata: metadata)
+            guard progress[progressID] == nil, let stored = try await storedProgress(id: progressID),
+                  stored.supersededAt == nil, stored.completedAt == nil else { continue }
+            let record = StoredHistoricalProgress(provider: stored.provider, profileID: stored.profileID,
+                progress: stored.progress, lastAttemptedAt: stored.lastAttemptedAt, completedAt: nil,
+                continuationQueued: false, sourceRecovery: false, supersededAt: now)
+            progress[progressID] = try await cryptography.sealBackground(JSONEncoder().encode(record),
+                binding: Self.checkpointBinding(progressID)).encoded()
+        }
+        guard !retiredCaptures.isEmpty else { return alreadyQueued }
+        guard !closed else { throw StorageError.databaseUnavailable }
+        do {
+            try Self.write(database) { db in
+                for id in retiredCaptures {
+                    // A page claimed meanwhile is being read; it finishes without a next page.
+                    try db.execute(sql: "DELETE FROM captures WHERE id = ? AND state = 0", arguments: [id.uuidString])
+                    if db.changesCount > 0 { try Self.updateWork(id: id, state: .completed, at: now, in: db) }
+                }
+                for (id, encoded) in progress {
+                    try db.execute(sql: "UPDATE historical_progress SET updated_at = ?, encoded = ? WHERE id = ?",
+                                   arguments: [now.timeIntervalSince1970, encoded, id.uuidString])
+                }
+            }
+        } catch { throw StorageError.databaseUnavailable }
+        return alreadyQueued
+    }
+
     private func historicalProgressID(audit: HistoricalAuditContext, metadata: CaptureMetadata) async throws -> UUID {
         let keyBytes = try JSONEncoder().encode([audit.id.uuidString, metadata.agent.rawValue, metadata.profileID])
         return try await structuralID(Data("history-progress-v1".utf8) + keyBytes)
     }
 
-    private func prepareFailedHistoricalAttempt(opened: OpenedCapture?, continuing: Bool,
+    private func prepareFailedHistoricalAttempt(opened: OpenedCapture?, continuing: Bool, sourceRecovery: Bool?,
                                                  at now: Date) async throws -> (id: UUID, bytes: Data)? {
         guard let opened, let audit = opened.historicalAudit,
               let packet = try? CapturePacket(body: opened.body) else { return nil }
@@ -1891,7 +1958,9 @@ public actor ProtectedStore {
             oldestContentTime: previous?.progress.oldestContentTime, newestContentTime: previous?.progress.newestContentTime,
             hasUnreadContent: true)
         let record = StoredHistoricalProgress(provider: packet.metadata.agent, profileID: packet.metadata.profileID,
-            progress: progress, lastAttemptedAt: now, completedAt: nil, continuationQueued: continuing)
+            progress: progress, lastAttemptedAt: now, completedAt: nil,
+            continuationQueued: continuing && previous?.supersededAt == nil,
+            sourceRecovery: sourceRecovery ?? previous?.sourceRecovery, supersededAt: previous?.supersededAt)
         let protected = try await cryptography.sealBackground(JSONEncoder().encode(record), binding: Self.checkpointBinding(id))
         return (id, try protected.encoded())
     }

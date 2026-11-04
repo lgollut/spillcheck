@@ -509,7 +509,13 @@ extension AppModel {
             return gaps.map { .init(gap: $0, state: $0.excludedContent == true ? .excluded : .recoveryUnconfirmed,
                 first: nil, last: nil, profile: profile($0)) }
         }
-        var observations = report.independentlyReportedEvents.map { event -> CoverageObservation in
+        // A catch-up replaced by a newer one of its profile hands its unread content to that audit,
+        // which reports it; listing both would count the same backlog twice.
+        func handedOver(_ event: StoredCoverageGapEvent) -> Bool {
+            guard let audit = event.audit, event.gap.reason == .budgetExhausted, event.gap.recovery == nil else { return false }
+            return report.isSupersededAudit(audit) && !report.hasRecoveredBacklog(event)
+        }
+        var observations = report.independentlyReportedEvents.filter { !handedOver($0) }.map { event -> CoverageObservation in
             let gap = event.gap
             let state: CoverageIssueState
             if report.hasRecoveredBacklog(event) { state = .recovered }
@@ -555,7 +561,8 @@ extension AppModel {
         for history in report.history.items where history.progress.hasUnreadContent {
             let audit = CoverageAuditIdentity(auditID: history.progress.audit.id,
                 provider: history.provider, profileID: history.profileID)
-            guard !unreadAudits.contains(audit) else { continue }
+            guard !unreadAudits.contains(audit), !report.isSupersededAudit(audit),
+                  !report.isCoveredByLaterAudit(audit) else { continue }
             let scopes = eventScopes[audit] ?? []
             // A shared native profile cannot establish which host produced an old audit.
             let scope = scopes.count == 1 ? scopes.first : nil

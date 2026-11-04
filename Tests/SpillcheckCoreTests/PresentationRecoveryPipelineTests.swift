@@ -126,7 +126,10 @@ private struct PresentationFixture {
             // None of this rejected batch's measured bytes or completion may be certified.
             #expect(failed == StoredHistoricalProgress(provider: .codex, profileID: scope.profileID,
                 progress: .init(audit: expectedAudit, bytesRead: 0, hasUnreadContent: true),
-                lastAttemptedAt: attemptedAt, completedAt: nil, continuationQueued: true))
+                lastAttemptedAt: attemptedAt, completedAt: nil, continuationQueued: true,
+                sourceRecovery: failed.sourceRecovery))
+            // The attempt keeps the kind of audit its work was admitted for.
+            #expect(failed.sourceRecovery != nil)
             #expect(attemptedAt >= attemptStarted && attemptedAt <= attemptFinished)
             let afterCaptures = try await target.captureIdentitiesForTesting()
             #expect(afterCaptures.pending == admittedCaptures.pending && afterCaptures.consumed == admittedCaptures.consumed)

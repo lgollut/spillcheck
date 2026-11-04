@@ -2696,6 +2696,13 @@ final class AppRuntime {
                 reason: reassessing ? .resume : scope.catchupReason, endingAt: reassessing ? .now : scope.startedAt)
             for route in historyProducers where provider == nil || route.route.scope.provider == provider {
                 do {
+                    // One catch-up per profile: an unfinished earlier one stops here and this audit reads
+                    // its files on from where it left them. One already queued for this audit carries on.
+                    let routeScope = route.route.scope
+                    if try await store.supersedeHistory(provider: routeScope.provider, profileID: routeScope.profileID, by: audit) {
+                        queued.insert(routeScope.provider)
+                        continue
+                    }
                     let packet = try await route.producer.initialHistoricalCapture(audit: audit)
                     guard let currentRoute = sourceProducers[route.route.scope]?.route else { throw StorageError.stateChanged }
                     let context = try currentRoute.context(for: packet, trigger: .historyRequest, audit: audit)

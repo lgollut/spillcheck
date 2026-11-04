@@ -118,6 +118,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         let sample = value("--demo-expiry").flatMap(AppModel.DemoContentSample.init(rawValue:))
         if args.contains("--demo-revealed") || sample != nil { model.showDemoContent(sample ?? .environment) }
+        if args.contains("--demo-gaps") { model.showDemoGaps() }
         switch value("--demo-route") {
         case "coverage": model.route = .coverage
         case "general": model.route = .settings(.general)

@@ -195,6 +195,11 @@ final class AppRuntime {
     private var acceptanceUsesExplicitStore = false
     private var acceptancePhase: String?
     private var acceptanceRecovery: DisposableRecoveryConfiguration?
+    /// Sources this run has already reread on its own, so a source that keeps failing is tried once.
+    private var autoRetried: Set<CoverageSourceRetryDescriptor> = []
+    private var lastAutoRetry: Date?
+    private var autoRetrying = false
+    private let launchedAt = Date()
     private var acceptanceProcessingStopped = false
     private var acceptanceExitWithPending = false
     private var acceptanceLoadedExistingManifest = false
@@ -1259,6 +1264,7 @@ final class AppRuntime {
             model.updateHistoryWork(queued: queue.historicalCount, providers: report.providersReadingHistory)
             model.refreshCollectionLimitations()
             await refreshSetup()
+            retryFailedSourcesIfDue()
             #if DEBUG
             await performAcceptanceInventoryReplay()
             await performAcceptanceWebReplay()
@@ -2514,14 +2520,15 @@ final class AppRuntime {
     }
 
     /// Retries each retained original selection in turn. Readers revalidate its authorized root and authority.
-    private func retrySources(_ requested: [CoverageSourceRetryDescriptor]) async {
+    /// A quiet retry is the app's own: it shows no toast, and the issues it leaves are what still fails.
+    private func retrySources(_ requested: [CoverageSourceRetryDescriptor], quiet: Bool = false) async {
         let sources = requested.filter { model.canPerformCoverageAction(.retrySource($0)) }
         guard !sources.isEmpty, let store else { return }
         let providers = Set(sources.map(\.scope.provider))
         model.retryingHistory.formUnion(providers)
         defer { model.retryingHistory.subtract(providers) }
-        let announce = sources.count == 1
-        if !announce { model.showToast("Retrying \(plural(sources.count, "affected source")).") }
+        let announce = sources.count == 1 && !quiet
+        if !announce && !quiet { model.showToast("Retrying \(plural(sources.count, "affected source")).") }
         var outcomes: [SourceRetryOutcome] = []
         for source in sources {
             guard !terminating, !Task.isCancelled else { return }
@@ -2531,9 +2538,36 @@ final class AppRuntime {
             if outcome == .cancelled { return }
             outcomes.append(outcome)
         }
-        if !announce { model.showToast(Self.sourceRetrySummary(outcomes)) }
+        if !announce && !quiet { model.showToast(Self.sourceRetrySummary(outcomes)) }
         if outcomes.contains(where: { $0 != .unavailable }) { await refresh() }
     }
+
+    /// Rereads failed sources without being asked, so Gaps lists only what still fails after a retry.
+    /// It waits until catch-up and other reads are done, tries each source once per run, and reads
+    /// a bounded number of sources at a time, at most every half hour.
+    private func retryFailedSourcesIfDue(now: Date = .now) {
+        #if DEBUG
+        // Acceptance runs check exact recovery states; a retry they didn't ask for would change them.
+        guard acceptanceRecovery == nil else { return }
+        #endif
+        guard !autoRetrying, !terminating, model.storageReady, !model.isDemo, model.monitoringEnabled,
+              !model.monitoringTransition, !model.catchingUp, model.retryingHistory.isEmpty,
+              model.coverageReport?.queue.historicalCount == 0,
+              now.timeIntervalSince(launchedAt) >= Self.autoRetryDelay,
+              lastAutoRetry.map({ now.timeIntervalSince($0) >= Self.autoRetryInterval }) ?? true else { return }
+        lastAutoRetry = now
+        let sources = Array(model.autoRetryCandidates.filter { !autoRetried.contains($0) }.prefix(Self.autoRetryBatch))
+        guard !sources.isEmpty else { return }
+        autoRetried.formUnion(sources)
+        autoRetrying = true
+        performAction { runtime in
+            await runtime.retrySources(sources, quiet: true)
+            runtime.autoRetrying = false
+        }
+    }
+    private static let autoRetryDelay: TimeInterval = 10 * 60
+    private static let autoRetryInterval: TimeInterval = 30 * 60
+    private static let autoRetryBatch = 25
 
     private static func sourceRetrySummary(_ outcomes: [SourceRetryOutcome]) -> String {
         func count(_ matching: Set<SourceRetryOutcome>) -> Int { outcomes.filter(matching.contains).count }

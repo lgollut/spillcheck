@@ -336,6 +336,31 @@ struct AgentHostRoute: Identifiable {
         }
         return parts.joined(separator: " · ")
     }
+    /// What the agent's row says: its live reads and catch-up. Recorded gaps are listed under Gaps
+    /// and the route's stated limits under "Not analyzed by design", so neither repeats here.
+    var operationsSummary: String {
+        [operationSummary(.liveRead), operationSummary(.historicalRead)].joined(separator: " · ")
+    }
+    /// Live reads or catch-up are failing on this route, which a stated limit or a missing content
+    /// type is not: those are listed under Gaps or "Not analyzed by design".
+    var hasFailingOperation: Bool {
+        let failures = assessments.flatMap(\.failures)
+        return [CollectionOperation.liveRead, .historicalRead].contains { operation in
+            failures.contains { $0.operation == operation }
+        }
+    }
+    /// Limits that hold whatever happens: no retry or repair changes them.
+    var statedLimits: [String] {
+        var limits: [String] = []
+        if assessments.contains(where: { $0.scope.provider == .codex && $0.scope.path == .hook }) {
+            limits.append("Hook collection doesn’t include Codex’s intermediate replies.")
+        }
+        if partialDesktopSupport {
+            limits.append(provider == .claudeCode ? "Side questions asked in the Claude desktop app aren’t collected."
+                : "Automatic side chats in the Codex app aren’t collected.")
+        }
+        return limits
+    }
     var acceptanceSummary: String {
         if sharedProfile {
             return "Collection status applies to the shared \(provider.displayName) profile. Its configured route does not identify the app or CLI producing a session. Host-specific acceptance is separate."
@@ -358,7 +383,7 @@ struct AgentHostRoute: Identifiable {
             return failures.allSatisfy { $0.reason == .transientFailure }
                 ? "\(name) waiting to retry" : "\(name) unavailable"
         }
-        return operation == .liveRead ? "Awaiting first live read" : "Catch-up not observed yet"
+        return operation == .liveRead ? "Awaiting first live read" : "Catch-up not confirmed since launch"
     }
     var status: CollectionCompatibilityStatus {
         if !limitations.isEmpty || assessments.contains(where: { $0.status == .partial }) { return .partial }
@@ -1070,7 +1095,10 @@ final class AppModel {
             observedExecutableVersion: assessment.observedExecutableVersion, format: assessment.format,
             usableOperations: assessment.usableOperations,
             unavailableContent: assessment.unavailableContent.union(required.compactMap(\.contentType)),
-            failures: assessment.failures + required.map {
+            // Content the route never provides is unavailable, but reading isn't failing because of it.
+            failures: assessment.failures + required.filter {
+                $0.diagnosticCode != .encryptedContentUnavailable && $0.diagnosticCode != .nativeChildInputUnavailable
+            }.map {
                 .init(reason: $0.operation == nil ? .changedContentFormat : .sourceUnavailable,
                       operation: $0.operation, contentType: $0.contentType)
             }, acceptanceEvidence: assessment.acceptanceEvidence)
@@ -1284,6 +1312,45 @@ final class AppModel {
         selectedEntryID = bucketEntries.first?.id
         actionMessage = "Sample mode. Revealing and changing values are disabled."
     }
+
+    #if DEBUG
+    /// Sample coverage gaps for design review: recent failures, older ones, a stated limit and a
+    /// catch-up still reading. Nothing comes from a vault.
+    func showDemoGaps() {
+        guard isDemo else { return }
+        let now = Date.now
+        let codex = CollectionScope(provider: .codex, profileID: "sample", interface: .t3, path: .publicHistory)
+        let claude = CollectionScope(provider: .claudeCode, profileID: "sample", interface: .standaloneCLI, path: .versionedTranscript)
+        func thread(_ id: String) -> CoverageRecoveryReference? {
+            (try? SessionIdentity(provider: .codex, profileID: "sample", sessionID: id)).map {
+                CoverageRecoveryReference(session: $0, locator: .upstreamItem, itemID: "item-\(id)",
+                    contentTime: now.addingTimeInterval(-3600), parserContract: CodexAdapter.parserContract)
+            }
+        }
+        func event(_ gap: CoverageGap, ago: TimeInterval, count: Int = 1, since: TimeInterval? = nil) -> StoredCoverageGapEvent {
+            StoredCoverageGapEvent(gap: gap, observedAt: now.addingTimeInterval(-ago), count: count,
+                                   firstObservedAt: since.map { now.addingTimeInterval(-$0) })
+        }
+        let events = [
+            event(.init(reason: .queueSaturated, scope: claude, operation: .liveRead), ago: 2 * 3600, count: 12, since: 5 * 3600),
+            event(.init(reason: .sourceUnavailable, scope: codex, operation: .liveRead, recovery: thread("a")), ago: 600, count: 40, since: 30 * 3600),
+            event(.init(reason: .sourceUnavailable, scope: codex, operation: .liveRead, recovery: thread("b")), ago: 900, count: 9, since: 3 * 3600),
+            event(.init(reason: .sourceChanged, scope: claude, operation: .historicalRead), ago: 30 * 3600, count: 41, since: 40 * 3600),
+            event(.init(reason: .deliveryUncertain, scope: claude, operation: .liveRead), ago: 28 * 3600, count: 2),
+            event(.init(reason: .unsupportedContent, scope: codex, contentType: .userPrompt, operation: .historicalRead,
+                recovery: thread("c"), isRequiredFormatFailure: true, diagnosticCode: .nativeChildInputUnavailable), ago: 1800, count: 14),
+        ]
+        coverageReport = CoverageReport(window: AnalyzedActivity.recentWindow(endingAt: now),
+            gapEvents: .init(items: events, totalCount: events.count), omissions: .init(items: [], totalCount: 0),
+            history: .init(items: [], totalCount: 0),
+            queue: .init(count: 0, encryptedBytes: 0, claimedCount: 0, historicalCount: 0), oldestPendingCaptureAt: nil)
+        for scope in [codex, claude] {
+            collectionAssessments[scope] = CollectionAssessment(scope: scope, observedExecutableVersion: agentProfiles[scope.provider]?.version,
+                usableOperations: [.liveRead, .historicalRead])
+        }
+        refreshCollectionLimitations()
+    }
+    #endif
 
     /// What the sample excerpt shows, so expiry hints can be reviewed too.
     enum DemoContentSample: String { case environment, expiredSession = "session", downloadLink = "link" }

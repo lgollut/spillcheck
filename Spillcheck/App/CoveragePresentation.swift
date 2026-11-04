@@ -324,6 +324,33 @@ extension AppModel {
         /// Reads in progress need no action, but their content is not analyzed yet.
         var isInProgress: Bool { rows.allSatisfy { $0.state == .queued || $0.state == .reading } }
 
+        /// Content the route can never provide, such as Codex input it keeps encrypted or a subagent's
+        /// instructions it doesn't expose. It is still missing, so coverage stays partial, but it is a
+        /// stated limit listed under "Not analyzed by design" rather than a gap to act on.
+        var isStatedLimit: Bool {
+            switch id.cause {
+            case .diagnostic(.encryptedContentUnavailable), .diagnostic(.nativeChildInputUnavailable): true
+            default: false
+            }
+        }
+
+        /// Recorded since `cutoff`. Older issues are listed folded, as earlier ones.
+        func isRecent(since cutoff: Date) -> Bool { (lastObservedAt ?? .distantFuture) >= cutoff }
+
+        /// The states worth naming: "Recovery not confirmed" is true of nearly every unread gap, so it
+        /// is left out unless nothing else describes the issue.
+        var shortStateText: String? {
+            let labels = stateText.components(separatedBy: " · ").filter { $0 != CoverageIssueState.recoveryUnconfirmed.label }
+            return labels.isEmpty ? nil : labels.joined(separator: " · ")
+        }
+
+        /// How much is affected, in one phrase: sources when they are known, otherwise how often it happened.
+        var extentText: String? {
+            if case .route = id.cause { return nil }
+            if sourceCount > 0 { return plural(sourceCount, "source") }
+            return recordCount == 1 ? "Once" : "\(recordCount.formatted()) times"
+        }
+
         /// Each distinct state, most actionable first.
         var stateText: String {
             var labels: [String] = []
@@ -392,8 +419,23 @@ extension AppModel {
 
     var coverageGaps: [CoverageGapRow] { coverageRows.filter { $0.state != .recovered } }
     var recoveredCoverageGaps: [CoverageGapRow] { coverageRows.filter { $0.state == .recovered } }
-    /// Unrecovered issues, including reads in progress. Excluded content is a stated limit instead.
-    var coverageIssues: [CoverageIssue] { allCoverageIssues.filter { !$0.id.recovered } }
+    /// Unrecovered issues, including reads in progress. Excluded content and other stated limits are
+    /// listed apart, under "Not analyzed by design".
+    var coverageIssues: [CoverageIssue] { allCoverageIssues.filter { !$0.id.recovered && !$0.isStatedLimit } }
+    /// Missing content that the route can never provide, by cause.
+    var statedLimitIssues: [CoverageIssue] { allCoverageIssues.filter { !$0.id.recovered && $0.isStatedLimit } }
+    /// Issues last recorded before this are listed as earlier ones.
+    var recentIssueCutoff: Date { Date.now.addingTimeInterval(-24 * 60 * 60) }
+
+    /// Sources the app may reread on its own: each open issue's exact sources that a retry
+    /// could read now. Reads already queued or under way are left to finish.
+    var autoRetryCandidates: [CoverageSourceRetryDescriptor] {
+        CoverageIssue.distinct(coverageIssues.filter { !$0.isInProgress }.flatMap(\.rows).compactMap { row in
+            guard [.retryable, .recoveryUnconfirmed, .stalled].contains(row.state),
+                  case .retrySource(let source)? = row.action, canPerformCoverageAction(.retrySource(source)) else { return nil }
+            return source
+        })
+    }
     var recoveredCoverageIssues: [CoverageIssue] { allCoverageIssues.filter(\.id.recovered) }
 
     /// Records outside text analysis by design, by content type. No retry can recover them.

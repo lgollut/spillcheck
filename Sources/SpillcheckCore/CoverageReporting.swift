@@ -29,23 +29,40 @@ public struct CoverageAuditIdentity: Hashable, Codable, Sendable {
 
 /// Historical observations remain queryable even after their exact audit finishes.
 /// A legacy event has no audit identity and cannot be settled by an unrelated successful read.
+///
+/// The store keeps one event per cause and source: a repeat of the same gap raises `count` and
+/// moves `observedAt` to the latest observation, and `firstObservedAt` keeps the earliest.
+/// Neither is part of the sealed payload; the store reads them from its own columns.
 public struct StoredCoverageGapEvent: Hashable, Codable, Sendable {
     public let id: UUID
     public let gap: CoverageGap
+    /// The latest observation.
     public let observedAt: Date
     public let audit: CoverageAuditIdentity?
     public let isIntermediateBacklog: Bool
     public let workID: UUID?
+    /// How many observations this event stands for.
+    public var count: Int = 1
+    /// The earliest observation, when it differs from `observedAt`.
+    public var firstObservedAt: Date? = nil
+
+    private enum CodingKeys: String, CodingKey { case id, gap, observedAt, audit, isIntermediateBacklog, workID }
 
     public init(id: UUID = UUID(), gap: CoverageGap, observedAt: Date,
-                audit: CoverageAuditIdentity? = nil, isIntermediateBacklog: Bool = false, workID: UUID? = nil) {
+                audit: CoverageAuditIdentity? = nil, isIntermediateBacklog: Bool = false, workID: UUID? = nil,
+                count: Int = 1, firstObservedAt: Date? = nil) {
         self.id = id
         self.gap = gap
         self.observedAt = observedAt
         self.audit = audit
         self.isIntermediateBacklog = isIntermediateBacklog
         self.workID = workID
+        self.count = max(1, count)
+        self.firstObservedAt = firstObservedAt
     }
+
+    /// The earliest observation this event stands for.
+    public var earliestObservedAt: Date { min(firstObservedAt ?? observedAt, observedAt) }
 }
 
 /// Content-free in operation, but its protected gaps still carry native recovery identifiers.
@@ -87,6 +104,19 @@ public struct CoverageReport: Sendable {
 
     public var isTruncated: Bool {
         gapEvents.isTruncated || omissions.isTruncated || history.isTruncated || work.isTruncated || successfulReads.isTruncated
+    }
+
+    /// Open gaps beyond this report's bound: unresolved omissions or gap events it could not list.
+    /// Omissions page unresolved states first, so recovered ones, work rows and successful reads
+    /// past the bound never hide an open gap.
+    public var hidesUnresolvedGaps: Bool { hiddenUnresolvedCount > 0 }
+
+    /// Records past the bound that may be open gaps: unresolved omissions by their full count,
+    /// and every gap event the page could not list.
+    public var hiddenUnresolvedCount: Int {
+        let unresolved = omissionStateCounts.filter { $0.key != .recovered }.values.reduce(0, +)
+        let listed = omissions.items.count { $0.isUnresolved }
+        return max(0, unresolved - listed) + max(0, gapEvents.totalCount - gapEvents.items.count)
     }
 
     /// Compares every returned record, count and capacity figure. The window is excluded

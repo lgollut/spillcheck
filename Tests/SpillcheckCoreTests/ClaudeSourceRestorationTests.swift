@@ -111,7 +111,8 @@ private struct ClaudeRestorationFixture {
             && $0.itemID == "prompt:healthy-while-other-unavailable:block:0" })
         let coverage = try await store.coverageReport(endingAt: time)
         #expect(!coverage.isTruncated)
-        #expect(coverage.gapEvents.items.count == 2)
+        // Repeats of one source's gap are one event with a count.
+        #expect(coverage.gapEvents.items.reduce(0) { $0 + $1.count } == 2)
         #expect(coverage.gapEvents.items.allSatisfy { $0.gap.reason == .sourceUnavailable })
         #expect(coverage.unresolvedOmissions.count == 1)
         #expect(coverage.unresolvedOmissions.first?.state == .retryable)
@@ -139,7 +140,8 @@ struct ClaudeSourceRestorationTests {
         #expect(coverage.unresolvedOmissions.isEmpty)
         #expect(coverage.omissions.items.count == 1 && coverage.omissions.items.first?.state == .recovered)
         #expect(coverage.activeGapEvents.isEmpty)
-        #expect(coverage.gapEvents.items.count == 2)
+        // Repeats of one source's gap are one event with a count.
+        #expect(coverage.gapEvents.items.reduce(0) { $0 + $1.count } == 2)
         #expect(coverage.successfulReads.items.count == successfulReads.count)
         for (after, before) in zip(coverage.successfulReads.items, successfulReads) {
             #expect(after.scope == before.scope && after.operation == before.operation
@@ -169,7 +171,8 @@ struct ClaudeSourceRestorationTests {
         #expect(coverage.unresolvedOmissions.isEmpty)
         #expect(coverage.omissions.items.count == 1 && coverage.omissions.items.first?.state == .recovered)
         #expect(coverage.activeGapEvents.isEmpty)
-        #expect(coverage.gapEvents.items.count == 2)
+        // Repeats of one source's gap are one event with a count.
+        #expect(coverage.gapEvents.items.reduce(0) { $0 + $1.count } == 2)
         #expect(try await store.queueStatistics().count == 0)
         try await store.close()
     }

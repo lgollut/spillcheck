@@ -375,6 +375,8 @@ extension AppModel {
         var resolvedAt: Date? = nil
         var retry: CoverageSourceRetryDescriptor? = nil
         var workID: UUID? = nil
+        /// Observations this one stands for: a stored event counts each repeat of its gap.
+        var count = 1
         var affectedStart: Date? {
             [gap.interval?.start, gap.recovery?.contentTime].compactMap { $0 }.min()
         }
@@ -409,7 +411,7 @@ extension AppModel {
         }.joined(separator: " · ")
     }
     var coverageNeedsAttention: Bool {
-        coverageGaps.contains { ![.queued, .reading, .excluded].contains($0.state) } || coverageReport?.isTruncated == true
+        coverageGaps.contains { ![.queued, .reading, .excluded].contains($0.state) }
     }
     /// Waiting and in-progress reads need no action, but their content is not yet analyzed.
     var coverageHasUnreadHistory: Bool {
@@ -518,9 +520,10 @@ extension AppModel {
             } else if let workID = event.workID, let work = report.work(id: workID) {
                 state = workIssueState(work)
             } else { state = .recoveryUnconfirmed }
-            return .init(gap: gap, state: state, first: event.observedAt, last: event.observedAt,
+            return .init(gap: gap, state: state, first: event.earliestObservedAt, last: event.observedAt,
                          profile: profile(gap, audit: event.audit), audit: event.audit,
-                         retry: sourceRetry(for: gap, audit: event.audit, workID: event.workID, report: report), workID: event.workID)
+                         retry: sourceRetry(for: gap, audit: event.audit, workID: event.workID, report: report), workID: event.workID,
+                         count: event.count)
         }
         observations += report.omissions.items.map { omission in
             // Capture losses have no native row locator. Their atomic ledger link identifies
@@ -692,7 +695,7 @@ extension AppModel {
                 : CoverageCause(key).text
             var row = CoverageGapRow(id: .issue(key), text: "\(scopeText)\(typeText)\(operationText): \(message)",
                 state: observation.state, firstObservedAt: group.compactMap(\.first).min(),
-                lastObservedAt: group.compactMap(\.last).max(), count: group.count,
+                lastObservedAt: group.compactMap(\.last).max(), count: group.reduce(0) { $0 + $1.count },
                 sourceLabel: [gap.operation?.label, gap.contentType?.pluralLabel].compactMap { $0 }.joined(separator: " · "),
                 retry: observation.retry, affectedStart: group.compactMap(\.affectedStart).min(),
                 affectedEnd: group.compactMap(\.affectedEnd).max())

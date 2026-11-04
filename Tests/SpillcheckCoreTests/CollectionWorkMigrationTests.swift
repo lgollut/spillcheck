@@ -91,10 +91,24 @@ struct CollectionWorkMigrationTests {
         return try database.read(body)
     }
 
+    /// The predecessor's own columns. Later migrations may add columns to these tables, which an
+    /// upgrade fills with defaults; the rows the predecessor wrote must stay exactly as they were.
+    private static let predecessorColumns: [String: [String]] = {
+        guard let database = try? DatabaseQueue(),
+              let columns = try? database.write({ db -> [String: [String]] in
+                  try db.execute(sql: predecessorSchema)
+                  return try Dictionary(uniqueKeysWithValues: legacyTables.map { table in
+                      (table, try String.fetchAll(db, sql: "SELECT name FROM pragma_table_info(?) ORDER BY cid", arguments: [table]))
+                  })
+              }) else { return [:] }
+        return columns
+    }()
+
     private func legacyRows(_ directory: URL) throws -> [String: [Row]] {
         try readDatabase(directory) { db in
             try Dictionary(uniqueKeysWithValues: Self.legacyTables.map { table in
-                (table, try Row.fetchAll(db, sql: "SELECT * FROM \(table) ORDER BY 1, 2"))
+                let columns = Self.predecessorColumns[table]?.joined(separator: ", ") ?? "*"
+                return (table, try Row.fetchAll(db, sql: "SELECT \(columns) FROM \(table) ORDER BY 1, 2"))
             })
         }
     }
@@ -111,11 +125,14 @@ struct CollectionWorkMigrationTests {
                 try db.execute(sql: "INSERT INTO grdb_migrations (identifier) VALUES (?)", arguments: [migration])
             }
             for table in Self.legacyTables {
+                // Columns added after the predecessor's schema are left out, as an old writer had none.
+                let known = Set(try String.fetchAll(db, sql: "SELECT name FROM pragma_table_info(?)", arguments: [table]))
                 for row in rows[table, default: []] {
-                    let columns = row.columnNames.joined(separator: ", ")
-                    let placeholders = Array(repeating: "?", count: row.count).joined(separator: ", ")
+                    let kept = zip(row.columnNames, row.databaseValues).filter { known.contains($0.0) }
+                    let columns = kept.map(\.0).joined(separator: ", ")
+                    let placeholders = Array(repeating: "?", count: kept.count).joined(separator: ", ")
                     try db.execute(sql: "INSERT INTO \(table) (\(columns)) VALUES (\(placeholders))",
-                        arguments: StatementArguments(row.databaseValues))
+                        arguments: StatementArguments(kept.map(\.1)))
                 }
             }
         }
@@ -217,7 +234,8 @@ struct CollectionWorkMigrationTests {
         try readDatabase(fixture.directory) { db throws -> Void in
             #expect(Set(try String.fetchAll(db, sql: "SELECT identifier FROM grdb_migrations"))
                 == Set(Self.predecessorMigrations + [Self.currentMigration, "v7-codex-hook-content-slots", "v8-certified-source-recovery",
-                    "v9-indexed-queue-maintenance", "v10-partitioned-ledger", "v11-omission-report-index"]))
+                    "v9-indexed-queue-maintenance", "v10-partitioned-ledger", "v11-omission-report-index",
+                    "v12-merged-coverage-gaps"]))
             #expect(try db.tableExists("collection_work"))
             #expect(try db.tableExists("successful_collection_reads"))
         }

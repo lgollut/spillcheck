@@ -142,7 +142,7 @@ struct CoverageView: View {
                 fact("Live reads ready", "\(collecting) of \(shownRoutes.count)")
                 fact("Processing", model.processingShort)
                 fact("Catch-up completed", model.lastCatchUp.map { DisplayTime.full($0) } ?? "Not yet")
-                fact(model.coverageReport?.isTruncated == true ? "Shown issues" : "Issues",
+                fact(model.coverageReport?.hidesUnresolvedGaps == true ? "Shown issues" : "Issues",
                      model.coverageIssues.filter { !$0.isInProgress }.count.formatted())
             }
             if let attempt = model.lastCatchUpAttempt {
@@ -309,9 +309,9 @@ struct CoverageView: View {
                         .disabled(!model.canPerformCoverageAction(.exportDiagnostics))
                         .help(DiagnosticsExport.help)
                 }.padding(.horizontal, 2)
-                if model.coverageReport?.isTruncated == true {
-                    Text("This view reached its record limit. The counts in diagnostics show the full query size; coverage remains incomplete.")
-                        .font(.system(size: 12)).foregroundStyle(Palette.amberText)
+                if let report = model.coverageReport, report.hidesUnresolvedGaps {
+                    Text("\(plural(report.hiddenUnresolvedCount, "older record")) of open gaps aren’t listed here. Diagnostics count them all.")
+                        .font(.system(size: 12)).foregroundStyle(Palette.tertiary)
                 }
                 if attention.isEmpty {
                     Text(!reading.isEmpty ? "Nothing needs action. Some content is still being read."

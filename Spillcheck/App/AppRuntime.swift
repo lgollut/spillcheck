@@ -1783,7 +1783,8 @@ final class AppRuntime {
                     if evidence.descriptor.fixtureKind == .localImage {
                         let events = try await store.coverageGapEvents(limit: 129)
                         guard !events.isTruncated else { throw NativeContentAcceptance.Failure.reportUnavailable }
-                        excludedGaps = events.items.map(\.gap)
+                        // A stored event stands for each repeat of its gap; the evidence counts every one.
+                        excludedGaps = events.items.flatMap { Array(repeating: $0.gap, count: $0.count) }
                     }
                     let state = try await evidence.report(snapshot: snapshot,
                         payloadRows: payloadRows, gaps: excludedGaps, cryptography: protection.background)

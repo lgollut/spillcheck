@@ -69,8 +69,15 @@ private struct PreparedMetadataRecovery: Sendable {
     let recoveredIDs: Set<UUID>
 }
 
+/// A sealed gap event and the keyed identity that repeats of the same gap share.
+private struct SealedGapEvent: Sendable {
+    let payload: ProtectedPayload
+    /// Nil only for events that must keep a row of their own.
+    let mergeKey: UUID?
+}
+
 private struct PreparedCoverageSettlement: Sendable {
-    var gaps: [ProtectedPayload] = []
+    var gaps: [SealedGapEvent] = []
     var omissions: [PreparedCoverageOmission] = []
     var incidents: [(id: UUID, key: UUID, encoded: Data, requiresAssessment: Bool)] = []
     var recoveredLocations: Set<UUID> = []
@@ -135,6 +142,14 @@ private enum OpenedGapEvent {
     case event(StoredCoverageGapEvent)
     /// Schema 1–3 stored the gap without its encrypted event envelope.
     case legacy(CoverageGap)
+}
+
+/// Everything that tells one gap event from another except when it was observed.
+private struct GapMergeIdentity: Encodable {
+    let gap: CoverageGap
+    let audit: CoverageAuditIdentity?
+    let isIntermediateBacklog: Bool
+    let workID: UUID?
 }
 
 private struct HealthIdentityKey: Codable {
@@ -1934,8 +1949,8 @@ public actor ProtectedStore {
             sql: "SELECT COUNT(*) FROM coverage_gaps WHERE created_at >= ? AND created_at <= ?",
             arguments: [from, through]) ?? 0
         let rows = try Row.fetchAll(db, sql: """
-            SELECT id, created_at, encoded FROM coverage_gaps WHERE created_at >= ? AND created_at <= ?
-            ORDER BY created_at DESC, id LIMIT ?
+            SELECT id, created_at, encoded, event_count, first_observed_at FROM coverage_gaps
+            WHERE created_at >= ? AND created_at <= ? ORDER BY created_at DESC, id LIMIT ?
             """, arguments: [from, through, limit])
         return (rows, count)
     }
@@ -1957,14 +1972,18 @@ public actor ProtectedStore {
                     if !closed { openedGapEvents.keep(opened, for: id, encoded: encoded) }
                 }
                 let observed = Date(timeIntervalSince1970: row["created_at"])
+                let count = max(1, row["event_count"] as Int? ?? 1)
+                let first = (row["first_observed_at"] as Double?).map(Date.init(timeIntervalSince1970:))
                 switch opened {
-                case .event(let event):
+                case .event(var event):
                     guard event.id == id, abs(event.observedAt.timeIntervalSince(observed)) < 0.001 else {
                         throw StorageError.corruptProtectedState
                     }
+                    event.count = count
+                    event.firstObservedAt = first
                     events.append(event)
                 case .legacy(let gap):
-                    events.append(StoredCoverageGapEvent(id: id, gap: gap, observedAt: observed))
+                    events.append(StoredCoverageGapEvent(id: id, gap: gap, observedAt: observed, count: count, firstObservedAt: first))
                 }
             } catch let error as StorageError { throw error }
             catch { throw StorageError.protectionUnavailable }
@@ -2941,22 +2960,112 @@ public actor ProtectedStore {
     }
 
     private func sealedGap(_ gap: CoverageGap, at time: Date, audit: CoverageAuditIdentity? = nil,
-                           isIntermediateBacklog: Bool = false, workID: UUID? = nil) async throws -> ProtectedPayload {
+                           isIntermediateBacklog: Bool = false, workID: UUID? = nil) async throws -> SealedGapEvent {
         let id = UUID()
+        let event = StoredCoverageGapEvent(id: id, gap: gap, observedAt: time,
+            audit: audit, isIntermediateBacklog: isIntermediateBacklog, workID: workID)
+        let payload: ProtectedPayload
         do {
-            return try await cryptography.sealBackground(
-                JSONEncoder().encode(StoredCoverageGapEvent(id: id, gap: gap, observedAt: time,
-                    audit: audit, isIntermediateBacklog: isIntermediateBacklog, workID: workID)),
-                binding: PayloadBinding(reference: ProtectedPayloadReference(id: id), ownerID: id, kind: .sourceCheckpoint)
-            )
+            payload = try await cryptography.sealBackground(JSONEncoder().encode(event),
+                binding: PayloadBinding(reference: ProtectedPayloadReference(id: id), ownerID: id, kind: .sourceCheckpoint))
         } catch { throw StorageError.protectionUnavailable }
+        return SealedGapEvent(payload: payload, mergeKey: try await gapMergeKey(event))
+    }
+
+    /// Repeats of one gap share this key: the same cause, source and audit, whenever they were
+    /// observed. A located gap names its source itself; an unlocated one is told apart by the work
+    /// that recorded it, since each work row reads its own source.
+    private func gapMergeKey(_ event: StoredCoverageGapEvent) async throws -> UUID {
+        let gap = event.gap
+        let identity = GapMergeIdentity(
+            gap: CoverageGap(reason: gap.reason, capabilityID: gap.capabilityID, interval: gap.interval,
+                scope: gap.scope, contentType: gap.contentType, operation: gap.operation, recovery: gap.recovery,
+                isRequiredFormatFailure: gap.isRequiredFormatFailure, sourceKind: gap.sourceKind,
+                diagnosticCode: gap.diagnosticCode, excludedContent: gap.excludedContent),
+            audit: event.audit, isIntermediateBacklog: event.isIntermediateBacklog,
+            workID: gap.recovery == nil ? event.workID : nil)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return try await structuralID(Data("coverage-gap-event-v1".utf8) + encoder.encode(identity))
     }
 
     private func recordGap(_ gap: CoverageGap, at time: Date) async throws {
-        let payload = try await sealedGap(gap, at: time)
+        let sealed = try await sealedGap(gap, at: time)
         guard !closed else { throw StorageError.databaseUnavailable }
-        do { try Self.write(database) { db in try Self.insertGap(payload, at: time, in: db) } }
+        do { try Self.write(database) { db in try Self.insertGap(sealed, at: time, in: db) } }
         catch { throw StorageError.databaseUnavailable }
+    }
+
+    /// Folds gap events written before repeats were merged, `limit` rows at a time, oldest first.
+    /// Returns how many old rows it examined, so zero means none are left. Each pass commits on
+    /// its own and leaves every row readable, so it can stop between passes.
+    @discardableResult
+    public func compactLegacyCoverageGaps(limit: Int = 2000) async throws -> Int {
+        guard !closed else { throw StorageError.databaseUnavailable }
+        guard limit > 0, limit <= 10_000 else { throw StorageError.invalidPayload }
+        let rows: [Row]
+        do {
+            rows = try Self.read(database) { db in
+                try Row.fetchAll(db, sql: """
+                    SELECT id, created_at, encoded FROM coverage_gaps INDEXED BY coverage_gaps_unmerged
+                    WHERE merge_key IS NULL ORDER BY created_at, id LIMIT ?
+                    """, arguments: [limit])
+            }
+        } catch { throw StorageError.databaseUnavailable }
+        guard !rows.isEmpty else { return 0 }
+        struct Group { var ids: [String] = []; var latest: (id: String, time: Double, encoded: Data)?; var first = Double.infinity }
+        var groups: [UUID: Group] = [:]
+        for row in rows {
+            let id: String = row["id"], time: Double = row["created_at"], encoded: Data = row["encoded"]
+            guard var key = UUID(uuidString: id) else { throw StorageError.corruptProtectedState }
+            // Gaps stored without an event envelope, such as the notification budget's, keep their
+            // own row: one of them is found again by its id. So does a row that does not open.
+            if let bytes = try? await cryptography.openBackground(Self.decode(encoded), binding: Self.checkpointBinding(key)),
+               let event = try? JSONDecoder().decode(StoredCoverageGapEvent.self, from: bytes), event.id == key {
+                key = try await gapMergeKey(event)
+            }
+            var group = groups[key] ?? Group()
+            group.ids.append(id)
+            group.first = min(group.first, time)
+            if group.latest.map({ time > $0.time || (time == $0.time && id > $0.id) }) ?? true {
+                group.latest = (id, time, encoded)
+            }
+            groups[key] = group
+        }
+        guard !closed else { throw StorageError.databaseUnavailable }
+        do {
+            try Self.write(database) { db in
+                for (key, group) in groups {
+                    guard let latest = group.latest else { continue }
+                    let others = group.ids.filter { $0 != latest.id }
+                    for id in others {
+                        try db.executeCached(sql: "DELETE FROM coverage_gaps WHERE id = ? AND merge_key IS NULL", arguments: [id])
+                    }
+                    let folded = others.count + 1
+                    if let existing = try Row.fetchOne(db, sql: """
+                        SELECT id, created_at, event_count, first_observed_at FROM coverage_gaps WHERE merge_key = ?
+                        """, arguments: [key.uuidString]) {
+                        let existingTime: Double = existing["created_at"]
+                        let existingFirst: Double = existing["first_observed_at"] ?? existingTime
+                        try db.execute(sql: "DELETE FROM coverage_gaps WHERE id = ? AND merge_key IS NULL", arguments: [latest.id])
+                        try db.execute(sql: "UPDATE coverage_gaps SET event_count = event_count + ?, first_observed_at = ? WHERE merge_key = ?",
+                                       arguments: [folded, min(existingFirst, group.first), key.uuidString])
+                        // The newest observation's sealed event becomes the row's, with its id and time.
+                        if latest.time > existingTime {
+                            try db.execute(sql: "UPDATE coverage_gaps SET id = ?, created_at = ?, encoded = ? WHERE merge_key = ?",
+                                           arguments: [latest.id, latest.time, latest.encoded, key.uuidString])
+                        }
+                    } else {
+                        try db.execute(sql: """
+                            UPDATE coverage_gaps SET merge_key = ?, event_count = ?, first_observed_at = ?
+                            WHERE id = ? AND merge_key IS NULL
+                            """, arguments: [key.uuidString, folded, group.first, latest.id])
+                    }
+                }
+            }
+        } catch let error as StorageError { throw error }
+        catch { throw StorageError.databaseUnavailable }
+        return rows.count
     }
 
     /// The bound is a durable coverage limitation, not a new gap on each notification poll.
@@ -3023,9 +3132,25 @@ public actor ProtectedStore {
                        arguments: [id.uuidString, Date().timeIntervalSince1970])
         try db.execute(sql: "DELETE FROM captures WHERE id = ?", arguments: [id.uuidString])
     }
-    private static func insertGap(_ payload: ProtectedPayload, at time: Date, in db: Database) throws {
-        try db.executeCached(sql: "INSERT INTO coverage_gaps (id, created_at, encoded) VALUES (?, ?, ?)",
-                       arguments: [payload.binding.reference.id.uuidString, time.timeIntervalSince1970, try payload.encoded()])
+    /// A repeat of a stored gap raises its count and, when it is the newer observation, becomes the
+    /// row's sealed event. The row's id is always its newest event's id, as decoding checks.
+    private static func insertGap(_ sealed: SealedGapEvent, at time: Date, in db: Database) throws {
+        let id = sealed.payload.binding.reference.id.uuidString, encoded = try sealed.payload.encoded()
+        guard let key = sealed.mergeKey else {
+            try db.executeCached(sql: "INSERT INTO coverage_gaps (id, created_at, encoded) VALUES (?, ?, ?)",
+                                 arguments: [id, time.timeIntervalSince1970, encoded])
+            return
+        }
+        try db.executeCached(sql: """
+            INSERT INTO coverage_gaps (id, created_at, encoded, merge_key, event_count, first_observed_at)
+            VALUES (?, ?, ?, ?, 1, ?)
+            ON CONFLICT (merge_key) WHERE merge_key IS NOT NULL DO UPDATE SET
+                event_count = coverage_gaps.event_count + 1,
+                first_observed_at = MIN(COALESCE(coverage_gaps.first_observed_at, coverage_gaps.created_at), excluded.created_at),
+                id = CASE WHEN excluded.created_at >= coverage_gaps.created_at THEN excluded.id ELSE coverage_gaps.id END,
+                encoded = CASE WHEN excluded.created_at >= coverage_gaps.created_at THEN excluded.encoded ELSE coverage_gaps.encoded END,
+                created_at = MAX(coverage_gaps.created_at, excluded.created_at)
+            """, arguments: [id, time.timeIntervalSince1970, encoded, key.uuidString, time.timeIntervalSince1970])
     }
     private static func requiredPayloads(in snapshot: InventorySnapshot) throws -> [ProtectedPayloadReference: ProtectedPayloadKind] {
         var references: [ProtectedPayloadReference: ProtectedPayloadKind] = [:]
@@ -3217,6 +3342,18 @@ public actor ProtectedStore {
             // newest ones and test their window without reading the encrypted rows.
             try db.execute(sql: """
                 CREATE INDEX coverage_omissions_report ON coverage_omissions (state, created_at DESC, id, content_at)
+                """)
+        }
+        migrator.registerMigration("v12-merged-coverage-gaps") { db in
+            // One row per cause and source instead of one per observation. The key is a keyed
+            // structural identifier like an omission's location; counts and times are not content.
+            // Older rows have no key until `compactLegacyCoverageGaps` folds them.
+            try db.execute(sql: """
+                ALTER TABLE coverage_gaps ADD COLUMN merge_key TEXT;
+                ALTER TABLE coverage_gaps ADD COLUMN event_count INTEGER NOT NULL DEFAULT 1;
+                ALTER TABLE coverage_gaps ADD COLUMN first_observed_at REAL;
+                CREATE UNIQUE INDEX coverage_gaps_merge ON coverage_gaps (merge_key) WHERE merge_key IS NOT NULL;
+                CREATE INDEX coverage_gaps_unmerged ON coverage_gaps (created_at, id) WHERE merge_key IS NULL;
                 """)
         }
         try migrator.migrate(database)

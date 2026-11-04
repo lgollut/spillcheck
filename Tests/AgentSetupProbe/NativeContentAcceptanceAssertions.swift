@@ -175,7 +175,7 @@ func nativeContentAcceptanceAssertions() async throws -> [String] {
     _ = try await store.commit(analysis, payloads: [], permit: permit)
     for gap in parsed.coverageGaps { try await store.recordCoverageGap(gap) }
     func storedGaps(_ store: ProtectedStore) async throws -> [CoverageGap] {
-        try await store.coverageGapEvents(limit: 129).items.map(\.gap)
+        try await store.coverageGapEvents(limit: 129).items.flatMap { Array(repeating: $0.gap, count: $0.count) }
     }
     let committed = try await selected.report(snapshot: await store.snapshot(), payloadRows: 0, gaps: storedGaps(store), cryptography: crypto)
     try check(committed.allObservedTargetSourcesCommitted && committed.cleanInventory && committed.targetSegmentCount == descriptor.segments.count

@@ -56,6 +56,7 @@ public actor DetectionPipeline {
     private var liveTimeOwed: Duration = .zero
     private var liveClaimsSinceHistory = 0
     private var lastCompaction = Date.distantPast
+    private var legacyGapsRemain = true
     private var failureObserver: (@Sendable (PipelineFailureDiagnostic) async -> Void)?
     private var captureCompletionObserver: (@Sendable (UUID) async -> Void)?
     private var failureStage: PipelineFailureStage = .openCapture
@@ -112,6 +113,11 @@ public actor DetectionPipeline {
 
     /// Compaction runs only while this single worker is idle, so it never races a source commit.
     private func compactIfDue(at now: Date = Date()) async {
+        // Gap rows from builds that stored every repeat fold a bounded pass at a time, until none is left.
+        if legacyGapsRemain {
+            do { legacyGapsRemain = try await store.compactLegacyCoverageGaps() > 0 }
+            catch { /* Retried at the next idle pass. */ }
+        }
         guard now.timeIntervalSince(lastCompaction) >= 60 * 60 else { return }
         lastCompaction = now
         // A failed pass leaves the ledger unchanged and is retried at the next interval.

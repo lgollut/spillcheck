@@ -145,6 +145,8 @@ public actor CodexAppServerHistoryClient: CodexHistoryReading {
     public private(set) var observedReaderVersion: String?
     @_spi(Testing) public private(set) var lastShutdownCompletedWithinDeadline: Bool?
     private var usableMethods: Set<String> = []
+    /// Methods that read one thread. An error reply to one of them describes that thread only.
+    private static let threadBoundMethods: Set<String> = ["thread/read", "thread/items/list", "thread/turns/list"]
     private var methodFailures: [String: CompatibilityFailureReason] = [:]
     private var executableFingerprint: ExecutableFingerprint?
     fileprivate struct ExecutableFingerprint: Equatable {
@@ -282,6 +284,13 @@ public actor CodexAppServerHistoryClient: CodexHistoryReading {
             switch error {
             case CodexHistoryError.remoteFailure, CodexHistoryError.missingMethod, CodexHistoryError.rejectedParameters: break
             default: close()
+            }
+            // An error reply to a thread's read is about that thread, such as one Codex no longer has.
+            // Once the method has worked, it keeps working for the other threads: the failing thread
+            // reports its own gap, and the profile's live reads and catch-up stay available.
+            if case CodexHistoryError.remoteFailure = error, Self.threadBoundMethods.contains(method),
+               usableMethods.contains(method) {
+                throw error
             }
             // A prior successful call is no longer evidence that this method is currently usable.
             // Only a fresh validated response may restore it and settle an operation incident.

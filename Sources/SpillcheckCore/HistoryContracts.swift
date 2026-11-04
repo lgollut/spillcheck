@@ -64,16 +64,28 @@ public struct StoredHistoricalProgress: Codable, Equatable, Sendable {
     /// Set only when the reader exhausted its work without terminal unread content.
     public let completedAt: Date?
     public let continuationQueued: Bool?
+    /// Whether this audit rereads one source for a retry rather than the whole profile.
+    /// Nil on records written before this was kept.
+    public let sourceRecovery: Bool?
+    /// When a newer catch-up of the same profile took over this one's unread content. Its own
+    /// queued reads stopped then; the newer audit reads the same files from their saved positions.
+    public let supersededAt: Date?
 
     public init(provider: AgentProvider, profileID: String, progress: HistoricalReadProgress,
-                lastAttemptedAt: Date? = nil, completedAt: Date? = nil, continuationQueued: Bool? = nil) {
+                lastAttemptedAt: Date? = nil, completedAt: Date? = nil, continuationQueued: Bool? = nil,
+                sourceRecovery: Bool? = nil, supersededAt: Date? = nil) {
         self.provider = provider
         self.profileID = profileID
         self.progress = progress
         self.lastAttemptedAt = lastAttemptedAt
         self.completedAt = completedAt
         self.continuationQueued = continuationQueued
+        self.sourceRecovery = sourceRecovery
+        self.supersededAt = supersededAt
     }
+
+    /// A profile catch-up that read everything in its window.
+    public var completedProfileAudit: Bool { completedAt != nil && sourceRecovery == false && supersededAt == nil }
 }
 
 /// The initial request and all continuation cursors contain structural selection only.

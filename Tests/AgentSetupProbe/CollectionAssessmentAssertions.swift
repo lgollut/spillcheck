@@ -70,6 +70,10 @@ func collectionAssessmentAssertions() throws -> [String] {
         try require(limitedHost?.status == .partial && limitedHost?.summary != healthyHost?.summary
             && limitedHost?.summary == "Partial coverage · Live reads available · Catch-up available · Host not identified",
             "partial-coverage-summary-identical-to-healthy-route-\(provider.rawValue)")
+        // The row says only whether reads work; the gap is under Gaps and the shared profile is a stated limit.
+        try require(limitedHost?.operationsSummary == "Live reads available · Catch-up available"
+            && limitedHost?.hasFailingOperation == false,
+            "route-row-repeats-gaps-or-stated-limits-\(provider.rawValue)")
 
         // A refresh observes the commit. No new batch or executable assessment follows it.
         model.coverageReport = try report(state: .recovered)

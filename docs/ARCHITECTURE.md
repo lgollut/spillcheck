@@ -53,7 +53,8 @@ macOS 14 are the baseline. The shipping build targets Apple Silicon.
    values and context requires a separate authenticated workflow.
 
 History catch-up is limited to seven days of eligible content, with bounded
-discovery and persisted continuations. It does not expire retained inventory.
+discovery and persisted continuations. Each profile has one catch-up at a time
+([ADR 0014](adr/0014-one-catch-up-per-profile.md)). It does not expire retained inventory.
 See [session reader guidance](SESSION_READER_REUSE.md) for framing, replay and
 checkpoint rules. Missing content, capacity limits and scanner failures remain
 visible through coverage reporting.

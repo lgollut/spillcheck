@@ -67,6 +67,11 @@ private final class CaptureClient {
 
 private struct PrivateAdmissionFailure: Error, Sendable { let detail: String }
 
+private actor MetadataRecorder {
+    var values: [CaptureMetadata] = []
+    func record(_ metadata: CaptureMetadata) { values.append(metadata) }
+}
+
 @Suite("App-owned capture transport", .serialized)
 struct CaptureTransportTests {
     private func directory() throws -> URL {
@@ -205,6 +210,7 @@ struct CaptureTransportTests {
         // A successful second client with capacity one proves the disconnected handler
         // finished its ACK attempt and released its slot. Calling stop immediately after
         // release could instead cancel it before ACK and produce a false passing test.
+        // A probe that arrives while the slot is busy waits for it, so none is refused.
         let sentinelPacket = try CapturePacket(metadata: CaptureMetadata(agent: .codex),
             eventJSON: Data("{\"text\":\"SYNTHETIC_COMPLETION_SENTINEL\"}".utf8))
         var acknowledged = false
@@ -259,6 +265,70 @@ struct CaptureTransportTests {
         #expect(client.acknowledgement() == 0)
         #expect(await recorder.packets.isEmpty)
         await server.stop()
+    }
+
+    @Test func connectionsPastTheLimitWaitInsteadOfBeingDropped() async throws {
+        // Parallel agents fire hooks at once. Closing the extra connections dropped their content
+        // and recorded a queue-limit gap for each, although nothing was full but the client slots.
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let recorder = CaptureRecorder()
+        await recorder.configure(hold: true)
+        let server = LocalCaptureServer(maximumClients: 1)
+        let url = root.appendingPathComponent("capture.sock")
+        try await start(server, recorder, at: url)
+        let first = try CaptureClient(path: url.path)
+        let firstPacket = try CapturePacket(metadata: CaptureMetadata(agent: .claudeCode), eventJSON: Data("{\"n\":1}".utf8))
+        first.send(firstPacket.body)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while await recorder.packets.isEmpty, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        // The waiting client's frame is written while the only slot is busy; a helper that has
+        // given up by the time it is accepted still has its frame read and admitted.
+        let waiting = try CaptureClient(path: url.path)
+        let waitingPacket = try CapturePacket(metadata: CaptureMetadata(agent: .claudeCode), eventJSON: Data("{\"n\":2}".utf8))
+        waiting.send(waitingPacket.body)
+        #expect(!waiting.ready(milliseconds: 100))
+        #expect(await recorder.packets.count == 1)
+        await recorder.configure(hold: false)
+        await recorder.release()
+        #expect(first.acknowledgement() == 1)
+        #expect(waiting.acknowledgement() == 1)
+        await server.stop()
+        #expect(await recorder.packets.map(\.body) == [firstPacket.body, waitingPacket.body])
+        #expect(await recorder.gaps.isEmpty)
+    }
+
+    @Test func aRefusedDecodedCaptureIsReportedWithItsAgent() async throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let recorder = CaptureRecorder()
+        let named = MetadataRecorder()
+        let server = LocalCaptureServer()
+        let url = root.appendingPathComponent("capture.sock")
+        try await server.start(at: url, accepting: { true }, onCapture: { _ in throw StorageError.stateChanged },
+            onGap: { await recorder.gap($0) }, onRejection: { await recorder.rejection($0) },
+            onRejectedPacket: { await named.record($0) })
+        let metadata = try CaptureMetadata(agent: .codex, interface: .t3, profileID: "work")
+        let client = try CaptureClient(path: url.path)
+        client.send(try CapturePacket(metadata: metadata, eventJSON: Data("{}".utf8)).body)
+        #expect(client.acknowledgement() == 0)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while await named.values.isEmpty, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(await named.values == [metadata])
+        // A frame that never decodes has no agent and still reaches the unattributed gap.
+        let malformed = try CaptureClient(path: url.path)
+        malformed.send(Data([0, 0, 0, 1, 0x7b]))
+        #expect(malformed.acknowledgement() == 0)
+        while await recorder.gaps.isEmpty, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        await server.stop()
+        #expect(await recorder.gaps == [.captureRejected])
+        #expect(await named.values == [metadata])
     }
 
     @Test func disconnectedPeerDoesNotHideFailedAdmission() async throws {

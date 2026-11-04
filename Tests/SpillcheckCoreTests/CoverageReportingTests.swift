@@ -312,7 +312,9 @@ struct CoverageReportingTests {
             try await finishPass(store, audit: audit, page: page, continues: true, unread: true,
                 gaps: [.init(reason: .budgetExhausted)], at: time)
             let report = try await store.coverageReport(endingAt: time)
-            #expect(report.activeGapEvents.count == page + 1)
+            // Each pass's backlog repeats one gap of the same audit and work, stored once with a count.
+            #expect(report.activeGapEvents.count == 1)
+            #expect(report.activeGapEvents.first?.count == page + 1)
             #expect(report.history.items.first?.completedAt == nil)
             #expect(report.queue.historicalCount == 1)
             #expect(report.oldestPendingCaptureAt == time)
@@ -323,7 +325,8 @@ struct CoverageReportingTests {
         let finishedAt = now.addingTimeInterval(30)
         try await finishPass(reopened, audit: audit, page: 3, continues: false, unread: false, gaps: [], at: finishedAt)
         let report = try await reopened.coverageReport(endingAt: finishedAt)
-        #expect(report.gapEvents.totalCount == 3)
+        #expect(report.gapEvents.totalCount == 1)
+        #expect(report.gapEvents.items.first?.count == 3)
         #expect(report.gapEvents.items.allSatisfy { $0.audit?.auditID == audit.id && $0.audit?.profileID == profile })
         #expect(report.activeGapEvents.isEmpty)
         #expect(report.history.items.first?.completedAt == finishedAt)
@@ -376,7 +379,8 @@ struct CoverageReportingTests {
         let window = AnalyzedActivity.recentWindow(endingAt: now, calendar: calendar)
         for time in [window.start.addingTimeInterval(-1), window.start, now.addingTimeInterval(-2 * 86_400), now,
                      now.addingTimeInterval(1)] {
-            try await store.recordCoverageGap(.init(reason: .deliveryUncertain), at: time)
+            // Distinct capabilities keep these apart; repeats of one gap would be stored once.
+            try await store.recordCoverageGap(.init(reason: .deliveryUncertain, capabilityID: UUID()), at: time)
         }
         let scope = CollectionScope(provider: .codex, profileID: profile, interface: .standaloneCLI, path: .publicHistory)
         let session = try SessionIdentity(provider: .codex, profileID: profile, sessionID: "synthetic-private-session")

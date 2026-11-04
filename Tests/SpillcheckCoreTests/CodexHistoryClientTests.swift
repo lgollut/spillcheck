@@ -149,6 +149,36 @@ struct CodexHistoryClientTests {
         #expect(await client.assessment(scope: scope).failures.isEmpty)
         await client.close()
     }
+    @Test func oneThreadsErrorReplyKeepsTheProfilesReadsAvailable() async throws {
+        // A thread Codex no longer has answers with an error. Revoking the method for it marked live
+        // reads and catch-up unavailable for every thread of the profile until another read worked.
+        let (client, directory) = try fixture("normal")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let scope = CollectionScope(provider: .codex, profileID: "synthetic", interface: .standaloneCLI, path: .publicHistory)
+        let mode = directory.appendingPathComponent("work/mode")
+        // Before any read has worked, an error reply is all there is to go on and still counts.
+        try Data("remote".utf8).write(to: mode)
+        await #expect(throws: CodexHistoryError.remoteFailure(code: -32001)) { try await client.readThread("synthetic") }
+        #expect(await client.assessment(scope: scope).failures == [.init(reason: .sourceUnavailable, operation: .liveRead)])
+        try Data("normal".utf8).write(to: mode)
+        _ = try await client.readThread("synthetic")
+        _ = try await client.listItems(threadID: "synthetic", cursor: nil)
+        _ = try await client.listThreads(cursor: nil)
+        #expect(await client.assessment(scope: scope).usableOperations == [.liveRead, .historicalRead])
+        #expect(await client.assessment(scope: scope).failures.isEmpty)
+        try Data("remote".utf8).write(to: mode)
+        await #expect(throws: CodexHistoryError.remoteFailure(code: -32001)) { try await client.readThread("synthetic") }
+        await #expect(throws: CodexHistoryError.remoteFailure(code: -32001)) {
+            try await client.listItems(threadID: "synthetic", cursor: nil)
+        }
+        #expect(await client.assessment(scope: scope).usableOperations == [.liveRead, .historicalRead])
+        #expect(await client.assessment(scope: scope).failures.isEmpty)
+        // Discovery is not about one thread, so its error reply still affects catch-up.
+        await #expect(throws: CodexHistoryError.remoteFailure(code: -32001)) { try await client.listThreads(cursor: nil) }
+        #expect(await client.assessment(scope: scope).usableOperations == [.liveRead])
+        #expect(await client.assessment(scope: scope).failures == [.init(reason: .sourceUnavailable, operation: .historicalRead)])
+        await client.close()
+    }
     @Test func missingTurnTimestampFallbackIsPartialForBothOperationsUntilRestored() async throws {
         let (client, directory) = try fixture("normal")
         defer { try? FileManager.default.removeItem(at: directory) }

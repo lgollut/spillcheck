@@ -178,6 +178,9 @@ func coveragePresentationAssertions() throws -> [String] {
     if case .some(.exportDiagnostics) = model.coverageGaps.first?.action {} else {
         throw CoverageAssertionFailure.failed("encrypted-input-offered-ineffective-reread")
     }
+    // Still missing and still partial, but listed with the stated limits rather than as a gap to act on.
+    try require(!model.coverageIssues.contains(where: \.isStatedLimit) && model.statedLimitIssues.count == 1
+        && model.autoRetryCandidates.isEmpty, "encrypted-input-listed-as-actionable-gap")
     let encryptedDiagnostics = try CoverageDiagnostics(model: model, report: model.coverageReport!, at: now).encoded()
     try require(String(decoding: encryptedDiagnostics, as: UTF8.self).contains("encryptedContentUnavailable"),
         "encrypted-input-diagnostic-code-lost")
@@ -470,6 +473,11 @@ func coveragePresentationAssertions() throws -> [String] {
                     state: .queued, admittedAt: now)])
     let attention = grouped.coverageIssues.filter { !$0.isInProgress }
     let unsupported = attention.first { $0.id.cause == .reason(.unsupportedContent) }
+    // Nearly every unread gap is unconfirmed; the short state names only what tells issues apart.
+    try require(attention.allSatisfy { $0.shortStateText?.contains("Recovery not confirmed") != true }
+        && attention.allSatisfy { $0.isRecent(since: now.addingTimeInterval(-60)) }
+        && !attention.contains { $0.isRecent(since: now.addingTimeInterval(60)) },
+        "coverage-issue-row-repeats-unconfirmed-state-or-misplaces-recency")
     try require(attention.count == 2 && grouped.coverageGaps.count > attention.count
         && attention.contains { $0.id.cause == .reason(.unresolvedCorrelation) && $0.sourceCount == 1 },
         "coverage-issues-split-a-cause-by-source-or-attempt")

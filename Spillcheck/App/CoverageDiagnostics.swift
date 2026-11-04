@@ -208,6 +208,8 @@ struct CoverageDiagnostics: Encodable {
         let affectedStart: Date?
         let affectedEnd: Date?
         let exactSourceRetryAvailable: Bool
+        /// Observations this record stands for. Repeats of one gap are stored once.
+        let count: Int
 
         @MainActor init(_ observation: AppModel.CoverageObservation, aliases: inout Aliases) {
             let gap = observation.gap
@@ -226,6 +228,7 @@ struct CoverageDiagnostics: Encodable {
             resolvedAt = observation.resolvedAt
             affectedStart = observation.affectedStart; affectedEnd = observation.affectedEnd
             exactSourceRetryAvailable = observation.retry != nil
+            count = observation.count
         }
     }
     struct Audit: Encodable {

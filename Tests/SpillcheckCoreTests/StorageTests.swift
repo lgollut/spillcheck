@@ -441,6 +441,26 @@ struct StorageTests {
         try await recovered.close()
     }
 
+    @Test func aRefusedCaptureNamesItsRouteInTheQueueLimitGap() async throws {
+        // Without the route the gap read "Collection: …", so it could not say which agent lost content.
+        let directory = temporaryStoreDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let limits = StoreLimits(maxEventBytes: 4096, maxQueueBytes: 1, maxQueueAge: 10, maxRetryCount: 1)
+        let store = try await ProtectedStore.open(at: directory, cryptography: try BackgroundCryptography.ephemeralForTesting(), limits: limits)
+        let permit = try #require(await store.processingPermit())
+        let scope = CollectionScope(provider: .claudeCode, profileID: "default", interface: .t3, path: .versionedTranscript)
+        let packet = try CapturePacket(metadata: .init(agent: .claudeCode, interface: .t3, profileID: "default"),
+            eventJSON: Data("{}".utf8))
+        await #expect(throws: StorageError.queueSaturated) {
+            try await store.enqueue(packet.body, capturedAt: .now, permit: permit,
+                workContext: CollectionWorkContext(scope: scope, operation: .liveRead, trigger: .helperDelivery))
+        }
+        let saturated = try await store.coverageGaps().filter { $0.reason == .queueSaturated }
+        #expect(saturated.map(\.scope) == [scope])
+        #expect(saturated.first?.operation == .liveRead)
+        try await store.close()
+    }
+
     @Test func queueBoundsExpiryAndBoundedRetryCreateVisibleGaps() async throws {
         let directory = temporaryStoreDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

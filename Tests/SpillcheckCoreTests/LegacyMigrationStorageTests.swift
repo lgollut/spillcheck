@@ -16,7 +16,7 @@ struct LegacyMigrationStorageTests {
         let revision = await store.stateRevision()
         let before = try await store.legacyMigrationRowsForTesting()
         let after = try await store.legacyMigrationRowsForTesting()
-        #expect(before.migrations.count == 11 && before.migrations.contains("v11-omission-report-index")
+        #expect(before.migrations.count == 12 && before.migrations.contains("v12-merged-coverage-gaps")
             && before.migrations.contains("v10-partitioned-ledger") && before.migrations.contains("v9-indexed-queue-maintenance"))
         let afterRevision = await store.stateRevision()
         #expect(before.rows == after.rows && afterRevision == revision)

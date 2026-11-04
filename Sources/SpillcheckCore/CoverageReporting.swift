@@ -29,23 +29,40 @@ public struct CoverageAuditIdentity: Hashable, Codable, Sendable {
 
 /// Historical observations remain queryable even after their exact audit finishes.
 /// A legacy event has no audit identity and cannot be settled by an unrelated successful read.
+///
+/// The store keeps one event per cause and source: a repeat of the same gap raises `count` and
+/// moves `observedAt` to the latest observation, and `firstObservedAt` keeps the earliest.
+/// Neither is part of the sealed payload; the store reads them from its own columns.
 public struct StoredCoverageGapEvent: Hashable, Codable, Sendable {
     public let id: UUID
     public let gap: CoverageGap
+    /// The latest observation.
     public let observedAt: Date
     public let audit: CoverageAuditIdentity?
     public let isIntermediateBacklog: Bool
     public let workID: UUID?
+    /// How many observations this event stands for.
+    public var count: Int = 1
+    /// The earliest observation, when it differs from `observedAt`.
+    public var firstObservedAt: Date? = nil
+
+    private enum CodingKeys: String, CodingKey { case id, gap, observedAt, audit, isIntermediateBacklog, workID }
 
     public init(id: UUID = UUID(), gap: CoverageGap, observedAt: Date,
-                audit: CoverageAuditIdentity? = nil, isIntermediateBacklog: Bool = false, workID: UUID? = nil) {
+                audit: CoverageAuditIdentity? = nil, isIntermediateBacklog: Bool = false, workID: UUID? = nil,
+                count: Int = 1, firstObservedAt: Date? = nil) {
         self.id = id
         self.gap = gap
         self.observedAt = observedAt
         self.audit = audit
         self.isIntermediateBacklog = isIntermediateBacklog
         self.workID = workID
+        self.count = max(1, count)
+        self.firstObservedAt = firstObservedAt
     }
+
+    /// The earliest observation this event stands for.
+    public var earliestObservedAt: Date { min(firstObservedAt ?? observedAt, observedAt) }
 }
 
 /// Content-free in operation, but its protected gaps still carry native recovery identifiers.
@@ -87,6 +104,19 @@ public struct CoverageReport: Sendable {
 
     public var isTruncated: Bool {
         gapEvents.isTruncated || omissions.isTruncated || history.isTruncated || work.isTruncated || successfulReads.isTruncated
+    }
+
+    /// Open gaps beyond this report's bound: unresolved omissions or gap events it could not list.
+    /// Omissions page unresolved states first, so recovered ones, work rows and successful reads
+    /// past the bound never hide an open gap.
+    public var hidesUnresolvedGaps: Bool { hiddenUnresolvedCount > 0 }
+
+    /// Records past the bound that may be open gaps: unresolved omissions by their full count,
+    /// and every gap event the page could not list.
+    public var hiddenUnresolvedCount: Int {
+        let unresolved = omissionStateCounts.filter { $0.key != .recovered }.values.reduce(0, +)
+        let listed = omissions.items.count { $0.isUnresolved }
+        return max(0, unresolved - listed) + max(0, gapEvents.totalCount - gapEvents.items.count)
     }
 
     /// Compares every returned record, count and capacity figure. The window is excluded
@@ -167,8 +197,11 @@ public struct CoverageReport: Sendable {
     }
 
     public func hasRecoveredBacklog(_ event: StoredCoverageGapEvent) -> Bool {
-        guard event.isIntermediateBacklog, event.gap.reason == .budgetExhausted,
-              event.gap.recovery == nil, let audit = event.audit else { return false }
+        guard event.gap.reason == .budgetExhausted, event.gap.recovery == nil, let audit = event.audit else { return false }
+        // A later catch-up of the whole profile read everything up to its own end, which covers
+        // this audit's window within the seven days still analyzed. Its stopped pages don't matter.
+        if let covered = lookup.coveredByLaterAudit[audit], covered >= event.observedAt { return true }
+        guard event.isIntermediateBacklog else { return false }
         // Only completed or recovered work is pruned, so an event whose work row is gone settled
         // with it. A truncated page may hide unsettled work of the audit, so it settles nothing.
         if event.workID != nil {
@@ -176,6 +209,13 @@ public struct CoverageReport: Sendable {
         }
         return lookup.latestSettledHistory[audit].map { $0 >= event.observedAt } == true
     }
+
+    /// A profile catch-up that a newer one took over before it finished. Its unread content is the
+    /// newer audit's to read, so it is not reported again under this audit.
+    public func isSupersededAudit(_ audit: CoverageAuditIdentity) -> Bool { lookup.supersededAudits.contains(audit) }
+
+    /// Whether a later, completed catch-up of the whole profile covers this audit's window.
+    public func isCoveredByLaterAudit(_ audit: CoverageAuditIdentity) -> Bool { lookup.coveredByLaterAudit[audit] != nil }
 
     /// Presentation joins every event and omission against work and history on each refresh.
     /// Indexes into the report's own arrays keep those joins linear in the report size.
@@ -226,6 +266,9 @@ public struct CoverageReport: Sendable {
         var auditsWithUnsettledWork: Set<CoverageAuditIdentity> = []
         /// Latest completion of each audit that finished without unread content or a queued continuation.
         var latestSettledHistory: [CoverageAuditIdentity: Date] = [:]
+        /// Unfinished audits that a later completed profile catch-up covers, with its completion time.
+        var coveredByLaterAudit: [CoverageAuditIdentity: Date] = [:]
+        var supersededAudits: Set<CoverageAuditIdentity> = []
         var latestReads: [ReadKey: Date] = [:]
         var pendingWorkBySource: [SourceKey: [Int]] = [:]
         var providersReadingHistory: Set<AgentProvider> = []
@@ -250,6 +293,25 @@ public struct CoverageReport: Sendable {
                 let audit = CoverageAuditIdentity(auditID: item.progress.audit.id, provider: item.provider,
                                                   profileID: item.profileID)
                 latestSettledHistory[audit] = max(latestSettledHistory[audit] ?? completedAt, completedAt)
+            }
+            // The latest end each profile's completed catch-ups reached, and when the latest of them finished.
+            struct ProfileKey: Hashable { let provider: AgentProvider; let profileID: String }
+            var completedProfiles: [ProfileKey: [(end: Date, completedAt: Date)]] = [:]
+            for item in history where item.completedProfileAudit {
+                guard let completedAt = item.completedAt else { continue }
+                completedProfiles[ProfileKey(provider: item.provider, profileID: item.profileID), default: []]
+                    .append((item.progress.audit.end, completedAt))
+            }
+            for item in history where item.completedAt == nil {
+                let audit = CoverageAuditIdentity(auditID: item.progress.audit.id, provider: item.provider,
+                                                  profileID: item.profileID)
+                if item.supersededAt != nil { supersededAudits.insert(audit) }
+                let covering = (completedProfiles[ProfileKey(provider: item.provider, profileID: item.profileID)] ?? [])
+                    .filter { $0.end >= item.progress.audit.end }.map(\.completedAt).max()
+                if let covering {
+                    coveredByLaterAudit[audit] = covering
+                    latestSettledHistory[audit] = max(latestSettledHistory[audit] ?? covering, covering)
+                }
             }
             for read in successfulReads {
                 let key = ReadKey(scope: read.scope, operation: read.operation)

@@ -156,17 +156,25 @@ public actor LocalCaptureServer {
     public typealias AcceptanceGate = @Sendable () async -> Bool
     public typealias GapHandler = @Sendable (CoverageGapReason) async -> Void
     public typealias RejectionHandler = @Sendable (CaptureRejectionDiagnostic) async -> Void
+    /// A decoded capture that admission refused, named by its validated transport metadata.
+    public typealias RejectedPacketHandler = @Sendable (CaptureMetadata) async -> Void
     private var listenerTask: Task<Void, Never>?
     private var children: [UUID: Task<Void, Never>] = [:]
     private var socketPath: String?
     private var running = false
     private let maximumClients: Int
 
-    public init(maximumClients: Int = 4) { self.maximumClients = max(1, min(maximumClients, 16)) }
+    /// Connections past the limit wait in the listen backlog until a client finishes. A helper
+    /// that gives up meanwhile has already written its frame, which is still read and admitted.
+    public static let listenBacklog: Int32 = 64
 
+    public init(maximumClients: Int = 16) { self.maximumClients = max(1, min(maximumClients, 16)) }
+
+    /// `onRejectedPacket` names the agent of a decoded capture that admission refused. Without it,
+    /// or before the packet decodes, the refusal is reported through `onGap` without a route.
     public func start(at url: URL, accepting: @escaping AcceptanceGate,
                       onCapture: @escaping CaptureHandler, onGap: @escaping GapHandler,
-                      onRejection: RejectionHandler? = nil) throws {
+                      onRejection: RejectionHandler? = nil, onRejectedPacket: RejectedPacketHandler? = nil) throws {
         guard !running else { throw CaptureTransportError.endpointInUse }
         let path = url.path
         guard path.utf8.count < MemoryLayout.size(ofValue: sockaddr_un().sun_path), !path.utf8.contains(0) else {
@@ -188,7 +196,7 @@ public actor LocalCaptureServer {
                     Darwin.bind(descriptor, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
                 }
             }
-            guard result == 0, chmod(path, 0o600) == 0, listen(descriptor, 8) == 0 else {
+            guard result == 0, chmod(path, 0o600) == 0, listen(descriptor, Self.listenBacklog) == 0 else {
                 throw CaptureTransportError.unavailable
             }
         } catch { close(descriptor); throw error }
@@ -197,6 +205,12 @@ public actor LocalCaptureServer {
         listenerTask = Task.detached(priority: .utility) { [weak self] in
             defer { close(descriptor) }
             while !Task.isCancelled {
+                // At the limit, waiting connections stay queued instead of being dropped.
+                guard let server = self else { break }
+                if await !server.hasCapacity {
+                    do { try await Task.sleep(for: .milliseconds(5)) } catch { break }
+                    continue
+                }
                 var pending = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
                 let result = poll(&pending, 1, 50)
                 if result < 0 && errno == EINTR { continue }
@@ -204,9 +218,8 @@ public actor LocalCaptureServer {
                 guard result > 0, pending.revents & Int16(POLLIN) != 0 else { break }
                 let client = accept(descriptor, nil, nil)
                 if client < 0 { continue }
-                guard let self else { close(client); break }
-                await self.acceptClient(client, accepting: accepting, onCapture: onCapture,
-                    onGap: onGap, onRejection: onRejection)
+                await server.acceptClient(client, accepting: accepting, onCapture: onCapture,
+                    onGap: onGap, onRejection: onRejection, onRejectedPacket: onRejectedPacket)
             }
         }
     }
@@ -228,19 +241,17 @@ public actor LocalCaptureServer {
         socketPath = nil
     }
 
+    private var hasCapacity: Bool { children.count < maximumClients }
+
     private func acceptClient(_ descriptor: Int32, accepting: @escaping AcceptanceGate,
                               onCapture: @escaping CaptureHandler, onGap: @escaping GapHandler,
-                              onRejection: RejectionHandler?) {
+                              onRejection: RejectionHandler?, onRejectedPacket: RejectedPacketHandler?) {
         guard running else { close(descriptor); return }
-        guard children.count < maximumClients else {
-            close(descriptor)
-            Task { await onGap(.queueSaturated) }
-            return
-        }
         let id = UUID()
         children[id] = Task.detached(priority: .utility) { [weak self] in
             defer { close(descriptor) }
             var stage = CaptureRejectionStage.peer
+            var decoded: CaptureMetadata?
             do {
                 try Self.configure(descriptor)
                 var user: uid_t = 0
@@ -259,6 +270,7 @@ public actor LocalCaptureServer {
                     let body = try Self.readExactly(length, from: descriptor, deadline: deadline)
                     stage = .packetDecode
                     let packet = try CapturePacket(body: body)
+                    decoded = packet.metadata
                     try Task.checkCancellation()
                     stage = .admission
                     try await onCapture(packet) // Return only after durable encrypted queue insertion.
@@ -274,7 +286,8 @@ public actor LocalCaptureServer {
             } catch {
                 _ = Self.acknowledge(0, to: descriptor)
                 if !Task.isCancelled {
-                    await onGap(.captureRejected)
+                    if let decoded, let onRejectedPacket { await onRejectedPacket(decoded) }
+                    else { await onGap(.captureRejected) }
                     await onRejection?(CaptureRejectionDiagnostic(stage: stage, error: error))
                 }
             }

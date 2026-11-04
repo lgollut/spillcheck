@@ -324,6 +324,33 @@ extension AppModel {
         /// Reads in progress need no action, but their content is not analyzed yet.
         var isInProgress: Bool { rows.allSatisfy { $0.state == .queued || $0.state == .reading } }
 
+        /// Content the route can never provide, such as Codex input it keeps encrypted or a subagent's
+        /// instructions it doesn't expose. It is still missing, so coverage stays partial, but it is a
+        /// stated limit listed under "Not analyzed by design" rather than a gap to act on.
+        var isStatedLimit: Bool {
+            switch id.cause {
+            case .diagnostic(.encryptedContentUnavailable), .diagnostic(.nativeChildInputUnavailable): true
+            default: false
+            }
+        }
+
+        /// Recorded since `cutoff`. Older issues are listed folded, as earlier ones.
+        func isRecent(since cutoff: Date) -> Bool { (lastObservedAt ?? .distantFuture) >= cutoff }
+
+        /// The states worth naming: "Recovery not confirmed" is true of nearly every unread gap, so it
+        /// is left out unless nothing else describes the issue.
+        var shortStateText: String? {
+            let labels = stateText.components(separatedBy: " · ").filter { $0 != CoverageIssueState.recoveryUnconfirmed.label }
+            return labels.isEmpty ? nil : labels.joined(separator: " · ")
+        }
+
+        /// How much is affected, in one phrase: sources when they are known, otherwise how often it happened.
+        var extentText: String? {
+            if case .route = id.cause { return nil }
+            if sourceCount > 0 { return plural(sourceCount, "source") }
+            return recordCount == 1 ? "Once" : "\(recordCount.formatted()) times"
+        }
+
         /// Each distinct state, most actionable first.
         var stateText: String {
             var labels: [String] = []
@@ -375,6 +402,8 @@ extension AppModel {
         var resolvedAt: Date? = nil
         var retry: CoverageSourceRetryDescriptor? = nil
         var workID: UUID? = nil
+        /// Observations this one stands for: a stored event counts each repeat of its gap.
+        var count = 1
         var affectedStart: Date? {
             [gap.interval?.start, gap.recovery?.contentTime].compactMap { $0 }.min()
         }
@@ -390,8 +419,23 @@ extension AppModel {
 
     var coverageGaps: [CoverageGapRow] { coverageRows.filter { $0.state != .recovered } }
     var recoveredCoverageGaps: [CoverageGapRow] { coverageRows.filter { $0.state == .recovered } }
-    /// Unrecovered issues, including reads in progress. Excluded content is a stated limit instead.
-    var coverageIssues: [CoverageIssue] { allCoverageIssues.filter { !$0.id.recovered } }
+    /// Unrecovered issues, including reads in progress. Excluded content and other stated limits are
+    /// listed apart, under "Not analyzed by design".
+    var coverageIssues: [CoverageIssue] { allCoverageIssues.filter { !$0.id.recovered && !$0.isStatedLimit } }
+    /// Missing content that the route can never provide, by cause.
+    var statedLimitIssues: [CoverageIssue] { allCoverageIssues.filter { !$0.id.recovered && $0.isStatedLimit } }
+    /// Issues last recorded before this are listed as earlier ones.
+    var recentIssueCutoff: Date { Date.now.addingTimeInterval(-24 * 60 * 60) }
+
+    /// Sources the app may reread on its own: each open issue's exact sources that a retry
+    /// could read now. Reads already queued or under way are left to finish.
+    var autoRetryCandidates: [CoverageSourceRetryDescriptor] {
+        CoverageIssue.distinct(coverageIssues.filter { !$0.isInProgress }.flatMap(\.rows).compactMap { row in
+            guard [.retryable, .recoveryUnconfirmed, .stalled].contains(row.state),
+                  case .retrySource(let source)? = row.action, canPerformCoverageAction(.retrySource(source)) else { return nil }
+            return source
+        })
+    }
     var recoveredCoverageIssues: [CoverageIssue] { allCoverageIssues.filter(\.id.recovered) }
 
     /// Records outside text analysis by design, by content type. No retry can recover them.
@@ -409,7 +453,7 @@ extension AppModel {
         }.joined(separator: " · ")
     }
     var coverageNeedsAttention: Bool {
-        coverageGaps.contains { ![.queued, .reading, .excluded].contains($0.state) } || coverageReport?.isTruncated == true
+        coverageGaps.contains { ![.queued, .reading, .excluded].contains($0.state) }
     }
     /// Waiting and in-progress reads need no action, but their content is not yet analyzed.
     var coverageHasUnreadHistory: Bool {
@@ -507,7 +551,13 @@ extension AppModel {
             return gaps.map { .init(gap: $0, state: $0.excludedContent == true ? .excluded : .recoveryUnconfirmed,
                 first: nil, last: nil, profile: profile($0)) }
         }
-        var observations = report.independentlyReportedEvents.map { event -> CoverageObservation in
+        // A catch-up replaced by a newer one of its profile hands its unread content to that audit,
+        // which reports it; listing both would count the same backlog twice.
+        func handedOver(_ event: StoredCoverageGapEvent) -> Bool {
+            guard let audit = event.audit, event.gap.reason == .budgetExhausted, event.gap.recovery == nil else { return false }
+            return report.isSupersededAudit(audit) && !report.hasRecoveredBacklog(event)
+        }
+        var observations = report.independentlyReportedEvents.filter { !handedOver($0) }.map { event -> CoverageObservation in
             let gap = event.gap
             let state: CoverageIssueState
             if report.hasRecoveredBacklog(event) { state = .recovered }
@@ -518,9 +568,10 @@ extension AppModel {
             } else if let workID = event.workID, let work = report.work(id: workID) {
                 state = workIssueState(work)
             } else { state = .recoveryUnconfirmed }
-            return .init(gap: gap, state: state, first: event.observedAt, last: event.observedAt,
+            return .init(gap: gap, state: state, first: event.earliestObservedAt, last: event.observedAt,
                          profile: profile(gap, audit: event.audit), audit: event.audit,
-                         retry: sourceRetry(for: gap, audit: event.audit, workID: event.workID, report: report), workID: event.workID)
+                         retry: sourceRetry(for: gap, audit: event.audit, workID: event.workID, report: report), workID: event.workID,
+                         count: event.count)
         }
         observations += report.omissions.items.map { omission in
             // Capture losses have no native row locator. Their atomic ledger link identifies
@@ -552,7 +603,8 @@ extension AppModel {
         for history in report.history.items where history.progress.hasUnreadContent {
             let audit = CoverageAuditIdentity(auditID: history.progress.audit.id,
                 provider: history.provider, profileID: history.profileID)
-            guard !unreadAudits.contains(audit) else { continue }
+            guard !unreadAudits.contains(audit), !report.isSupersededAudit(audit),
+                  !report.isCoveredByLaterAudit(audit) else { continue }
             let scopes = eventScopes[audit] ?? []
             // A shared native profile cannot establish which host produced an old audit.
             let scope = scopes.count == 1 ? scopes.first : nil
@@ -692,7 +744,7 @@ extension AppModel {
                 : CoverageCause(key).text
             var row = CoverageGapRow(id: .issue(key), text: "\(scopeText)\(typeText)\(operationText): \(message)",
                 state: observation.state, firstObservedAt: group.compactMap(\.first).min(),
-                lastObservedAt: group.compactMap(\.last).max(), count: group.count,
+                lastObservedAt: group.compactMap(\.last).max(), count: group.reduce(0) { $0 + $1.count },
                 sourceLabel: [gap.operation?.label, gap.contentType?.pluralLabel].compactMap { $0 }.joined(separator: " · "),
                 retry: observation.retry, affectedStart: group.compactMap(\.affectedStart).min(),
                 affectedEnd: group.compactMap(\.affectedEnd).max())

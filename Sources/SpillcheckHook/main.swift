@@ -3,7 +3,7 @@ import Foundation
 
 // This short-lived delivery client never starts Spillcheck, reads histories, scans,
 // or writes payloads to disk. Only the running app may own durable ingestion.
-private enum DeliveryError: Error { case invalid, unavailable, expired }
+private enum DeliveryError: Error { case invalid, unavailable, expired, busy }
 
 private struct Options {
     let socketPath: String
@@ -134,7 +134,19 @@ private enum HookDelivery {
         }
     }
 
+    /// A full listen backlog refuses the connection at once. That clears as soon as the app accepts
+    /// the connections ahead of this one, so the helper tries again until its deadline.
     static func connectSocket(options: Options, deadline: UInt64) throws -> Int32 {
+        while true {
+            do { return try connectOnce(options: options, deadline: deadline) }
+            catch DeliveryError.busy {
+                try requireTime(deadline)
+                usleep(2_000)
+            }
+        }
+    }
+
+    static func connectOnce(options: Options, deadline: UInt64) throws -> Int32 {
         try requireTime(deadline)
         let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
         guard descriptor >= 0 else { throw DeliveryError.unavailable }
@@ -149,7 +161,9 @@ private enum HookDelivery {
                 connect(descriptor, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
             }
         }
-        guard result == 0 || errno == EINPROGRESS else { throw DeliveryError.unavailable }
+        guard result == 0 || errno == EINPROGRESS else {
+            throw errno == ECONNREFUSED || errno == EAGAIN ? DeliveryError.busy : DeliveryError.unavailable
+        }
         if result != 0 { try waitFor(descriptor, events: Int16(POLLOUT), deadline: deadline) }
         var socketError: Int32 = 0
         var errorSize = socklen_t(MemoryLayout<Int32>.size)

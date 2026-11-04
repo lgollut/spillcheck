@@ -147,6 +147,34 @@ class HookDeliveryTests(unittest.TestCase):
         elapsed = self.deliver(b'{"tool_response":"SYNTHETIC_UNAVAILABLE"}')
         self.assertLess(elapsed, 0.2)
 
+    def test_refused_connection_is_retried_within_the_attempt(self):
+        # A full listen backlog refuses connections while the app is busy with others. The helper
+        # tries again until its deadline instead of dropping the event at the first refusal.
+        self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.listener.bind(str(self.socket_path))  # Bound but not listening: connect is refused.
+        self.listener.settimeout(1)
+
+        def listen_late():
+            try:
+                time.sleep(0.04)
+                self.listener.listen(1)
+                client, _ = self.listener.accept()
+                self.connected_at = time.monotonic()
+                with client:
+                    client.settimeout(1)
+                    length = int.from_bytes(receive_exact(client, 4), "big")
+                    self.frames.append(receive_exact(client, length))
+                    client.sendall(b"\x01")
+            except Exception as error:
+                self.server_errors.append(type(error).__name__)
+
+        self.thread = threading.Thread(target=listen_late)
+        self.thread.start()
+        self.deliver(b'{"hook_event_name":"Stop"}')
+        self.thread.join(timeout=2)
+        self.assertEqual(self.server_errors, [])
+        self.assertEqual(len(self.frames), 1)
+
     def test_versioned_frame_preserves_raw_event_and_configured_metadata(self):
         self.serve()
         event = {"hook_event_name": "PostToolUse", "tool_response": "SYNTHETIC_Ä_🔐\n",

@@ -594,7 +594,9 @@ public actor ProtectedStore {
             try injector?(.afterEnqueueCommit)
             return result
         } catch StorageError.queueSaturated {
-            try await recordGap(CoverageGap(reason: .queueSaturated), at: now)
+            // Named on the capture's configured route when it has one, so the gap says which agent lost it.
+            try await recordGap(CoverageGap(reason: .queueSaturated, scope: workContext?.scope,
+                operation: workContext?.operation), at: now)
             throw StorageError.queueSaturated
         } catch let error as StorageError { throw error }
         catch { throw StorageError.databaseUnavailable }

@@ -28,6 +28,7 @@ private actor CaptureAdmission {
             }
         }
     }
+    func scope(for metadata: CaptureMetadata) -> CollectionScope? { routes[metadata]?.scope }
     func context(for packet: CapturePacket, trigger: CollectionWorkTrigger,
                  audit: HistoricalAuditContext? = nil,
                  recordAuthority: SourceAuthorityRecorder) async throws -> CollectionWorkContext {
@@ -449,6 +450,10 @@ final class AppRuntime {
                         try await opened.recordCoverageGap(
                             CollectionCapacityRejection(resource: .collectionWork, scope: context.scope).gap)
                         throw CaptureTransportError.rejectionRecorded
+                    } catch StorageError.queueSaturated {
+                        // The store committed its own queue-limit gap on this route before rethrowing,
+                        // so a second, generic rejection gap would count the same loss twice.
+                        throw CaptureTransportError.rejectionRecorded
                     }
                     let queueID: UUID
                     switch insertion {
@@ -458,7 +463,12 @@ final class AppRuntime {
                 }, onGap: { reason in
                     try? await opened.recordCoverageGap(CoverageGap(reason: reason,
                         operation: .hookDelivery, diagnosticCode: reason.defaultDiagnosticCode, observedAt: .now))
-                }, onRejection: rejectionObserver)
+                }, onRejection: rejectionObserver, onRejectedPacket: { metadata in
+                    // A configured route names the agent that lost the capture; otherwise it stays unattributed.
+                    let scope = await admission.scope(for: metadata)
+                    try? await opened.recordCoverageGap(CoverageGap(reason: .captureRejected, scope: scope,
+                        operation: .hookDelivery, observedAt: .now))
+                })
             if terminating || Task.isCancelled {
                 await opened.setMonitoring(enabled: false)
                 await server.stop()
